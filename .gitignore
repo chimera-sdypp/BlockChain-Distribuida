@@ -11,6 +11,7 @@ kubeconfig*
 pilar1/**/hola
 pilar1/**/hello_world
 pilar1/**/vectors
+pilar1/**/md5
 pilar1/**/*.exe
 
 # Python

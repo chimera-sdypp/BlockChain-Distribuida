@@ -1,0 +1,26 @@
+# Secretos y credenciales
+.env
+*.pem
+*.key
+kubeconfig*
+*-key.json
+
+# Binarios de CUDA/C++
+*.o
+*.out
+pilar1/**/hola
+pilar1/**/*.exe
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# OpenTofu / Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Logs
+logs/

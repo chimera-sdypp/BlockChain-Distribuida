@@ -9,6 +9,7 @@ kubeconfig*
 *.o
 *.out
 pilar1/**/hola
+pilar1/**/hello_world
 pilar1/**/*.exe
 
 # Python

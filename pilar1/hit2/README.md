@@ -1,15 +1,16 @@
 # Hit 2 — Hola mundo CUDA
 
-`hola.cu` sigue la presentación SC11 *CUDA C/C++ Basics*: un kernel que imprime `blockIdx`/`threadIdx`, y la suma de vectores con bloques, con hilos y con los dos combinados.
+- `hello_world.cu`: el mínimo, un bloque de 5 hilos que imprimen su `threadIdx`.
+- `hola.cu`: sigue la presentación SC11 *CUDA C/C++ Basics*: un kernel que imprime `blockIdx`/`threadIdx`, y la suma de vectores con bloques, con hilos y con los dos combinados.
 
 ## Ejecución
 
 ```bash
-nvcc -arch=sm_89 hola.cu -o hola   # RTX 4060
-./hola
+nvcc -arch=sm_89 hello_world.cu -o hello_world && ./hello_world   # RTX 4060
+nvcc -arch=sm_89 hola.cu -o hola && ./hola
 ```
 
-Sin placa NVIDIA, en Google Colab (entorno T4):
+Sin placa NVIDIA, en Google Colab (entorno T4), con `-arch=sm_75`:
 
 ```bash
 !git clone https://github.com/chimera-sdypp/BlockChain-Distribuida.git

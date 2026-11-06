@@ -12,6 +12,7 @@ pilar1/**/hola
 pilar1/**/hello_world
 pilar1/**/vectors
 pilar1/**/md5
+pilar1/**/pow
 pilar1/**/*.exe
 
 # Python
@@ -27,3 +28,8 @@ venv/
 
 # Logs
 logs/
+
+# Contexto y documentación local (no pushear)
+contexto/
+contexto_temp.html
+

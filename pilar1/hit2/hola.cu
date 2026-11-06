@@ -11,6 +11,13 @@
 // Compilación en local (CachyOS con RTX 4060):
 //   nvcc -arch=sm_89 hola.cu -o hola
 //
+// ¿Qué hace nvcc aquí?: Realiza la compilación heterogénea:
+//   - Separa el código de CPU (main, probar_suma) y se lo pasa a g++.
+//   - Traduce <<<bloques, hilos>>> a llamadas a la API de CUDA Runtime.
+//   - Compila los kernels de GPU (__global__) a código máquina SASS específico
+//     según la Compute Capability indicada (-arch=sm_75 para T4 o sm_89 para RTX 4060).
+//   - Enlaza todo junto en un único binario ejecutable final.
+//
 // Ejecución:
 //   ./hola
 // ==============================================================================

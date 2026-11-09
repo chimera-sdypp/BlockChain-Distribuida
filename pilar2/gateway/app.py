@@ -30,6 +30,13 @@ MINERO_VIVO = 15  # segundos: el keep-alive es cada 5 s; tres perdidos y se lo d
 
 PRESTAMO = "prestamo:{}"  # prestamo:<tarea>:<rango> → {mensaje, minero}
 
+# Renueva un préstamo sólo si es de este minero: un minero lento no le estira el préstamo a otro.
+# KEYS: prestamos, prestamo:<miembro>. ARGV: miembro, minero, vencimiento nuevo.
+LUA_RENOVAR = """
+if redis.call('HGET', KEYS[2], 'minero') ~= ARGV[2] then return 0 end
+return redis.call('ZADD', KEYS[1], 'XX', 'CH', ARGV[3], ARGV[1])
+"""
+
 
 def es_entero(valor, minimo=0):
     return isinstance(valor, int) and not isinstance(valor, bool) and valor >= minimo
@@ -54,6 +61,7 @@ class Gateway:
         self.redis, self.rabbit, self.token = redis, rabbit, token
         self.cola_rangos, self.cola_resultados = cola_rangos, cola_resultados
         self.lease, self.minero_vivo = lease, minero_vivo
+        self._renovar = redis.register_script(LUA_RENOVAR)
         COLECTOR.gateway = self
 
     def autorizado(self, encabezado):
@@ -142,6 +150,31 @@ class Gateway:
         except redislib.RedisError:
             log.exception("No se pudo liberar el préstamo %s (vencerá y el TrP tolera el repetido)", miembro)
 
+    # ── Keep-alive ──
+
+    def keepalive(self, datos):
+        """POST /keepalive: el minero sigue vivo; renueva su préstamo o le dice que corte."""
+        rango = datos.get("rango") if isinstance(datos, dict) else None
+        if not isinstance(datos, dict) or not contrato.usuario_valido(datos.get("minero")) \
+                or not es_numero(datos.get("hashes_por_segundo")) \
+                or not (rango is None or (isinstance(rango, dict) and isinstance(rango.get("tarea"), str)
+                                          and es_entero(rango.get("rango")))):
+            return 400, {"error": "hace falta {minero, hashes_por_segundo, rango: {tarea, rango} | null}"}
+        minero = datos["minero"]
+        self.redis.hset(contrato.NODO.format(minero), mapping={
+            "hashes_por_segundo": int(datos["hashes_por_segundo"]), "ultimo_aviso": int(time.time())})
+        if rango is None:
+            return 200, {"cortar": False}
+        miembro = f"{rango['tarea']}:{rango['rango']}"
+        if not self.tarea_en_curso(rango["tarea"]):
+            # El minero deja el rango sin mandar resultado: el préstamo se borra acá.
+            self._liberar(miembro)
+            log.info("A %s: cortá el rango %s, su tarea ya se cerró", minero, miembro)
+            return 200, {"cortar": True}
+        self._renovar(keys=[contrato.PRESTAMOS, PRESTAMO.format(miembro)],
+                      args=[miembro, minero, time.time() + self.lease])
+        return 200, {"cortar": False}
+
     # ── Métricas ──
 
     def mineros_vivos(self):
@@ -210,6 +243,7 @@ def agregar_rutas(app, gateway):
     app.post("/hello", dependencies=[Depends(con_token)])(ruta(gateway.hello))
     app.post("/bench", dependencies=[Depends(con_token)])(ruta(gateway.bench))
     app.post("/results", dependencies=[Depends(con_token)])(ruta(gateway.resultado))
+    app.post("/keepalive", dependencies=[Depends(con_token)])(ruta(gateway.keepalive))
 
     @app.get("/tasks/next", dependencies=[Depends(con_token)])
     def tasks_next(minero: str = ""):

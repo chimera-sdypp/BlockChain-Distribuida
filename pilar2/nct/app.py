@@ -30,6 +30,30 @@ redis.call('RPUSH', KEYS[1], ARGV[1])
 return 1
 """
 
+# Valida una transacción «recibida» (BC-24): pendiente si al origen le alcanza el saldo confirmado
+# menos lo que ya tiene comprometido; si no, rechazada. Atómico: dos réplicas no pueden gastar dos
+# veces el mismo saldo. Si ya no está «recibida» (mensaje reentregado), no cambia nada y devuelve
+# el estado que tiene. Los montos se leen de tx:<id> (lo que guardó el backend), no del mensaje.
+# KEYS: tx:<id>, saldos, comprometido, tx:pendientes. ARGV: id, motivo.
+# Devuelve el estado (nil si la tx no existe).
+LUA_VALIDAR = """
+local actual = redis.call('HGET', KEYS[1], 'estado')
+if actual ~= 'recibida' then return actual end
+local origen = redis.call('HGET', KEYS[1], 'origen')
+local monto = redis.call('HGET', KEYS[1], 'monto')
+local saldo = tonumber(redis.call('HGET', KEYS[2], origen) or '0')
+local comprometido = tonumber(redis.call('HGET', KEYS[3], origen) or '0')
+if saldo - comprometido >= tonumber(monto) then
+  redis.call('HSET', KEYS[1], 'estado', 'pendiente')
+  redis.call('HINCRBY', KEYS[3], origen, monto)
+  redis.call('RPUSH', KEYS[4], ARGV[1])
+  return 'pendiente'
+end
+redis.call('HSET', KEYS[1], 'estado', 'rechazada', 'motivo', ARGV[2])
+return 'rechazada'
+"""
+SALDO_INSUFICIENTE = "saldo insuficiente"
+
 
 def plano(diccionario):
     """{k: v} → [k1, v1, k2, v2, …] como texto, para pasarle a un script Lua."""
@@ -47,6 +71,7 @@ class Nct:
         self.saldos_iniciales = SALDOS_INICIALES if saldos_iniciales is None else saldos_iniciales
         self.wait_replicas, self.wait_ms = wait_replicas, wait_ms
         self._genesis = redis.register_script(LUA_GENESIS)
+        self._validar = redis.register_script(LUA_VALIDAR)
 
     def cargar_genesis(self):
         """Si la cadena está vacía, carga el bloque génesis con los saldos iniciales. Devuelve si lo cargó."""
@@ -58,6 +83,26 @@ class Nct:
         if cargado:
             log.info("Génesis cargado: %s con %d usuarios", bloque["block_hash"], len(self.saldos_iniciales))
         return bool(cargado)
+
+    def validar(self, mensaje):
+        """BC-24: una transacción de `transacciones` pasa a pendiente o rechazada, y se avisa.
+
+        Se avisa después de escribir y antes del ack. Si el pod muere en el medio (o falla el
+        aviso), el mensaje vuelve, el script no cambia nada y el aviso se repite: es lo que
+        hace que llegue, y repetido no le hace daño a nadie.
+        """
+        id_ = mensaje["id"]
+        estado = self._validar(keys=[contrato.TX.format(id_), contrato.SALDOS, contrato.COMPROMETIDO,
+                                     contrato.PENDIENTES], args=[id_, SALDO_INSUFICIENTE])
+        if estado not in ("pendiente", "rechazada"):
+            log.warning("La transacción %s no se valida: está %s", id_, estado or "ausente de Redis")
+            return None
+        aviso = {"id": id_, "estado": estado}
+        if estado == "rechazada":
+            aviso["motivo"] = SALDO_INSUFICIENTE
+        self.publicador.avisar(contrato.EXCHANGE_EVENTOS, contrato.TRANSACCION_ESTADO, aviso)
+        log.info("Transacción %s %s", id_, estado)
+        return estado
 
 
 def leer_saldos_iniciales(texto):
@@ -82,4 +127,11 @@ def main():
     servicio.servir_http(en_hilo=True)
     publicador.conectar()
     servicio.rabbit.conectar()  # la de /health
+    consumir(c, contrato.COLAS[0], nct.validar)  # transacciones
     threading.Event().wait()
+
+
+def consumir(c, cola, manejador):
+    """Un hilo por cola, cada uno con su propia conexión (así lo pide comun.Rabbit)."""
+    threading.Thread(target=Rabbit(c, contrato.COLAS).consumir, args=(cola, manejador),
+                     name=f"consumir-{cola}", daemon=True).start()

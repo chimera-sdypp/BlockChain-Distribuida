@@ -12,6 +12,7 @@ EXCHANGE_EVENTOS = "eventos"            # topic
 BLOQUE_CONFIRMADO = "bloque.confirmado"
 TRANSACCION_ESTADO = "transaccion.estado"  # el NCT validó (pendiente) o rechazó una transacción
 CADENA, SALDOS, PENDIENTES, CAJAS, PRESTAMOS = "cadena", "saldos", "tx:pendientes", "cajas", "prestamos"
+COMPROMETIDO = "comprometido"  # usuario → lo que tiene en transacciones validadas que todavía no entraron en un bloque
 TX, BLOQUE, TAREA, NODO = "tx:{}", "bloque:{}", "tarea:{}", "nodo:{}"
 NODOS = "nodo:*"  # para SCAN: los mineros son pocos
 # Campos de nodo:<id> (los escribe el gateway): bench y hashes_por_segundo en hashes/s, ultimo_aviso en segundos Unix.

@@ -82,6 +82,7 @@ Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el
 | `saldos` | hash | usuario → saldo |
 | `tx:<id>` | hash | origen, destino, monto, timestamp, estado, motivo y bloque |
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
+| `comprometido` | hash | usuario → suma de sus transacciones validadas que todavía no entraron en un bloque. Lo suma el NCT al validar y lo resta al confirmar: lo disponible es `saldos − comprometido` |
 | `cajas` | lista | Cada elemento, una caja (JSON con los id); la primera es la próxima a minar |
 | `tarea:<id>` | hash | Bloque candidato, prefijo, rangos totales, sin solución, ganador y estado |
 | `nodo:<id>` | hash, permanente | `tipo` (`gpu` o `cpu`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix). El `<id>` cumple `usuario_valido` |

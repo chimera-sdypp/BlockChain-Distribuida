@@ -92,6 +92,28 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0]):
         TX_RECIBIDAS.labels("aceptada").inc()
         return {"id": tx["id"]}
 
+    # Las consultas son sync: FastAPI las corre en su threadpool, así Redis no frena el event loop.
+
+    @app.get("/api/transacciones/{id_}")
+    def transaccion(id_: str):
+        tx = redis.hgetall(contrato.TX.format(id_))
+        if not tx:
+            return JSONResponse({"error": "no existe la transacción"}, status_code=404)
+        return {"id": id_, **tx, "monto": int(tx["monto"]), "timestamp": int(tx["timestamp"])}
+
+    @app.get("/api/saldos")
+    def saldos():
+        return {usuario: int(saldo) for usuario, saldo in redis.hgetall(contrato.SALDOS).items()}
+
+    @app.get("/api/saldos/{usuario}")
+    def saldo(usuario: str):
+        return {"usuario": usuario, "saldo": int(redis.hget(contrato.SALDOS, usuario) or 0)}
+
+    @app.exception_handler(redislib.RedisError)
+    def redis_caido(request, error):
+        log.error("Redis no respondió en %s: %r", request.url.path, error)
+        return no_disponible("Redis no disponible")
+
 
 def main():
     cola = config.texto("COLA_TRANSACCIONES", contrato.COLAS[0])

@@ -23,6 +23,11 @@ class RedisFalso:
             raise redis.ConnectionError("Redis caído")
         self.hashes.setdefault(clave, {}).update({k: str(v) for k, v in mapping.items()})
 
+    def hgetall(self, clave):
+        if self.falla:
+            raise redis.ConnectionError("Redis caído")
+        return dict(self.hashes.get(clave, {}))
+
     def delete(self, *claves):
         for clave in claves:
             self.hashes.pop(clave, None)
@@ -126,3 +131,8 @@ def test_la_metrica_cuenta_aceptadas_invalidas_y_errores():
 
     for resultado in ("aceptada", "invalida", "error"):
         assert despues[resultado] - antes.get(resultado, 0) == 1, resultado
+
+
+def test_si_redis_falla_una_consulta_da_503():
+    respuesta = cliente(RedisFalso(falla=True)).get("/api/transacciones/abc")
+    assert respuesta.status_code == 503

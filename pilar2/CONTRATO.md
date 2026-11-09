@@ -77,7 +77,8 @@ Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el
 | `tx:<id>` | hash | origen, destino, monto, timestamp, estado, motivo y bloque |
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
 | `cajas` | lista | Cada elemento, una caja (JSON con los id); la primera es la próxima a minar |
-| `tarea:<id>` | hash | Bloque candidato, prefijo, rangos totales, sin solución, ganador y estado. El TrP escribe `bloque` (el texto), `prefijo` y `rangos` (cuántos) |
+| `tarea:<id>` | hash | Bloque candidato, prefijo, rangos totales, sin solución, ganador y estado. El TrP escribe `bloque` (el texto), `prefijo`, `rangos` (cuántos) y `ganador` (JSON {minero, nonce, hash} o `sin_solucion`) |
+| `tarea:<id>:sin_solucion` | conjunto | Los rangos que volvieron sin solución (lo maneja el TrP) |
 | `nodo:<id>` | hash, permanente | tipo, placa, bench, hashes/s del último aviso y su hora |
 | `prestamos` | sorted set | rango prestado → cuándo vence (lo maneja el gateway) |
 

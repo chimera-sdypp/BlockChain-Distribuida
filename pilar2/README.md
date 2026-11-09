@@ -82,3 +82,9 @@ Toma cada tarea de `tareas`, elige el prefijo, la parte en rangos de nonce y pub
 
 - **Prefijo:** con p caracteres hacen falta 16^p intentos en promedio. Con la potencia viva P (la suma de los `bench` de los mineros que avisaron hace menos de 15 s), el largo es el mayor p con 16^p ≤ P × 30 s, entre 1 y `PREFIJO_BASE`. Sin GPU baja (un minero CPU de 8,6 MH/s da 6; uno de 0,5 MH/s, 5); sin mineros vivos es 1, para que el primero que llegue lo resuelva enseguida.
 - Si el pod muere a mitad, la tarea vuelve a la cola y se repite entera: `tarea:<id>` queda igual y los rangos repetidos no molestan.
+
+También toma `resultados` (otra conexión, en otro hilo) y le pasa al NCT, por `soluciones`, sólo el ganador:
+
+- Gana el primer nonce **verificado** de cada tarea (el TrP recalcula el hash con el texto y el prefijo de `tarea:<id>`); los que llegan después se descartan.
+- `ganador` en `tarea:<id>` se escribe una sola vez con `HSETNX`: con 2 pods sale una sola solución. Si el pod muere antes del ack, el mensaje vuelve y se publica de nuevo la misma solución.
+- Los rangos sin solución se anotan en el conjunto `tarea:<id>:sin_solucion` (un rango repetido no cuenta dos veces). Cuando están todos, publica `{tarea, sin_solucion: true}` para que el NCT rearme el bloque.

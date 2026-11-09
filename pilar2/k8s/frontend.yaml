@@ -1,0 +1,62 @@
+# Frontend (BC-28): la página y los avisos en vivo por SSE. Sin estado: cada pod tiene su propia
+# cola atada a `eventos`, así que cualquier navegador recibe todos los avisos, esté en el pod que esté.
+# La imagen se construye e importa a mano en k3s (ver pilar2/frontend/README.md) hasta que haya
+# Artifact Registry (BC-31); ahí se cambia con `images:` en el kustomization.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels: { app: frontend }
+spec:
+  selector: { app: frontend }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels: { app: frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: frontend }
+  template:
+    metadata:
+      labels: { app: frontend }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: frontend
+          image: frontend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: RABBIT_HOST, value: rabbitmq }
+            - name: RABBIT_USUARIO
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
+            - name: RABBIT_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          # /health da 503 si no llega a RabbitMQ: sale del Service hasta que vuelva.
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # Para reiniciarlo sólo si el proceso se colgó, no si RabbitMQ está caído:
+          # /metrics no depende de él.
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001     # el usuario «app» del Dockerfile; con un nombre, runAsNonRoot no lo puede verificar

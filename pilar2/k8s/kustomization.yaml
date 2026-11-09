@@ -10,6 +10,7 @@ resources:
   - redis.yaml
   - backend.yaml
   - nct.yaml
+  - gateway.yaml
 
 configMapGenerator:
   - name: rabbitmq-config

@@ -45,7 +45,7 @@ RabbitMQ y Redis, 3 pods cada uno, en el namespace `blockchain`. Sólo tienen Se
 kubectl create namespace blockchain
 kubectl -n blockchain create secret generic blockchain-secretos --from-literal=RABBIT_USUARIO=blockchain \
   --from-literal=RABBIT_CLAVE="$(openssl rand -hex 16)" --from-literal=RABBIT_COOKIE="$(openssl rand -hex 32)" \
-  --from-literal=REDIS_CLAVE="$(openssl rand -hex 16)"
+  --from-literal=REDIS_CLAVE="$(openssl rand -hex 16)" --from-literal=MINER_TOKEN="$(openssl rand -hex 24)"
 kubectl apply -k k8s
 k8s/probar.sh    # que todo aparezca solo y que cada uno aguante la caída de un pod
 ```

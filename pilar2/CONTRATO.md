@@ -65,13 +65,16 @@ Los avisos de `eventos` los recibe cada suscriptor con su propia cola exclusiva 
 
 Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el formato de un usuario; si no, 400.
 
+- Cada rango entregado es un **préstamo** a nombre del minero, que vence a los `TASK_LEASE_SECONDS` (30). Cada keep-alive del dueño lo renueva; si vence, el gateway vuelve a publicar el rango en `rangos`.
+- Si la tarea del rango ya se cerró (`estado` de `tarea:<id>` distinto de `en_curso`), el keep-alive contesta `cortar: true` y el gateway borra el préstamo: el minero deja el rango sin mandar resultado. Los rangos de tareas cerradas que queden en la cola se descartan al entregarlos.
+
 | Pedido | Envía el minero | Contesta el gateway |
 |---|---|---|
 | `POST /hello` | `{minero, tipo: gpu \| cpu, placa}` | 200 `{registrado: true}`; si es nuevo, 200 con la tarea modelo |
 | `POST /bench` | `{minero, segundos, hashes_por_segundo}` | 204 |
-| `GET /tasks/next` | — | 200 `{tarea, rango, bloque, desde, hasta, prefijo}` o 204 sin trabajo |
+| `GET /tasks/next?minero=<id>` | — (el id va en la query: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}` o 204 sin trabajo |
 | `POST /results` | lo mismo que `resultados` | 202 |
-| `POST /keepalive` | `{minero, hashes_por_segundo, rango}` | 200 `{cortar: true \| false}` |
+| `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null}` (cada 5 s) | 200 `{cortar: true \| false}` |
 
 ## Claves de Redis
 
@@ -88,7 +91,8 @@ Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el
 | `tarea:<id>:sin_solucion` | conjunto | Los rangos que volvieron sin solución (lo maneja el TrP) |
 | `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Si el NCT muere, vence y se vuelve a armar la misma caja |
 | `nodo:<id>` | hash, permanente | `tipo` (`gpu` o `cpu`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix). El `<id>` cumple `usuario_valido` |
-| `prestamos` | sorted set | rango prestado → cuándo vence (lo maneja el gateway) |
+| `prestamos` | sorted set | `<tarea>:<rango>` → cuándo vence (segundos Unix). Lo maneja el gateway |
+| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, para volver a publicarlo si vence) y `minero` (el dueño: sólo él lo renueva) |
 
 ## Vector de prueba
 

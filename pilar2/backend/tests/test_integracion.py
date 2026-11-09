@@ -1,5 +1,6 @@
 """El backend contra RabbitMQ y Redis de verdad. Corren con INTEGRACION=1 (en el CI, con services)."""
 
+import json
 import os
 import threading
 import time
@@ -10,7 +11,7 @@ import redis as redislib
 from fastapi.testclient import TestClient
 
 from backend import app as backend
-from comun import Rabbit, config, web
+from comun import Rabbit, config, contrato, web
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -101,3 +102,76 @@ def test_saldos(entorno):
     assert cliente.get("/api/saldos").json() == {"alice": 750, "bob": 1250}
     assert cliente.get("/api/saldos/bob").json() == {"usuario": "bob", "saldo": 1250}
     assert cliente.get("/api/saldos/zoe").json() == {"usuario": "zoe", "saldo": 0}
+
+
+# ── Ticket 03: recorrer la cadena ──
+
+def guardar_bloque(redis, bloque):
+    """Como lo guarda el NCT (NCT.4): bloque:<hash> con `transactions` en JSON, y el hash al final de `cadena`."""
+    redis.hset(f"bloque:{bloque['block_hash']}", mapping={**bloque, "transactions": json.dumps(bloque["transactions"])})
+    redis.rpush("cadena", bloque["block_hash"])
+
+
+def armar_cadena(redis, largo):
+    """Génesis más largo−1 bloques de prueba; devuelve los hashes en orden de altura."""
+    genesis = contrato.bloque_genesis({"alice": 1000, "bob": 1000}, 1793836800)
+    guardar_bloque(redis, genesis)
+    hashes = [genesis["block_hash"]]
+    for altura in range(1, largo):
+        tx = {"id": f"tx-{altura}", "origen": "alice", "destino": "bob", "monto": altura, "timestamp": 1793836800 + altura}
+        texto = contrato.texto_bloque(hashes[-1], 1793836800 + altura, [tx])
+        bloque = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "transactions": [tx],
+                  "nonce": altura, "block_hash": contrato.hash_bloque(texto, altura),
+                  "prefijo": "0", "minero": "gpu-1", "recompensa": 10}
+        guardar_bloque(redis, bloque)
+        hashes.append(bloque["block_hash"])
+    return hashes
+
+
+def test_bloques_del_mas_nuevo_al_mas_viejo_con_altura(entorno):
+    cliente, _, redis = entorno
+    hashes = armar_cadena(redis, 3)
+
+    bloques = cliente.get("/api/bloques").json()
+
+    assert [b["altura"] for b in bloques] == [2, 1, 0]
+    assert [b["block_hash"] for b in bloques] == hashes[::-1]
+    punta = bloques[0]
+    assert punta["previous_hash"] == hashes[1]
+    assert (punta["nonce"], punta["timestamp"], punta["recompensa"]) == (2, 1793836802, 10)
+    assert punta["transactions"] == [{"id": "tx-2", "origen": "alice", "destino": "bob",
+                                      "monto": 2, "timestamp": 1793836802}]
+
+
+def test_bloques_paginados(entorno):
+    cliente, _, redis = entorno
+    hashes = armar_cadena(redis, 5)
+
+    primera = cliente.get("/api/bloques", params={"limite": 2}).json()
+    segunda = cliente.get("/api/bloques", params={"limite": 2, "desde": 2}).json()
+    ultima = cliente.get("/api/bloques", params={"limite": 2, "desde": 0}).json()
+
+    assert [b["altura"] for b in primera] == [4, 3]
+    assert [b["altura"] for b in segunda] == [2, 1]
+    assert [b["block_hash"] for b in ultima] == [hashes[0]]
+
+
+def test_bloques_de_una_cadena_vacia(entorno):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/bloques").json() == []
+
+
+@pytest.mark.parametrize("params", [{"limite": 0}, {"limite": 101}, {"desde": -1}, {"limite": "x"}])
+def test_bloques_con_parametros_invalidos_da_400(entorno, params):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/bloques", params=params).status_code == 400
+
+
+def test_bloque_por_hash_con_su_altura(entorno):
+    cliente, _, redis = entorno
+    hashes = armar_cadena(redis, 3)
+
+    bloque = cliente.get(f"/api/bloques/{hashes[1]}").json()
+
+    assert (bloque["altura"], bloque["block_hash"], bloque["previous_hash"]) == (1, hashes[1], hashes[0])
+    assert cliente.get("/api/bloques/noexiste").status_code == 404

@@ -12,11 +12,16 @@ import time
 from functools import partial
 
 import pika
+import redis
 from pika.exceptions import AMQPChannelError, AMQPConnectionError
 
 log = logging.getLogger(__name__)
 
 ERRORES = (AMQPConnectionError, AMQPChannelError)
+# Fallas de la infraestructura, no del mensaje: por ejemplo, Redis mientras Sentinel elige otro primario.
+# ReadOnlyError: se escribió en el primario viejo, que ya pasó a ser réplica.
+TRANSITORIOS = ERRORES + (redis.ConnectionError, redis.TimeoutError, redis.ReadOnlyError)
+ESPERA_TRANSITORIO = 1  # segundos antes de devolver el mensaje, para no girar en vacío
 LATIDO = 30  # heartbeat de AMQP, en segundos
 
 
@@ -84,8 +89,9 @@ class Rabbit:
     def consumir(self, cola, manejador):
         """Bloquea el hilo: por cada mensaje llama a manejador(dict) y hace ack si termina bien.
 
-        Si el manejador falla, el mensaje vuelve a la cola una vez; si vuelve a fallar, se
-        descarta (queda el error en el log). Si se corta la conexión, reconecta y sigue.
+        Si el manejador falla por el mensaje, vuelve a la cola una vez; si vuelve a fallar, se
+        descarta (queda el error en el log). Si falla por RabbitMQ o Redis caídos, vuelve a la
+        cola siempre. Si se corta la conexión, reconecta y sigue.
         """
         self._consumiendo = True
         try:
@@ -111,6 +117,10 @@ class Rabbit:
     def _entregar(self, cola, manejador, canal, metodo, propiedades, cuerpo):
         try:
             manejador(json.loads(cuerpo))
+        except TRANSITORIOS as error:
+            log.warning("Falló un mensaje de %s por la infraestructura (%r); vuelve a la cola", cola, error)
+            time.sleep(ESPERA_TRANSITORIO)
+            canal.basic_nack(metodo.delivery_tag, requeue=True)
         except Exception:
             reencolar = not metodo.redelivered
             log.exception("Falló un mensaje de %s; %s", cola,

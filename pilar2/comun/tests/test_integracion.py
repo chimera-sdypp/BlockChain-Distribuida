@@ -6,6 +6,7 @@ import time
 import uuid
 
 import pytest
+import redis
 from fastapi.testclient import TestClient
 
 from comun import Rabbit, Servicio, config, redisdb
@@ -70,6 +71,27 @@ def test_si_el_manejador_falla_se_reintenta_una_vez_y_se_descarta(cola):
     assert esperar(lambda: len(intentos) == 2)
     time.sleep(1)
     assert len(intentos) == 2  # no vuelve una tercera vez
+    consumidor.detener()
+    publicador.detener()
+
+
+def test_si_falla_redis_el_mensaje_vuelve_hasta_que_se_procesa(cola, monkeypatch):
+    monkeypatch.setattr("comun.rabbit.ESPERA_TRANSITORIO", 0)
+    c = config.cargar("prueba")
+    publicador, consumidor = Rabbit(c, [cola]), Rabbit(c, [cola])
+    intentos, procesados = [], []
+
+    def redis_caido_tres_veces(mensaje):
+        intentos.append(mensaje)
+        if len(intentos) <= 3:
+            raise redis.ConnectionError("Sentinel todavía no eligió primario")
+        procesados.append(mensaje)
+
+    consumir_en_hilo(consumidor, cola, redis_caido_tres_veces)
+    publicador.conectar()
+    publicador.publicar(cola, {"tx": 1})
+    assert esperar(lambda: procesados == [{"tx": 1}])
+    assert len(intentos) == 4
     consumidor.detener()
     publicador.detener()
 

@@ -2,6 +2,8 @@
 
 Una carpeta por servicio. Los de Python usan `comun/` y el mismo `Dockerfile`; `ejemplo/` muestra cómo.
 
+Qué datos viajan entre los servicios (transacción, bloque, mensajes, API del gateway y claves de Redis): [CONTRATO.md](CONTRATO.md).
+
 ## Ejecutar (desde `pilar2/`)
 
 ```bash
@@ -27,6 +29,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 | `web` | `/health` (503 si RabbitMQ o Redis no responden) y `/metrics` en el puerto 8080; cada servicio suma sus rutas |
 | `rabbit` | Colas quorum durables, publicar con confirmación del broker, consumir con ack manual y reconexión sola |
 | `redisdb` | Redis directo o, con `REDIS_SENTINELS`, el primario que indique Sentinel |
+| `contrato` | Validación de transacciones, el texto que se hashea, recompensa, génesis y nombres de colas y claves |
 
 ## Decisiones
 

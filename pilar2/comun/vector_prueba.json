@@ -1,0 +1,34 @@
+{
+  "descripcion": "El mismo texto + nonce tiene que dar el mismo MD5 en Python y en CUDA",
+  "genesis": {
+    "saldos": {
+      "alice": 1000,
+      "bob": 1000
+    },
+    "timestamp": 1793836800,
+    "block_hash": "bf819460f5e4a7e1b99dea601790e56f"
+  },
+  "previous_hash": "bf819460f5e4a7e1b99dea601790e56f",
+  "timestamp": 1793836860,
+  "transacciones": [
+    {
+      "id": "tx-1",
+      "origen": "alice",
+      "destino": "bob",
+      "monto": 250,
+      "timestamp": 1793836830
+    },
+    {
+      "id": "tx-2",
+      "origen": "bob",
+      "destino": "carol",
+      "monto": 75,
+      "timestamp": 1793836841
+    }
+  ],
+  "raiz": "24a6f443ef61b3fd8e144dbb91875121",
+  "texto": "bf819460f5e4a7e1b99dea601790e56f;1793836860;24a6f443ef61b3fd8e144dbb91875121;",
+  "prefijo": "0000",
+  "nonce": 1339,
+  "block_hash": "0000664df63432d4884b763055877eb2"
+}

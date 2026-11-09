@@ -8,6 +8,7 @@
 # ==============================================================================
 
 set -u
+export LC_NUMERIC=C  # printf con punto decimal aunque el sistema esté en español
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
@@ -43,7 +44,7 @@ else
 fi
 
 if command -v lscpu &> /dev/null; then
-    HW_CPU=$(lscpu 2>/dev/null | grep -i "Model name:" | sed 's/.*: *//' | tr ',' ' ' | xargs)
+    HW_CPU=$(LC_ALL=C lscpu 2>/dev/null | grep -i "Model name:" | sed 's/.*: *//' | tr ',' ' ' | xargs)
 elif [ -n "${PROCESSOR_IDENTIFIER:-}" ]; then
     HW_CPU=$(echo "$PROCESSOR_IDENTIFIER" | tr ',' ' ' | xargs)
 else

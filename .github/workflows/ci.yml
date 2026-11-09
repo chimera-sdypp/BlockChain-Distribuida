@@ -49,3 +49,5 @@ jobs:
           INTEGRACION: "1"
       - name: Imagen del ejemplo
         run: docker build --build-arg SERVICIO=ejemplo -t ejemplo .
+      - name: Imagen del backend
+        run: docker build --build-arg SERVICIO=backend -t backend .

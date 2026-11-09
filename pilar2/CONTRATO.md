@@ -52,8 +52,14 @@ Iguales para todos: `bloque = "bench;"`, rango `[0, 2^24 − 1]` y prefijo `f` �
 | `resultados` | `{tarea, rango, minero, nonce, hash}` o `{tarea, rango, minero, sin_solucion: true}` |
 | `soluciones` | `{tarea, nonce, hash, prefijo, minero}` o `{tarea, sin_solucion: true}` |
 | exchange `eventos` (topic), `bloque.confirmado` | `{tarea, block_hash, altura}` |
+| exchange `eventos` (topic), `transaccion.estado` | `{id, estado: "pendiente" \| "rechazada", motivo?}` |
 
 Todas son colas quorum durables con mensajes JSON persistentes. No hay cola `keepalive`: el gateway anota cada aviso en `nodo:<id>`.
+
+Los avisos de `eventos` los recibe cada suscriptor con su propia cola exclusiva (`Rabbit.suscribir`): cada pod del gateway se ata a `bloque.confirmado`, y cada pod del frontend a `bloque.confirmado` y `transaccion.estado`. Se publican con `Rabbit.avisar`; si no hay nadie suscripto, el aviso se pierde sin error.
+
+- `bloque.confirmado`: lo publica el NCT después de guardar el bloque y de que una réplica de Redis lo tenga (`WAIT 1`).
+- `transaccion.estado`: lo publica el NCT apenas valida una transacción, cuando la pasa a `pendiente` o `rechazada` (con `motivo`). La confirmación no usa este aviso: la anuncia `bloque.confirmado`.
 
 ## API del gateway
 
@@ -78,7 +84,7 @@ Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
 | `cajas` | lista | Cada elemento, una caja (JSON con los id); la primera es la próxima a minar |
 | `tarea:<id>` | hash | Bloque candidato, prefijo, rangos totales, sin solución, ganador y estado. El TrP escribe `bloque` (el texto), `prefijo` y `rangos` (cuántos) |
-| `nodo:<id>` | hash, permanente | tipo, placa, bench, hashes/s del último aviso y su hora |
+| `nodo:<id>` | hash, permanente | `tipo` (`gpu` o `cpu`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix). El `<id>` cumple `usuario_valido` |
 | `prestamos` | sorted set | rango prestado → cuándo vence (lo maneja el gateway) |
 
 ## Vector de prueba

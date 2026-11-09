@@ -27,7 +27,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 | `config` | Lee las variables de entorno |
 | `registro` | Logs `fecha \| NIVEL \| mensaje` a stderr, a memoria (últimas 500) y a `logs/<servicio>.log` (1 MB × 3) |
 | `web` | `/health` (503 si RabbitMQ o Redis no responden) y `/metrics` en el puerto 8080; cada servicio suma sus rutas |
-| `rabbit` | Colas quorum durables, publicar con confirmación del broker, consumir con ack manual y reconexión sola |
+| `rabbit` | Colas quorum durables, publicar con confirmación del broker, consumir con ack manual y reconexión sola; `avisar` y `suscribir` para los avisos de un exchange topic (cada suscriptor con su cola exclusiva) |
 | `redisdb` | Redis directo o, con `REDIS_SENTINELS`, el primario que indique Sentinel |
 | `contrato` | Validación de transacciones, el texto que se hashea, recompensa, génesis y nombres de colas y claves |
 
@@ -82,3 +82,24 @@ Toma cada tarea de `tareas`, elige el prefijo, la parte en rangos de nonce y pub
 
 - **Prefijo:** con p caracteres hacen falta 16^p intentos en promedio. Con la potencia viva P (la suma de los `bench` de los mineros que avisaron hace menos de 15 s), el largo es el mayor p con 16^p ≤ P × 30 s, entre 1 y `PREFIJO_BASE`. Sin GPU baja (un minero CPU de 8,6 MH/s da 6; uno de 0,5 MH/s, 5); sin mineros vivos es 1, para que el primero que llegue lo resuelva enseguida.
 - Si el pod muere a mitad, la tarea vuelve a la cola y se repite entera: `tarea:<id>` queda igual y los rangos repetidos no molestan.
+
+## Minero CPU (`minero_cpu/`)
+
+Corre fuera del cluster y sólo habla con el gateway por HTTP (API en el [contrato](CONTRATO.md#api-del-gateway)).
+
+```bash
+docker build --build-arg SERVICIO=minero_cpu -t minero-cpu .
+docker run -e GATEWAY_URL=http://<gateway>:8080 -e MINER_TOKEN=... minero-cpu
+```
+
+| Variable | Por defecto | Qué es |
+|---|---|---|
+| `GATEWAY_URL` | `http://localhost:8080` | Dónde está el gateway |
+| `MINER_TOKEN` | — (obligatoria) | Token de los mineros |
+| `MINERO_ID` | el hostname | Su id; cobra la recompensa en `saldos` |
+| `PROCESOS` | un proceso por núcleo | Procesos que recorren el rango (por el GIL, no hilos) |
+| `KEEPALIVE_SEGUNDOS` | 5 | Cada cuánto avisa que está vivo |
+
+- Devuelve el **menor** nonce del rango, como el minero GPU del Hit 7: los procesos toman trozos de 2^16 en orden.
+- Si el keep-alive contesta `cortar`, deja el rango sin mandar resultado. Si el gateway no contesta, reintenta con espera creciente.
+- En un Ryzen 5 3600: 1,7 MH/s por núcleo y 8,6 MH/s con 12 procesos (la tarea modelo, en ~2 s).

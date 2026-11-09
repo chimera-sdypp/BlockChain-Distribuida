@@ -10,8 +10,12 @@ import re
 COLAS = ("transacciones", "tareas", "rangos", "resultados", "soluciones")
 EXCHANGE_EVENTOS = "eventos"            # topic
 BLOQUE_CONFIRMADO = "bloque.confirmado"
+TRANSACCION_ESTADO = "transaccion.estado"  # el NCT validó (pendiente) o rechazó una transacción
 CADENA, SALDOS, PENDIENTES, CAJAS, PRESTAMOS = "cadena", "saldos", "tx:pendientes", "cajas", "prestamos"
 TX, BLOQUE, TAREA, NODO = "tx:{}", "bloque:{}", "tarea:{}", "nodo:{}"
+NODOS = "nodo:*"  # para SCAN: los mineros son pocos
+# Campos de nodo:<id> (los escribe el gateway): bench y hashes_por_segundo en hashes/s, ultimo_aviso en segundos Unix.
+CAMPOS_NODO = ("tipo", "placa", "bench", "hashes_por_segundo", "ultimo_aviso")
 ESTADOS_TX = ("recibida", "pendiente", "confirmada", "rechazada")
 
 CEROS = "0" * 32

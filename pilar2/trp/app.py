@@ -17,7 +17,6 @@ from .particion import largo_prefijo, partir, potencia_viva
 log = logging.getLogger("trp")
 
 TAREAS, RANGOS = "tareas", "rangos"
-NODOS = "nodo:*"  # los escribe el gateway; los mineros son pocos, alcanza con SCAN
 HASH = re.compile(r"^[0-9a-f]{32}$")
 
 RANGOS_PUBLICADOS = Counter("blockchain_rangos_publicados", "Rangos de nonce publicados en la cola rangos")
@@ -71,7 +70,7 @@ def errores_tarea(tarea):
 def elegir_prefijo(redis, ajustes, ahora):
     if not ajustes.ajustar:
         return "0" * ajustes.prefijo_base
-    nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=NODOS, count=100)]
+    nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=100)]
     potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos)
     return "0" * largo_prefijo(potencia, ajustes.segundos_objetivo, ajustes.prefijo_base)
 

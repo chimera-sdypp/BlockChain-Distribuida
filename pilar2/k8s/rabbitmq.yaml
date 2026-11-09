@@ -1,0 +1,116 @@
+# RabbitMQ: 3 nodos en cluster, cada uno con su volumen. Sólo se llega desde adentro del cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-headless   # da un nombre DNS fijo a cada pod: rabbitmq-0.rabbitmq-headless…
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true   # los nodos se encuentran antes de estar listos
+  selector:
+    app: rabbitmq
+  ports:
+    - { name: amqp, port: 5672 }
+    - { name: epmd, port: 4369 }
+    - { name: cluster, port: 25672 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq            # el que usan los servicios: RABBIT_HOST=rabbitmq
+spec:
+  type: ClusterIP
+  selector:
+    app: rabbitmq
+  ports:
+    - { name: amqp, port: 5672 }
+    - { name: management, port: 15672 }
+    - { name: prometheus, port: 15692 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+spec:
+  serviceName: rabbitmq-headless
+  replicas: 3
+  # Parallel: después de apagar todo, cada nodo espera al último que se apagó; en orden, se trabaría.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 101          # grupo rabbitmq de la imagen alpine
+      initContainers:
+        - name: iniciar
+          image: rabbitmq:4.1.8-management-alpine
+          command: ["sh", "/config/iniciar.sh"]
+          securityContext:
+            runAsUser: 100        # usuario rabbitmq: la cookie tiene que ser suya
+          env:
+            - name: RABBIT_COOKIE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_COOKIE } }
+            - name: RABBIT_USUARIO
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
+            - name: RABBIT_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+          volumeMounts:
+            - { name: datos, mountPath: /var/lib/rabbitmq }
+            - { name: config, mountPath: /config }
+            - { name: definiciones, mountPath: /definiciones }
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4.1.8-management-alpine
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            - name: RABBITMQ_NODENAME
+              value: rabbit@$(POD_NAME).rabbitmq-headless.$(POD_NAMESPACE).svc.cluster.local
+          ports:
+            - { name: amqp, containerPort: 5672 }
+            - { name: management, containerPort: 15672 }
+            - { name: prometheus, containerPort: 15692 }
+            - { name: epmd, containerPort: 4369 }
+            - { name: cluster, containerPort: 25672 }
+          volumeMounts:
+            - { name: datos, mountPath: /var/lib/rabbitmq }
+            - { name: config, mountPath: /etc/rabbitmq }
+            - { name: definiciones, mountPath: /definiciones }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: rabbitmq-config
+        - name: definiciones
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

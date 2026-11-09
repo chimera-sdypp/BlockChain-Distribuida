@@ -1,0 +1,21 @@
+# kubectl apply -k pilar2/k8s  (antes, crear el Secret: ver pilar2/README.md)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: blockchain
+
+resources:
+  - namespace.yaml
+  - rabbitmq.yaml
+  - redis.yaml
+
+configMapGenerator:
+  - name: rabbitmq-config
+    files:
+      - rabbitmq/rabbitmq.conf
+      - rabbitmq/enabled_plugins
+      - rabbitmq/colas.json
+      - rabbitmq/iniciar.sh
+  - name: redis-config
+    files:
+      - redis/iniciar.sh

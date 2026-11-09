@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockchain distribuida</title>
+<style>
+  :root {
+    --fondo: #f6f7f9; --panel: #ffffff; --texto: #1c2430; --suave: #5d6878; --borde: #dde2e8;
+    --acento: #2f6fdf; --ok: #1f8a4c; --alerta: #b7791f; --error: #c0392b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fondo: #12161c; --panel: #1a2029; --texto: #e4e8ee; --suave: #95a0b0; --borde: #2b3340;
+      --acento: #6c9cf0; --ok: #4cc27f; --alerta: #e0a84a; --error: #ef6b5e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--texto);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  h2 { font-size: 1rem; margin: 0 0 12px; }
+  section { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; padding: 16px; }
+  .estado { font-size: .85rem; color: var(--suave); display: inline-flex; align-items: center; gap: 6px; }
+  .estado::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--alerta); }
+  .estado.vivo::before { background: var(--ok); }
+  .mono { font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
+  .suave { color: var(--suave); }
+  .vacio { color: var(--suave); font-style: italic; }
+  ul.lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  details { border: 1px solid var(--borde); border-radius: 8px; padding: 8px 12px; }
+  details.nuevo { border-color: var(--acento); }
+  summary { cursor: pointer; display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+  summary .altura { font-weight: 600; min-width: 3ch; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 10px 0 0; }
+  dt { color: var(--suave); }
+  dd { margin: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: 8px; }
+  th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--borde); }
+  th { color: var(--suave); font-weight: 500; }
+  td.num, th.num { text-align: right; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Blockchain distribuida</h1>
+    <span id="conexion" class="estado">conectando…</span>
+  </header>
+
+  <section aria-labelledby="t-cadena">
+    <h2 id="t-cadena">Cadena</h2>
+    <ul id="bloques" class="lista"><li class="vacio">Cargando…</li></ul>
+  </section>
+</main>
+
+<script>
+"use strict";
+const BLOQUES_VISIBLES = 20;
+
+const $ = (id) => document.getElementById(id);
+const corto = (hash) => hash ? `${hash.slice(0, 10)}…` : "—";
+const hora = (segundos) => new Date(segundos * 1000).toLocaleString();
+
+function el(etiqueta, atributos = {}, ...hijos) {
+  const nodo = document.createElement(etiqueta);
+  for (const [clave, valor] of Object.entries(atributos)) {
+    if (clave === "clase") nodo.className = valor; else nodo.setAttribute(clave, valor);
+  }
+  for (const hijo of hijos) nodo.append(hijo);
+  return nodo;
+}
+
+async function api(ruta, opciones) {
+  const respuesta = await fetch(ruta, opciones);
+  const cuerpo = await respuesta.json().catch(() => ({}));
+  return { ok: respuesta.ok, status: respuesta.status, cuerpo };
+}
+
+// ── Cadena ──
+
+let bloques = [];  // del más nuevo al más viejo
+
+function vistaBloque(bloque, nuevo = false) {
+  const filas = bloque.transactions.map((tx) => el("tr", {},
+    el("td", { clase: "mono" }, tx.origen), el("td", { clase: "mono" }, tx.destino),
+    el("td", { clase: "num" }, String(tx.monto))));
+  return el("li", {}, el("details", nuevo ? { clase: "nuevo" } : {},
+    el("summary", {},
+      el("span", { clase: "altura" }, `#${bloque.altura}`),
+      el("span", { clase: "mono" }, corto(bloque.block_hash)),
+      el("span", { clase: "suave" }, `${bloque.transactions.length} tx`),
+      el("span", { clase: "suave" }, bloque.minero ? `minó ${bloque.minero}` : "génesis")),
+    el("dl", {},
+      el("dt", {}, "hash"), el("dd", { clase: "mono" }, bloque.block_hash),
+      el("dt", {}, "anterior"), el("dd", { clase: "mono" }, bloque.previous_hash),
+      el("dt", {}, "nonce"), el("dd", { clase: "mono" }, String(bloque.nonce)),
+      el("dt", {}, "prefijo"), el("dd", { clase: "mono" }, bloque.prefijo || "—"),
+      el("dt", {}, "recompensa"), el("dd", {}, String(bloque.recompensa)),
+      el("dt", {}, "hora"), el("dd", {}, hora(bloque.timestamp))),
+    el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "origen"), el("th", {}, "destino"), el("th", { clase: "num" }, "monto"))),
+      el("tbody", {}, ...filas))));
+}
+
+function pintarCadena(nuevo) {
+  const lista = $("bloques");
+  lista.replaceChildren(...(bloques.length
+    ? bloques.map((b) => vistaBloque(b, b.block_hash === nuevo))
+    : [el("li", { clase: "vacio" }, "Todavía no hay bloques.")]));
+}
+
+async function cargarCadena() {
+  const { ok, cuerpo } = await api(`/api/bloques?limite=${BLOQUES_VISIBLES}`);
+  if (ok) { bloques = cuerpo; pintarCadena(); }
+}
+
+async function bloqueConfirmado(aviso) {
+  if (bloques.some((b) => b.block_hash === aviso.block_hash)) return;
+  const { ok, cuerpo } = await api(`/api/bloques/${aviso.block_hash}`);
+  if (!ok) return;
+  bloques = [cuerpo, ...bloques].sort((a, b) => b.altura - a.altura).slice(0, BLOQUES_VISIBLES);
+  pintarCadena(cuerpo.block_hash);
+}
+
+// ── Todo junto ──
+
+const alConfirmarBloque = [bloqueConfirmado];
+
+function recargarTodo() {
+  return Promise.all([cargarCadena()]);
+}
+
+// ── Avisos en vivo (SSE) ──
+
+function escuchar() {
+  const fuente = new EventSource("/eventos");
+  let caido = false;
+  fuente.onopen = () => {
+    $("conexion").textContent = "en vivo";
+    $("conexion").classList.add("vivo");
+    if (caido) recargarTodo();  // pudo perderse algún aviso mientras estuvo caído
+    caido = false;
+  };
+  fuente.onerror = () => {
+    caido = true;
+    $("conexion").textContent = "reconectando…";
+    $("conexion").classList.remove("vivo");
+  };
+  fuente.addEventListener("bloque.confirmado", (e) => {
+    const aviso = JSON.parse(e.data);
+    for (const reaccion of alConfirmarBloque) reaccion(aviso);
+  });
+  return fuente;
+}
+
+recargarTodo();
+escuchar();
+</script>
+</body>
+</html>

@@ -30,8 +30,8 @@ A diferencia del **Hit 5** (que buscaba sin cota superior desde 0 hasta encontra
 Secuencia de celdas para la notebook (`SDyPP.ipynb`):
 
 ```bash
-# Celda 1: Actualizar a la rama de trabajo
-!cd BlockChain-Distribuida && git fetch origin && git checkout feat/hit7 && git pull origin feat/hit7
+# Celda 1: Actualizar el repo
+!cd BlockChain-Distribuida && git checkout dev && git pull
 
 # Celda 2: Compilación de ejecutables GPU y CPU
 !cd BlockChain-Distribuida/pilar1/hit7 && nvcc -O3 -arch=sm_75 pow_rango.cu -o pow_rango && g++ -O3 -std=c++17 pow_rango_cpu.cpp -o pow_rango_cpu
@@ -198,10 +198,47 @@ Casos de error de argumentos (E1 a E7, verifican código de salida `1` y `stdout
 
 Bordes extra: **X1** `" 5"` (espacio), **X2** `+5`, **X3** `0x10`, **X4** prefijo vacío, **X5** prefijo de 33 caracteres, **X6** cadena de 121 bytes y **X7** `min` vacío deben dar error; **X8** `min=00004409` (ceros a la izquierda, solo dígitos) es válido y da `OK nonce=4409 ... evaluados=1`.
 
-Salida real de `probar.sh` en Colab:
+Salida real de `probar.sh` en la RTX 4060 (local; se muestra la parte de `pow_rango`, la de Python y la de CPU dan lo mismo):
 
 ```text
-<<COMPLETAR CON SALIDA REAL DE COLAB>>
+============================================================
+Probando implementación: ./pow_rango
+============================================================
+  [OK] V1: rc=0 | OK nonce=4409 hash=00094898d022e691b49d68a88e947b2f evaluados=4410 segundos=0.000081 hps=54444444
+  [OK] V2: rc=2 | SIN_SOLUCION evaluados=6972 segundos=0.000079 hps=88253165
+  [OK] V3: rc=0 | OK nonce=11382 hash=000059b92efbd22f05f0389e5c4da5d8 evaluados=1 segundos=0.000066 hps=15152
+  [OK] V4: rc=2 | SIN_SOLUCION evaluados=1 segundos=0.000077 hps=12987
+  [OK] V5: rc=0 | OK nonce=0 hash=8e991d9c530d4fa1d5d253ba4cf6ab88 evaluados=1 segundos=0.000076 hps=13158
+  [OK] V6: rc=0 | OK nonce=1437713 hash=00000aac6f881c98e26f44f9b23dbf78 evaluados=389138 segundos=0.000419 hps=928730310
+  [OK] V7: rc=2 | SIN_SOLUCION evaluados=1437713 segundos=0.000614 hps=2341552117
+  [OK] V8: rc=0 | OK nonce=1437713 hash=00000aac6f881c98e26f44f9b23dbf78 evaluados=1 segundos=0.000094 hps=10638
+  [OK] V9: rc=2 | SIN_SOLUCION evaluados=668647 segundos=0.000309 hps=2163906149
+  [OK] V10: rc=0 | OK nonce=18446744073709546645 hash=003e50fab74c09ac4aa081cd03ced284 evaluados=31 segundos=0.000071 hps=436620
+  [OK] V11: rc=0 | OK nonce=18446744073709551615 hash=68ad91213fc460ec8edf04cc5c084c73 evaluados=16 segundos=0.000075 hps=213333
+  [OK] V12: rc=0 | OK nonce=0 hash=8e991d9c530d4fa1d5d253ba4cf6ab88 evaluados=1 segundos=0.000071 hps=14085
+  [OK] X8: rc=0 | OK nonce=4409 hash=00094898d022e691b49d68a88e947b2f evaluados=1 segundos=0.000072 hps=13889
+  [OK] E1: rc=1 | stdout vacío (rechazo correcto)
+  [OK] E2: rc=1 | stdout vacío (rechazo correcto)
+  [OK] E3: rc=1 | stdout vacío (rechazo correcto)
+  [OK] E4: rc=1 | stdout vacío (rechazo correcto)
+  [OK] E5: rc=1 | stdout vacío (rechazo correcto)
+  [OK] E6: rc=1 | stdout vacío (rechazo correcto)
+  [OK] E7: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X1: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X2: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X3: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X4: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X5: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X6: rc=1 | stdout vacío (rechazo correcto)
+  [OK] X7: rc=1 | stdout vacío (rechazo correcto)
+------------------------------------------------------------
+Resultado para ./pow_rango: 27/27 pruebas superadas.
+------------------------------------------------------------
+
+============================================================
+TODAS LAS IMPLEMENTACIONES PROBADAS SUPERARON LA BATERÍA (27/27)
+Implementaciones probadas: 3 (python3 referencia.py ./pow_rango_cpu ./pow_rango)
+============================================================
 ```
 
 ---
@@ -217,24 +254,33 @@ Para comparar equitativamente la capacidad de procesamiento de la CPU (C++) y de
 4. `segundos` excluye el arranque del proceso y del contexto CUDA (ver 3 bis), así que en rangos chicos ($10^5$) la GPU queda dominada por la latencia de lanzar el kernel y sincronizar: la comparación representativa es la de rangos grandes.
 5. La CPU de referencia usa **un solo hilo**; la comparación es GPU completa contra un núcleo de CPU.
 
-### Resultados Experimentales (Google Colab — GPU Tesla T4, CPU `<<COMPLETAR con lscpu>>`)
+### Resultados Experimentales (local — GPU NVIDIA GeForce RTX 4060, CPU AMD Ryzen 5 3600)
 
 Promedio de las 3 repeticiones, tomado del resumen que imprime `benchmark.sh`.
 
 | Tamaño de Rango | Tiempo CPU (s) | MH/s CPU | Tiempo GPU (s) | MH/s GPU | Speedup (GPU / CPU) |
 |:---:|:---:|:---:|:---:|:---:|:---:|
-| **$10^5$ (100.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
-| **$10^6$ (1.000.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
-| **$10^7$ (10.000.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
-| **$10^8$ (100.000.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
-| **$10^9$ (1.000.000.000)** | *(no medido: un núcleo tardaría minutos u horas)* | — | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | — |
-| **$10^{10}$ (10.000.000.000)** | *(no medido: un núcleo tardaría minutos u horas)* | — | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | — |
+| **$10^5$ (100.000)** | 0,0138 | 7,23 | 0,000101 | 998,2 | ×138 |
+| **$10^6$ (1.000.000)** | 0,140 | 7,12 | 0,000443 | 2.265,8 | ×318 |
+| **$10^7$ (10.000.000)** | 1,43 | 7,01 | 0,00448 | 2.251,0 | ×321 |
+| **$10^8$ (100.000.000)** | 14,40 | 6,95 | 0,0422 | 2.371,3 | ×341 |
+| **$10^9$ (1.000.000.000)** | *(no medido: ~2,4 min a 7 MH/s)* | — | 0,421 | 2.376,8 | — |
+| **$10^{10}$ (10.000.000.000)** | *(no medido: ~24 min a 7 MH/s)* | — | 4,54 | 2.203,1 | — |
 
 ---
 
-## Ejemplo de Ejecución (Google Colab - Tesla T4)
+## Ejemplo de Ejecución (local — RTX 4060)
+
+```bash
+./pow_rango "hit7_chimera" "000" 0 20000
+```
 
 ```text
-<<COMPLETAR CON SALIDA REAL DE COLAB>>
+Minero PoW GPU (Hit 7) — NVIDIA GeForce RTX 4060 (sm_89)
+  cadena="hit7_chimera" prefijo="000" rango=[0, 20000] (20001 nonces)
+  grilla: hasta 4096 bloques x 256 hilos = 1048576 nonces por tanda
+  tandas ejecutadas: 1
+[verificación CPU] MD5("hit7_chimera4409") = 00094898d022e691b49d68a88e947b2f -> prefijo "000" OK
+OK nonce=4409 hash=00094898d022e691b49d68a88e947b2f evaluados=4410 segundos=0.000078 hps=56538462
 ```
 

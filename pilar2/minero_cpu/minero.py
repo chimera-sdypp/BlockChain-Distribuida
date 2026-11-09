@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from comun import config, contrato, registro
@@ -84,7 +85,8 @@ class Minero:
     # --- Un ciclo: pedir, minar, devolver --------------------------------------------------
     def un_rango(self):
         """Pide un rango y lo resuelve. Devuelve False si no había trabajo."""
-        codigo, rango = self._insistir("GET", "/tasks/next")
+        # El id va en la query: el gateway presta el rango a nombre de este minero.
+        codigo, rango = self._insistir("GET", "/tasks/next?" + urllib.parse.urlencode({"minero": self.id}))
         if codigo == 204 or not rango:
             return False
         self.rango = rango
@@ -117,7 +119,7 @@ class Minero:
         while not self.detenido.wait(self.latido):
             rango = self.rango
             aviso = {"minero": self.id, "hashes_por_segundo": self.buscador.hashes_por_segundo(),
-                     "rango": rango["rango"] if rango else None}
+                     "rango": {"tarea": rango["tarea"], "rango": rango["rango"]} if rango else None}
             try:
                 _, respuesta = self.gateway.pedir("POST", "/keepalive", aviso)
             except (urllib.error.URLError, OSError) as error:

@@ -34,7 +34,7 @@ class Rabbit:
         self._colas = tuple(colas)
         self._prefetch = config.rabbit_prefetch
         self._conexion = self._canal = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # reentrante: el manejador de `tomar` puede publicar
         self._consumiendo = False
         self._detenido = False
         self._latiendo = False
@@ -108,6 +108,34 @@ class Rabbit:
         finally:
             self._consumiendo = False
             self._cerrar()
+
+    def tomar(self, cola, manejador):
+        """Saca UN mensaje de la cola y llama a manejador(dict), con ack manual (para repartir por HTTP).
+
+        Si el manejador termina bien, ack y devuelve lo que devolvió; si lanza, el mensaje vuelve
+        a la cola (nack con requeue) y la excepción sigue. Con la cola vacía devuelve None.
+        Como `publicar`, reabre la conexión si se había caído y reintenta una vez.
+        """
+        with self._lock:
+            for intento in (1, 2):
+                try:
+                    if not self.conectado():
+                        self._abrir()
+                    metodo, _, cuerpo = self._canal.basic_get(cola, auto_ack=False)
+                    break
+                except ERRORES:
+                    self._cerrar()
+                    if intento == 2:
+                        raise
+            if metodo is None:
+                return None
+            try:
+                resultado = manejador(json.loads(cuerpo))
+            except Exception:
+                self._canal.basic_nack(metodo.delivery_tag, requeue=True)
+                raise
+            self._canal.basic_ack(metodo.delivery_tag)
+            return resultado
 
     def suscripto(self):
         """True cuando la cola de `suscribir` ya está atada y recibiendo."""

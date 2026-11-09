@@ -176,3 +176,38 @@ def test_detener_corta_la_suscripcion(exchange):
     suscriptor.detener()
     hilo.join(5)
     assert not hilo.is_alive()
+
+
+# ── Tomar un mensaje con ack manual (gateway) ──
+
+def test_tomar_entrega_un_mensaje_y_le_hace_ack_si_el_manejador_termina_bien(cola):
+    rabbit = Rabbit(config.cargar("prueba"), [cola])
+    rabbit.conectar()
+    rabbit.publicar(cola, {"rango": 1})
+    rabbit.publicar(cola, {"rango": 2})
+
+    assert rabbit.tomar(cola, lambda m: m["rango"] * 10) == 10
+    assert rabbit.tomar(cola, lambda m: m["rango"] * 10) == 20
+    assert rabbit.tomar(cola, lambda m: m) is None  # ya no quedan: se les hizo ack
+    rabbit.detener()
+
+
+def test_tomar_devuelve_el_mensaje_a_la_cola_si_el_manejador_falla(cola):
+    rabbit = Rabbit(config.cargar("prueba"), [cola])
+    rabbit.conectar()
+    rabbit.publicar(cola, {"rango": 7})
+
+    def falla(mensaje):
+        raise RuntimeError("Redis caído")
+
+    with pytest.raises(RuntimeError):
+        rabbit.tomar(cola, falla)
+    assert rabbit.tomar(cola, lambda m: m) == {"rango": 7}
+    rabbit.detener()
+
+
+def test_tomar_con_la_cola_vacia_devuelve_none(cola):
+    rabbit = Rabbit(config.cargar("prueba"), [cola])
+    rabbit.conectar()
+    assert rabbit.tomar(cola, lambda m: m) is None
+    rabbit.detener()

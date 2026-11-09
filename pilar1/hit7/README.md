@@ -17,8 +17,8 @@ A diferencia del **Hit 5** (que buscaba sin cota superior desde 0 hasta encontra
 - **`cli_rango.h`**: Header común para Host que centraliza el parseo estricto de enteros de 64 bits, validación de argumentos y formateo de la línea de salida única.
 - **`md5_cpu.h`**: Implementación independiente del algoritmo MD5 (RFC 1321) en C++ para Host, utilizada para verificar el resultado ganador y en el minero de CPU.
 - **`referencia.py`**: Oráculo de referencia en Python basado exclusivamente en la librería estándar `hashlib`. Utilizado para contrastar la corrección de los algoritmos.
-- **`probar.sh`**: Suite de pruebas automatizadas que evalúa 12 vectores determinísticos (con y sin solución, bordes de 64 bits), 7 casos de error de entrada y auditoría contra `md5sum`.
-- **`benchmark.sh`**: Script de medición comparativa CPU vs GPU sobre rangos completos ($10^5$ a $10^{10}$) utilizando un prefijo imposible (`ffffffffffffffff`) y generando `resultados_benchmark.csv`.
+- **`probar.sh`**: Suite de pruebas automatizadas que evalúa 12 vectores determinísticos (con y sin solución, bordes de 64 bits), 7 casos de error de entrada, 8 bordes extra de parseo, el formato exacto de la línea de salida y auditoría contra `md5sum`. Si no hay GPU, saltea `pow_rango` con un aviso.
+- **`benchmark.sh`**: Script de medición comparativa CPU vs GPU sobre rangos completos ($10^5$ a $10^{10}$) utilizando un prefijo imposible (`ffffffffffffffff`); genera `resultados_benchmark.csv` e imprime promedios y el speedup GPU/CPU calculados a partir de ese CSV.
 - **`README.md`**: Este documento técnico.
 
 ---
@@ -38,6 +38,10 @@ Secuencia de celdas para la notebook (`SDyPP.ipynb`):
 
 # Celda 3: Batería de pruebas automatizadas
 !cd BlockChain-Distribuida/pilar1/hit7 && chmod +x probar.sh && ./probar.sh
+
+# Celda 3 bis: Revisión de memoria del kernel y hardware usado
+!cd BlockChain-Distribuida/pilar1/hit7 && compute-sanitizer ./pow_rango hit7_chimera 000 0 20000
+!nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv && lscpu | grep "Model name"
 
 # Celda 4: Benchmark comparativo CPU vs GPU y generación de CSV
 !cd BlockChain-Distribuida/pilar1/hit7 && chmod +x benchmark.sh && ./benchmark.sh
@@ -146,7 +150,14 @@ Para el Hit 7 se utiliza una variable global en GPU inicializada en `SIN_GANADOR
   atomicMin(g_mejor_off, (unsigned long long)(base_off + idx));
   ```
 - Dado que las tandas se ejecutan secuencialmente en orden ascendente de offsets, si al finalizar una tanda `g_mejor_off != SIN_GANADOR`, se interrumpe la iteración, ya que cualquier tanda posterior contendría offsets estrictamente mayores.
+- **Corte temprano dentro de la tanda:** antes de calcular el hash, cada hilo lee `g_mejor_off` y sale si ya hay un ganador con offset menor que el suyo (no podría ganar). Esto no cambia el resultado, solo ahorra trabajo.
+- `SIN_GANADOR = 2^64-1` es un centinela seguro: como se rechaza el rango completo, el offset máximo posible es `total = max - min < 2^64-1`.
 - El valor devuelto es **estrictamente el menor nonce del rango**, idéntico al obtenido por una búsqueda secuencial en CPU o Python.
+
+### 3 bis. Qué miden `evaluados`, `segundos` y `hps`
+- `evaluados` es la cantidad **lógica** de nonces cubiertos (`nonce - min + 1` si hay solución, `max - min + 1` si no), no la cantidad de hilos lanzados: la GPU puede lanzar hasta 255 hilos de más en el último bloque (salen por la guarda) y, al encontrar, termina la tanda completa.
+- `segundos` mide solo la búsqueda: no incluye el arranque del proceso, el parseo ni la creación del contexto CUDA (que en la primera llamada puede tardar bastante más que la búsqueda en rangos chicos). Para BC-27 esto significa que el tiempo de pared de cada llamada al binario es mayor que `segundos`.
+- `hps = evaluados / segundos`, calculado con `segundos` ya redondeado a 6 decimales (si se imprime `segundos=0.000000`, `hps=0`).
 
 ### 4. Recálculo y Verificación en CPU
 Debido a que `atomicMin` opera de forma escalar sobre un entero de 64 bits y no puede transferir atómicamente un bloque de memoria contiguo (los 16 bytes del hash MD5), el host:
@@ -159,7 +170,7 @@ Debido a que `atomicMin` opera de forma escalar sobre un entero de 64 bits y no 
 
 ## Batería de Pruebas Automatizadas
 
-El script `probar.sh` verifica 19 casos de prueba exhaustivos con la cadena base `hit7_chimera`:
+El script `probar.sh` verifica 27 casos con la cadena base `hit7_chimera` (los 19 del contrato más 8 bordes extra) en cada implementación disponible. En cada caso con salida comprueba el código de retorno, que stdout tenga **exactamente una línea** con el formato del contrato, el contenido (`nonce`, `hash`, `evaluados`) y, si hay solución, que `md5sum` dé el mismo hash:
 
 | Identificador | Caso Evaluado | Prefijo | Min | Max | Retorno | Salida Esperada |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
@@ -185,6 +196,14 @@ Casos de error de argumentos (E1 a E7, verifican código de salida `1` y `stdout
 - **E6**: Cantidad insuficiente de parámetros (3 argumentos).
 - **E7**: Caracteres alfanuméricos en parámetro numérico (`1a`).
 
+Bordes extra: **X1** `" 5"` (espacio), **X2** `+5`, **X3** `0x10`, **X4** prefijo vacío, **X5** prefijo de 33 caracteres, **X6** cadena de 121 bytes y **X7** `min` vacío deben dar error; **X8** `min=00004409` (ceros a la izquierda, solo dígitos) es válido y da `OK nonce=4409 ... evaluados=1`.
+
+Salida real de `probar.sh` en Colab:
+
+```text
+<<COMPLETAR CON SALIDA REAL DE COLAB>>
+```
+
 ---
 
 ## Comparación de Rendimiento: CPU vs GPU
@@ -195,16 +214,21 @@ Para comparar equitativamente la capacidad de procesamiento de la CPU (C++) y de
 2. Se obliga a cada implementación a recorrer **el 100% de los nonces del rango**, midiendo el tiempo total de cómputo y la tasa de hash sostenida ($H/s$).
 3. Se ejecutan 3 repeticiones por cada tamaño de rango, computando los valores promedio.
 
-### Resultados Experimentales (Google Colab - Tesla T4 vs Intel Xeon)
+4. `segundos` excluye el arranque del proceso y del contexto CUDA (ver 3 bis), así que en rangos chicos ($10^5$) la GPU queda dominada por la latencia de lanzar el kernel y sincronizar: la comparación representativa es la de rangos grandes.
+5. La CPU de referencia usa **un solo hilo**; la comparación es GPU completa contra un núcleo de CPU.
 
-| Tamaño de Rango | Tiempo CPU (s) | Hashes/s CPU | Tiempo GPU (s) | Hashes/s GPU (MH/s) | Speedup (GPU / CPU) |
+### Resultados Experimentales (Google Colab — GPU Tesla T4, CPU `<<COMPLETAR con lscpu>>`)
+
+Promedio de las 3 repeticiones, tomado del resumen que imprime `benchmark.sh`.
+
+| Tamaño de Rango | Tiempo CPU (s) | MH/s CPU | Tiempo GPU (s) | MH/s GPU | Speedup (GPU / CPU) |
 |:---:|:---:|:---:|:---:|:---:|:---:|
 | **$10^5$ (100.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
 | **$10^6$ (1.000.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
 | **$10^7$ (10.000.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
 | **$10^8$ (100.000.000)** | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` |
-| **$10^9$ (1.000.000.000)** | *(Inviable por tiempo)* | *(Inviable por tiempo)* | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | — |
-| **$10^{10}$ (10.000.000.000)** | *(Inviable por tiempo)* | *(Inviable por tiempo)* | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | — |
+| **$10^9$ (1.000.000.000)** | *(no medido: un núcleo tardaría minutos u horas)* | — | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | — |
+| **$10^{10}$ (10.000.000.000)** | *(no medido: un núcleo tardaría minutos u horas)* | — | `<<COMPLETAR CON SALIDA REAL>>` | `<<COMPLETAR CON SALIDA REAL>>` | — |
 
 ---
 
@@ -213,3 +237,4 @@ Para comparar equitativamente la capacidad de procesamiento de la CPU (C++) y de
 ```text
 <<COMPLETAR CON SALIDA REAL DE COLAB>>
 ```
+

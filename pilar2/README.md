@@ -30,7 +30,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 
 ## Decisiones
 
-- Si el manejador de un mensaje falla, el mensaje vuelve a la cola una vez; si falla de nuevo, se descarta y queda en el log.
+- Si el manejador de un mensaje falla, el mensaje vuelve a la cola una vez; si falla de nuevo, se descarta y queda en el log. Si falla porque RabbitMQ o Redis no responden (p. ej. mientras Sentinel cambia el primario), vuelve a la cola siempre: así no se pierde.
 - La conexión que consume es de su hilo: para publicar desde los endpoints HTTP se usa otra instancia de `Rabbit` (ver `ejemplo/app.py`).
 - En Kubernetes, `/health` va como readiness probe: da 503 mientras falte una dependencia.
 

@@ -130,15 +130,15 @@ def test_el_suscriptor_recibe_solo_las_claves_a_las_que_se_ato(exchange):
     c = config.cargar("prueba")
     suscriptor, avisador = Rabbit(c), Rabbit(c)
     recibidos = []
-    suscribir_en_hilo(suscriptor, exchange, ["bloque.confirmado"], recibidos.append)
+    suscribir_en_hilo(suscriptor, exchange, ["bloque.confirmado"], lambda clave, aviso: recibidos.append((clave, aviso)))
     avisador.conectar()
 
     avisador.avisar(exchange, "transaccion.estado", {"id": "x"})
     avisador.avisar(exchange, "bloque.confirmado", {"block_hash": "abc"})
 
-    assert esperar(lambda: recibidos == [{"block_hash": "abc"}])
+    assert esperar(lambda: recibidos == [("bloque.confirmado", {"block_hash": "abc"})])
     time.sleep(0.5)
-    assert recibidos == [{"block_hash": "abc"}]
+    assert recibidos == [("bloque.confirmado", {"block_hash": "abc"})]
     suscriptor.detener()
     avisador.detener()
 
@@ -147,14 +147,16 @@ def test_dos_suscriptores_reciben_el_mismo_aviso(exchange):
     c = config.cargar("prueba")
     uno, otro, avisador = Rabbit(c), Rabbit(c), Rabbit(c)
     recibidos_uno, recibidos_otro = [], []
-    suscribir_en_hilo(uno, exchange, ["bloque.confirmado", "transaccion.estado"], recibidos_uno.append)
-    suscribir_en_hilo(otro, exchange, ["bloque.confirmado"], recibidos_otro.append)
+    suscribir_en_hilo(uno, exchange, ["bloque.confirmado", "transaccion.estado"],
+                      lambda clave, aviso: recibidos_uno.append(clave))
+    suscribir_en_hilo(otro, exchange, ["bloque.confirmado"], lambda clave, aviso: recibidos_otro.append(aviso))
     avisador.conectar()
 
     avisador.avisar(exchange, "bloque.confirmado", {"altura": 1})
     avisador.avisar(exchange, "transaccion.estado", {"id": "t"})
 
     assert esperar(lambda: len(recibidos_uno) == 2 and len(recibidos_otro) == 1)
+    assert sorted(recibidos_uno) == ["bloque.confirmado", "transaccion.estado"]
     assert recibidos_otro == [{"altura": 1}]
     uno.detener()
     otro.detener()
@@ -170,7 +172,7 @@ def test_avisar_sin_suscriptores_no_falla(exchange):
 
 def test_detener_corta_la_suscripcion(exchange):
     suscriptor = Rabbit(config.cargar("prueba"))
-    hilo = suscribir_en_hilo(suscriptor, exchange, ["bloque.confirmado"], lambda aviso: None)
+    hilo = suscribir_en_hilo(suscriptor, exchange, ["bloque.confirmado"], lambda clave, aviso: None)
     suscriptor.detener()
     hilo.join(5)
     assert not hilo.is_alive()

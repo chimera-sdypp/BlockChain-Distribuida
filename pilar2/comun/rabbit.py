@@ -81,7 +81,7 @@ class Rabbit:
         self._publicar(exchange, clave, mensaje, mandatory=False)
 
     def suscribir(self, exchange, claves, manejador):
-        """Bloquea el hilo: recibe los avisos de `exchange` con esas claves y llama a manejador(dict).
+        """Bloquea el hilo: recibe los avisos de `exchange` con esas claves y llama a manejador(clave, dict).
 
         Usa una cola exclusiva propia, que RabbitMQ borra al cerrarse la conexión: cada
         suscriptor (por ejemplo, cada pod) recibe todos los avisos. Si se corta la conexión,
@@ -97,7 +97,7 @@ class Rabbit:
                     cola = self._canal.queue_declare("", exclusive=True, auto_delete=True).method.queue
                     for clave in claves:
                         self._canal.queue_bind(cola, exchange, routing_key=clave)
-                    self._canal.basic_consume(cola, partial(self._entregar, exchange, manejador))
+                    self._canal.basic_consume(cola, partial(self._entregar_aviso, exchange, manejador))
                     self._suscripto = True
                     self._canal.start_consuming()
                 except ERRORES as error:
@@ -167,6 +167,10 @@ class Rabbit:
         conexion, canal = self._conexion, self._canal
         if self._consumiendo and conexion is not None and conexion.is_open:
             conexion.add_callback_threadsafe(canal.stop_consuming)
+
+    def _entregar_aviso(self, exchange, manejador, canal, metodo, propiedades, cuerpo):
+        """Como _entregar, pero el manejador recibe también la clave del aviso (`bloque.confirmado`, …)."""
+        self._entregar(exchange, partial(manejador, metodo.routing_key), canal, metodo, propiedades, cuerpo)
 
     def _entregar(self, cola, manejador, canal, metodo, propiedades, cuerpo):
         try:

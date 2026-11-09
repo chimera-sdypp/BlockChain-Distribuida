@@ -42,6 +42,23 @@
   th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--borde); }
   th { color: var(--suave); font-weight: 500; }
   td.num, th.num { text-align: right; }
+  form { display: grid; grid-template-columns: 1fr 1fr 8rem auto; gap: 8px; align-items: end; }
+  @media (max-width: 560px) { form { grid-template-columns: 1fr 1fr; } }
+  label { display: grid; gap: 4px; font-size: .85rem; color: var(--suave); }
+  input { font: inherit; color: var(--texto); background: var(--fondo); border: 1px solid var(--borde);
+          border-radius: 6px; padding: 6px 8px; width: 100%; min-width: 0; }
+  button { font: inherit; color: #fff; background: var(--acento); border: 0; border-radius: 6px;
+           padding: 7px 14px; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: wait; }
+  .mensaje { margin: 10px 0 0; font-size: .9rem; }
+  .mensaje.error { color: var(--error); }
+  .chip { display: inline-block; font-size: .78rem; padding: 1px 8px; border-radius: 999px;
+          border: 1px solid currentColor; white-space: nowrap; }
+  .chip.recibida { color: var(--suave); }
+  .chip.pendiente { color: var(--alerta); }
+  .chip.confirmada { color: var(--ok); }
+  .chip.rechazada { color: var(--error); }
+  .tx { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 </style>
 </head>
 <body>
@@ -50,6 +67,19 @@
     <h1>Blockchain distribuida</h1>
     <span id="conexion" class="estado">conectando…</span>
   </header>
+
+  <section aria-labelledby="t-transferir">
+    <h2 id="t-transferir">Transferir</h2>
+    <form id="formulario" autocomplete="off">
+      <label>Origen <input name="origen" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label>
+      <label>Destino <input name="destino" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label>
+      <label>Monto <input name="monto" required type="number" min="1" step="1"></label>
+      <button type="submit">Enviar</button>
+    </form>
+    <p id="mensaje" class="mensaje" hidden></p>
+    <h2 style="margin-top:16px">Mis transferencias</h2>
+    <ul id="mias" class="lista"><li class="vacio">Todavía no hiciste ninguna.</li></ul>
+  </section>
 
   <section aria-labelledby="t-cadena">
     <h2 id="t-cadena">Cadena</h2>
@@ -126,12 +156,106 @@ async function bloqueConfirmado(aviso) {
   pintarCadena(cuerpo.block_hash);
 }
 
+// ── Mis transferencias (las últimas 20 de este navegador) ──
+
+const MIAS_MAXIMO = 20;
+const CLAVE_MIAS = "mis-transferencias";
+let mias = [];  // [{id, origen, destino, monto, estado, motivo?, bloque?}], la más nueva primero
+
+function leerIdsGuardados() {
+  try { return JSON.parse(localStorage.getItem(CLAVE_MIAS)) || []; } catch { return []; }
+}
+
+function guardarIds() {
+  try { localStorage.setItem(CLAVE_MIAS, JSON.stringify(mias.map((t) => t.id))); } catch { /* sin storage */ }
+}
+
+const cerrada = (tx) => tx.estado === "confirmada" || tx.estado === "rechazada";
+
+function pintarMias() {
+  $("mias").replaceChildren(...(mias.length ? mias.map((tx) => el("li", { clase: "tx" },
+    el("span", { clase: `chip ${tx.estado}` }, tx.estado),
+    el("span", {}, `${tx.origen} → ${tx.destino}: ${tx.monto}`),
+    el("span", { clase: "mono suave" }, corto(tx.id)),
+    tx.motivo ? el("span", { clase: "suave" }, tx.motivo) : "",
+    tx.bloque ? el("span", { clase: "suave" }, `en el bloque ${corto(tx.bloque)}`) : ""))
+    : [el("li", { clase: "vacio" }, "Todavía no hiciste ninguna.")]));
+}
+
+async function consultar(id) {
+  const { ok, status, cuerpo } = await api(`/api/transacciones/${id}`);
+  return ok ? cuerpo : status === 404 ? null : undefined;  // undefined: no se pudo saber
+}
+
+async function cargarMias() {
+  const ids = leerIdsGuardados();
+  const consultadas = await Promise.all(ids.map(consultar));
+  // null (404): ya no existe y se olvida. undefined (falló la consulta): se queda lo que había.
+  mias = ids.flatMap((id, i) => {
+    if (consultadas[i]) return [consultadas[i]];
+    if (consultadas[i] === null) return [];
+    return [mias.find((t) => t.id === id) ?? { id, origen: "?", destino: "?", monto: "?", estado: "recibida" }];
+  });
+  guardarIds();
+  pintarMias();
+}
+
+async function actualizarAbiertas() {
+  const abiertas = mias.filter((tx) => !cerrada(tx));
+  const consultadas = await Promise.all(abiertas.map((tx) => consultar(tx.id)));
+  abiertas.forEach((tx, i) => { if (consultadas[i]) Object.assign(tx, consultadas[i]); });
+  pintarMias();
+}
+
+function estadoDeTransaccion(aviso) {
+  const tx = mias.find((t) => t.id === aviso.id);
+  if (!tx || cerrada(tx)) return;
+  tx.estado = aviso.estado;
+  if (aviso.motivo) tx.motivo = aviso.motivo;
+  pintarMias();
+}
+
+function mostrarMensaje(texto, error = false) {
+  const p = $("mensaje");
+  p.textContent = texto;
+  p.classList.toggle("error", error);
+  p.hidden = !texto;
+}
+
+$("formulario").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const formulario = evento.target;
+  const datos = Object.fromEntries(new FormData(formulario));
+  const tx = { origen: datos.origen.trim(), destino: datos.destino.trim(), monto: Number(datos.monto) };
+  const boton = formulario.querySelector("button");
+  boton.disabled = true;
+  try {
+    const { ok, status, cuerpo } = await api("/api/transacciones", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+    if (ok) {
+      mias = [{ ...tx, id: cuerpo.id, estado: "recibida" }, ...mias].slice(0, MIAS_MAXIMO);
+      guardarIds();
+      pintarMias();
+      mostrarMensaje(`Recibida: ${cuerpo.id}`);
+      formulario.reset();
+    } else if (status === 400) {
+      mostrarMensaje([].concat(cuerpo.errores || "datos inválidos").join(" · "), true);
+    } else {
+      mostrarMensaje("El sistema no pudo recibirla ahora; probá de nuevo en un momento.", true);
+    }
+  } catch {
+    mostrarMensaje("No hay conexión con el servidor.", true);
+  } finally {
+    boton.disabled = false;
+  }
+});
+
 // ── Todo junto ──
 
-const alConfirmarBloque = [bloqueConfirmado];
+const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas];
 
 function recargarTodo() {
-  return Promise.all([cargarCadena()]);
+  return Promise.all([cargarCadena(), cargarMias()]);
 }
 
 // ── Avisos en vivo (SSE) ──
@@ -150,6 +274,7 @@ function escuchar() {
     $("conexion").textContent = "reconectando…";
     $("conexion").classList.remove("vivo");
   };
+  fuente.addEventListener("transaccion.estado", (e) => estadoDeTransaccion(JSON.parse(e.data)));
   fuente.addEventListener("bloque.confirmado", (e) => {
     const aviso = JSON.parse(e.data);
     for (const reaccion of alConfirmarBloque) reaccion(aviso);

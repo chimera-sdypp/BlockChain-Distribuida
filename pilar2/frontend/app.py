@@ -20,7 +20,7 @@ log = logging.getLogger("frontend")
 
 PAGINA = Path(__file__).parent / "estaticos" / "index.html"
 KEEPALIVE = 15  # segundos: así el Ingress no corta las conexiones quietas
-AVISOS = (contrato.BLOQUE_CONFIRMADO,)
+AVISOS = (contrato.BLOQUE_CONFIRMADO, contrato.TRANSACCION_ESTADO)
 
 CLIENTES = Gauge("blockchain_sse_clientes", "Navegadores conectados por SSE a este pod")
 REENVIADOS = Counter("blockchain_eventos_reenviados", "Avisos de `eventos` reenviados por SSE", ["evento"])

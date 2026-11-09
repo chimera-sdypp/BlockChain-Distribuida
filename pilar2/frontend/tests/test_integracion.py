@@ -50,3 +50,22 @@ def test_un_bloque_confirmado_publicado_en_rabbitmq_llega_por_sse(servidor, exch
     lector.cerrar()
     suscriptor.detener()
     nct.detener()
+
+
+def test_un_cambio_de_estado_de_una_transaccion_llega_por_sse(servidor, exchange):
+    puerto, difusor = servidor()
+    c = config.cargar("prueba")
+    suscriptor, nct = Rabbit(c), Rabbit(c)
+    frontend.escuchar(suscriptor, difusor, exchange=exchange)
+    assert esperar(suscriptor.suscripto)
+    lector = LectorSSE(puerto)
+    lector.siguiente()  # saludo
+
+    nct.conectar()
+    nct.avisar(exchange, "transaccion.estado", {"id": "abc", "estado": "rechazada", "motivo": "saldo insuficiente"})
+
+    assert lector.siguiente() == ("evento", "transaccion.estado",
+                                  {"id": "abc", "estado": "rechazada", "motivo": "saldo insuficiente"})
+    lector.cerrar()
+    suscriptor.detener()
+    nct.detener()

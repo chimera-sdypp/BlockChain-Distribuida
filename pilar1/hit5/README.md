@@ -42,7 +42,14 @@ chmod +x probar.sh
 
 ---
 
-## Ejemplo de Ejecución (Tesla T4 en Colab / RTX 4060)
+## Ejemplo de Ejecución (RTX 4060, local)
+
+> [!NOTE]
+> Una versión anterior de este README mostraba una salida con `MD5("bloque_inicial58412") = cafe3b18...`. Ese ejemplo **no era una ejecución real**: el MD5 verdadero de `bloque_inicial58412` es `10eba3db7b5c10a885ef500dc0395f14`, que no empieza con `cafe`. Abajo va, en su lugar, la salida de una ejecución real en la RTX 4060.
+
+```bash
+nvcc -O3 -arch=sm_89 pow.cu -o pow && ./pow "bloque_inicial" "cafe"
+```
 
 ```text
 ============================================================
@@ -53,23 +60,26 @@ Prefijo buscado:    "cafe" (longitud: 4 caracteres hex)
 Configuración GPU:  4096 bloques x 256 hilos = 1048576 hilos/tanda
 Iniciando búsqueda masiva en GPU...
 
+
 ------------------------------------------------------------
 ¡Solución Encontrada por GPU!
-  Nonce ganador:      58412
-  Hash MD5 (GPU):     cafe3b18e61209bca376045391da40ef
+  Nonce ganador:      88080
+  Hash MD5 (GPU):     cafe0a9800028fb078bbe9328dda1d98
   Tandas ejecutadas:  1
-  Hashes evaluados:   58413
-  Tiempo total:       0.0098 s
-  Rendimiento:        89.45 MH/s (millones de hashes/segundo)
+  Hashes evaluados:   88081
+  Tiempo total:       0.0002 s
+  Rendimiento:        524.48 MH/s (millones de hashes/segundo)
 
 ------------------------------------------------------------
 [Verificación en CPU]:
-  Texto concatenado:  "bloque_inicial58412"
-  Hash MD5 (CPU):     cafe3b18e61209bca376045391da40ef
+  Texto concatenado:  "bloque_inicial88080"
+  Hash MD5 (CPU):     cafe0a9800028fb078bbe9328dda1d98
   Prefijo verificado: OK (coincide con "cafe")
   Estado:             VALIDACIÓN EXITOSA
 ------------------------------------------------------------
 ```
+
+**Qué esperar (verificado con `hashlib` de Python, no con la GPU):** en la primera tanda (nonces 0 a 1.048.575) hay **19** nonces cuyo MD5 empieza con `cafe`; el menor es `88080` (`cafe0a9800028fb078bbe9328dda1d98`). Como este minero usa `atomicCAS` (gana el primer hilo que llega, no el de menor nonce), la GPU puede devolver **cualquiera** de esos 19 y el nonce puede cambiar entre ejecuciones; por la misma razón, "Hashes evaluados" (`nonce + 1`) es solo una aproximación. El Hit 7 (`pilar1/hit7`) resuelve esto con `atomicMin` y devuelve siempre el menor.
 
 ---
 

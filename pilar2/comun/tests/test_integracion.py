@@ -104,3 +104,75 @@ def test_health_del_servicio_con_rabbitmq_y_redis(tmp_path, monkeypatch, cola):
     respuesta = TestClient(servicio.app).get("/health")
     assert respuesta.json() == {"prueba": "ok", "rabbitmq": "ok", "redis": "ok"}
     servicio.rabbit.detener()
+
+
+# ── Suscripción a un exchange (eventos) ──
+
+@pytest.fixture
+def exchange():
+    """Un exchange topic propio de cada test, para no mezclar avisos con un sistema corriendo."""
+    nombre = f"eventos-prueba-{uuid.uuid4().hex[:8]}"
+    yield nombre
+    limpiador = Rabbit(config.cargar("prueba"))
+    limpiador.conectar()
+    limpiador._canal.exchange_delete(nombre)
+    limpiador.detener()
+
+
+def suscribir_en_hilo(rabbit, exchange, claves, manejador):
+    hilo = threading.Thread(target=rabbit.suscribir, args=(exchange, claves, manejador), daemon=True)
+    hilo.start()
+    assert esperar(rabbit.suscripto)
+    return hilo
+
+
+def test_el_suscriptor_recibe_solo_las_claves_a_las_que_se_ato(exchange):
+    c = config.cargar("prueba")
+    suscriptor, avisador = Rabbit(c), Rabbit(c)
+    recibidos = []
+    suscribir_en_hilo(suscriptor, exchange, ["bloque.confirmado"], lambda clave, aviso: recibidos.append((clave, aviso)))
+    avisador.conectar()
+
+    avisador.avisar(exchange, "transaccion.estado", {"id": "x"})
+    avisador.avisar(exchange, "bloque.confirmado", {"block_hash": "abc"})
+
+    assert esperar(lambda: recibidos == [("bloque.confirmado", {"block_hash": "abc"})])
+    time.sleep(0.5)
+    assert recibidos == [("bloque.confirmado", {"block_hash": "abc"})]
+    suscriptor.detener()
+    avisador.detener()
+
+
+def test_dos_suscriptores_reciben_el_mismo_aviso(exchange):
+    c = config.cargar("prueba")
+    uno, otro, avisador = Rabbit(c), Rabbit(c), Rabbit(c)
+    recibidos_uno, recibidos_otro = [], []
+    suscribir_en_hilo(uno, exchange, ["bloque.confirmado", "transaccion.estado"],
+                      lambda clave, aviso: recibidos_uno.append(clave))
+    suscribir_en_hilo(otro, exchange, ["bloque.confirmado"], lambda clave, aviso: recibidos_otro.append(aviso))
+    avisador.conectar()
+
+    avisador.avisar(exchange, "bloque.confirmado", {"altura": 1})
+    avisador.avisar(exchange, "transaccion.estado", {"id": "t"})
+
+    assert esperar(lambda: len(recibidos_uno) == 2 and len(recibidos_otro) == 1)
+    assert sorted(recibidos_uno) == ["bloque.confirmado", "transaccion.estado"]
+    assert recibidos_otro == [{"altura": 1}]
+    uno.detener()
+    otro.detener()
+    avisador.detener()
+
+
+def test_avisar_sin_suscriptores_no_falla(exchange):
+    avisador = Rabbit(config.cargar("prueba"))
+    avisador.conectar()
+    avisador.avisar(exchange, "bloque.confirmado", {"altura": 1})
+    avisador.detener()
+
+
+def test_detener_corta_la_suscripcion(exchange):
+    suscriptor = Rabbit(config.cargar("prueba"))
+    hilo = suscribir_en_hilo(suscriptor, exchange, ["bloque.confirmado"], lambda clave, aviso: None)
+    suscriptor.detener()
+    hilo.join(5)
+    assert not hilo.is_alive()

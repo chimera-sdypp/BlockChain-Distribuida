@@ -38,6 +38,8 @@ class Rabbit:
         self._consumiendo = False
         self._detenido = False
         self._latiendo = False
+        self._suscripto = False
+        self._exchanges = set()  # los ya declarados en la conexión actual
 
     def conectado(self):
         return self._conexion is not None and self._conexion.is_open
@@ -68,6 +70,50 @@ class Rabbit:
         Si la conexión se había caído la reabre y reintenta una vez (salvo en la
         instancia que consume, que se reconecta en su propio bucle).
         """
+        self._publicar("", cola, mensaje, mandatory=True)
+
+    def avisar(self, exchange, clave, mensaje):
+        """Publica un aviso en un exchange topic (por ejemplo `eventos`, `bloque.confirmado`).
+
+        Lo reciben todos los suscriptores atados a esa clave; si no hay ninguno, el aviso se
+        pierde sin error (a diferencia de `publicar`, que exige que la cola exista).
+        """
+        self._publicar(exchange, clave, mensaje, mandatory=False)
+
+    def suscribir(self, exchange, claves, manejador):
+        """Bloquea el hilo: recibe los avisos de `exchange` con esas claves y llama a manejador(clave, dict).
+
+        Usa una cola exclusiva propia, que RabbitMQ borra al cerrarse la conexión: cada
+        suscriptor (por ejemplo, cada pod) recibe todos los avisos. Si se corta la conexión,
+        reconecta y vuelve a declarar el exchange, la cola y las ataduras. Los avisos que
+        lleguen mientras está desconectado se pierden. Se corta con `detener`.
+        """
+        self._consumiendo = True
+        try:
+            while not self._detenido:
+                self.conectar()
+                try:
+                    self._declarar_exchange(exchange)
+                    cola = self._canal.queue_declare("", exclusive=True, auto_delete=True).method.queue
+                    for clave in claves:
+                        self._canal.queue_bind(cola, exchange, routing_key=clave)
+                    self._canal.basic_consume(cola, partial(self._entregar_aviso, exchange, manejador))
+                    self._suscripto = True
+                    self._canal.start_consuming()
+                except ERRORES as error:
+                    log.warning("Se cortó la suscripción a %s (%r); reconecto", exchange, error)
+                    self._cerrar()
+                finally:
+                    self._suscripto = False
+        finally:
+            self._consumiendo = False
+            self._cerrar()
+
+    def suscripto(self):
+        """True cuando la cola de `suscribir` ya está atada y recibiendo."""
+        return self._suscripto
+
+    def _publicar(self, exchange, clave, mensaje, mandatory):
         cuerpo = json.dumps(mensaje).encode()
         propiedades = pika.BasicProperties(content_type="application/json", delivery_mode=2)
         with self._lock:
@@ -78,13 +124,21 @@ class Rabbit:
                         if self._consumiendo:
                             raise AMQPConnectionError("se cayó la conexión del consumidor")
                         self._abrir()
-                    self._canal.basic_publish("", cola, cuerpo, propiedades, mandatory=True)
+                    if exchange:
+                        self._declarar_exchange(exchange)
+                    self._canal.basic_publish(exchange, clave, cuerpo, propiedades, mandatory=mandatory)
                     return
                 except ERRORES:
                     if not self._consumiendo:
                         self._cerrar()
                     if intento == intentos:
                         raise
+
+    def _declarar_exchange(self, exchange):
+        """Idempotente: si ya existe con la misma forma (como `eventos` en colas.json), no cambia nada."""
+        if exchange not in self._exchanges:
+            self._canal.exchange_declare(exchange, exchange_type="topic", durable=True)
+            self._exchanges.add(exchange)
 
     def consumir(self, cola, manejador):
         """Bloquea el hilo: por cada mensaje llama a manejador(dict) y hace ack si termina bien.
@@ -108,11 +162,15 @@ class Rabbit:
             self._cerrar()
 
     def detener(self):
-        """Corta `consumir` (se puede llamar desde otro hilo) y el latido."""
+        """Corta `consumir` o `suscribir` (se puede llamar desde otro hilo) y el latido."""
         self._detenido = True
         conexion, canal = self._conexion, self._canal
         if self._consumiendo and conexion is not None and conexion.is_open:
             conexion.add_callback_threadsafe(canal.stop_consuming)
+
+    def _entregar_aviso(self, exchange, manejador, canal, metodo, propiedades, cuerpo):
+        """Como _entregar, pero el manejador recibe también la clave del aviso (`bloque.confirmado`, …)."""
+        self._entregar(exchange, partial(manejador, metodo.routing_key), canal, metodo, propiedades, cuerpo)
 
     def _entregar(self, cola, manejador, canal, metodo, propiedades, cuerpo):
         try:
@@ -134,6 +192,7 @@ class Rabbit:
         self._canal = self._conexion.channel()
         self._canal.confirm_delivery()
         self._canal.basic_qos(prefetch_count=self._prefetch)
+        self._exchanges = set()
         for cola in self._colas:
             # quorum: la cola se replica en los nodos del cluster de RabbitMQ.
             self._canal.queue_declare(cola, durable=True, arguments={"x-queue-type": "quorum"})

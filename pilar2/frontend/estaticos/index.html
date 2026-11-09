@@ -87,6 +87,11 @@
     <ul id="pendientes" class="lista"></ul>
   </section>
 
+  <section aria-labelledby="t-mineros">
+    <h2 id="t-mineros">Mineros vivos</h2>
+    <div id="mineros" class="suave">Cargando…</div>
+  </section>
+
   <section aria-labelledby="t-cadena">
     <h2 id="t-cadena">Cadena</h2>
     <ul id="bloques" class="lista"><li class="vacio">Cargando…</li></ul>
@@ -274,12 +279,40 @@ async function cargarCajas() {
     ...(resto > 0 ? [el("li", { clase: "suave" }, `y ${resto} más`)] : []));
 }
 
+// ── Mineros ──
+
+function velocidad(hashes) {
+  if (hashes == null) return "—";
+  const unidades = [["GH/s", 1e9], ["MH/s", 1e6], ["kH/s", 1e3]];
+  for (const [unidad, valor] of unidades) if (hashes >= valor) return `${(hashes / valor).toFixed(1)} ${unidad}`;
+  return `${Math.round(hashes)} H/s`;
+}
+
+async function cargarMineros() {
+  const { ok, cuerpo } = await api("/api/mineros");
+  if (!ok) return;
+  const vivos = cuerpo.filter((m) => m.vivo);
+  const caidos = cuerpo.length - vivos.length;
+  const pie = caidos ? [el("p", { clase: "suave" }, `${caidos} sin avisar hace rato`)] : [];
+  if (!vivos.length) {
+    $("mineros").replaceChildren(el("p", { clase: "vacio" }, "No hay mineros vivos."), ...pie);
+    return;
+  }
+  $("mineros").replaceChildren(el("table", {},
+    el("thead", {}, el("tr", {}, ...["minero", "tipo", "placa", "bench", "ahora", "saldo"]
+      .map((t, i) => el("th", i >= 3 ? { clase: "num" } : {}, t)))),
+    el("tbody", {}, ...vivos.map((m) => el("tr", {},
+      el("td", { clase: "mono" }, m.id), el("td", {}, m.tipo ?? "—"), el("td", {}, m.placa ?? "—"),
+      el("td", { clase: "num" }, velocidad(m.bench)), el("td", { clase: "num" }, velocidad(m.hashes_por_segundo)),
+      el("td", { clase: "num" }, String(m.saldo)))))), ...pie);
+}
+
 // ── Todo junto ──
 
-const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas];
+const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas, cargarMineros];
 
 function recargarTodo() {
-  return Promise.all([cargarCadena(), cargarMias(), cargarCajas()]);
+  return Promise.all([cargarCadena(), cargarMias(), cargarCajas(), cargarMineros()]);
 }
 
 // ── Avisos en vivo (SSE) ──

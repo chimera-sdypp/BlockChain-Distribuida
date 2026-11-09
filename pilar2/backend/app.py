@@ -43,6 +43,7 @@ def invalido(errores):
 LOTE_MAXIMO = 1000
 LIMITE_BLOQUES, LIMITE_MAXIMO_BLOQUES = 20, 100
 PENDIENTES_VISIBLES = 50
+MINERO_VIVO_SEGUNDOS = 15  # el keep-alive es cada 5 s: tres avisos perdidos y se lo da por caído
 CAMPOS_ENTEROS_BLOQUE = ("nonce", "timestamp", "recompensa", "altura")
 
 
@@ -72,7 +73,19 @@ def nueva_transaccion(datos):
             "monto": datos["monto"], "timestamp": int(time.time())}
 
 
-def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LOTE_MAXIMO):
+def _numero(texto):
+    """Lo que Redis guarda como texto, como entero si se puede y si no como decimal."""
+    try:
+        return int(texto)
+    except (TypeError, ValueError):
+        try:
+            return float(texto)
+        except (TypeError, ValueError):
+            return None
+
+
+def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LOTE_MAXIMO,
+                  minero_vivo=MINERO_VIVO_SEGUNDOS):
     def registrar_y_encolar(txs):
         """Primero Redis y después la cola: así el NCT nunca ve una tx que todavía no está en Redis.
 
@@ -174,6 +187,26 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         return {"pendientes": pendientes, "total_pendientes": total,
                 "cajas": [len(json.loads(caja)) for caja in guardadas]}
 
+    @app.get("/api/mineros")
+    def mineros():
+        """Cada nodo:<id> que escribe el gateway, con si está vivo y su saldo (incluye lo que cobró)."""
+        claves = sorted(redis.scan_iter(match=contrato.NODOS, count=100))
+        ids = [clave.split(":", 1)[1] for clave in claves]
+        tuberia = redis.pipeline(transaction=False)
+        for clave in claves:
+            tuberia.hgetall(clave)
+        nodos = tuberia.execute()
+        saldos = redis.hmget(contrato.SALDOS, ids) if ids else []
+        ahora = time.time()
+        resultado = []
+        for id_, nodo, saldo in zip(ids, nodos, saldos):
+            minero = {"id": id_, "tipo": nodo.get("tipo"), "placa": nodo.get("placa"),
+                      **{campo: _numero(nodo.get(campo)) for campo in ("bench", "hashes_por_segundo", "ultimo_aviso")}}
+            minero["vivo"] = minero["ultimo_aviso"] is not None and ahora - minero["ultimo_aviso"] < minero_vivo
+            minero["saldo"] = int(saldo or 0)
+            resultado.append(minero)
+        return resultado
+
     @app.get("/api/saldos")
     def saldos():
         return {usuario: int(saldo) for usuario, saldo in redis.hgetall(contrato.SALDOS).items()}
@@ -225,6 +258,7 @@ def main():
     servicio = Servicio("backend", colas=[cola])
     # Nadie consume en esta conexión: se usa sólo para publicar desde los hilos HTTP.
     agregar_rutas(servicio.app, servicio.redis, servicio.rabbit, cola=cola,
-                  lote_maximo=config.entero("LOTE_MAXIMO", LOTE_MAXIMO))
+                  lote_maximo=config.entero("LOTE_MAXIMO", LOTE_MAXIMO),
+                  minero_vivo=config.entero("MINERO_VIVO_SEGUNDOS", MINERO_VIVO_SEGUNDOS))
     threading.Thread(target=servicio.rabbit.conectar, name="rabbit-conectar", daemon=True).start()
     servicio.servir_http(en_hilo=False)

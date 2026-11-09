@@ -23,12 +23,23 @@ from comun import Rabbit, Servicio, config, contrato
 log = logging.getLogger("gateway")
 
 ENTREGADAS = Counter("blockchain_tareas_entregadas", "Rangos entregados a los mineros")
+VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola porque su minero dejó de avisar")
 
 TIPOS = ("gpu", "cpu")
 MINERO_VIVO = 15  # segundos: el keep-alive es cada 5 s; tres perdidos y se lo da por caído
 
 
 PRESTAMO = "prestamo:{}"  # prestamo:<tarea>:<rango> → {mensaje, minero}
+
+# Reclama un préstamo vencido: si sigue vencido, le corre el vencimiento y devuelve 1. Así lo
+# vuelve a publicar un solo pod, y si ese pod muere antes de publicarlo, vuelve a vencer y se
+# reintenta (con un ZREM, el rango se perdería). KEYS: prestamos. ARGV: miembro, ahora, nuevo.
+LUA_RECLAMAR = """
+local vence = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if not vence or tonumber(vence) > tonumber(ARGV[2]) then return 0 end
+redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+return 1
+"""
 
 # Renueva un préstamo sólo si es de este minero: un minero lento no le estira el préstamo a otro.
 # KEYS: prestamos, prestamo:<miembro>. ARGV: miembro, minero, vencimiento nuevo.
@@ -62,6 +73,7 @@ class Gateway:
         self.cola_rangos, self.cola_resultados = cola_rangos, cola_resultados
         self.lease, self.minero_vivo = lease, minero_vivo
         self._renovar = redis.register_script(LUA_RENOVAR)
+        self._reclamar = redis.register_script(LUA_RECLAMAR)
         COLECTOR.gateway = self
 
     def autorizado(self, encabezado):
@@ -175,6 +187,29 @@ class Gateway:
                       args=[miembro, minero, time.time() + self.lease])
         return 200, {"cortar": False}
 
+    # ── Préstamos vencidos ──
+
+    def revisar_vencidos(self):
+        """Vuelve a publicar en `rangos` los préstamos vencidos (los que reclama este pod)."""
+        ahora = time.time()
+        vencidos = self.redis.zrangebyscore(contrato.PRESTAMOS, "-inf", ahora, start=0, num=100)
+        devueltos = 0
+        for miembro in vencidos:
+            if not self._reclamar(keys=[contrato.PRESTAMOS], args=[miembro, ahora, ahora + self.lease]):
+                continue  # lo reclamó otro pod
+            try:
+                prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+                mensaje = json.loads(prestamo["mensaje"]) if prestamo else None
+                if mensaje and self.tarea_en_curso(mensaje["tarea"]):
+                    self.rabbit.publicar(self.cola_rangos, mensaje)
+                    VENCIDOS.inc()
+                    devueltos += 1
+                    log.warning("El préstamo %s de %s venció: el rango vuelve a la cola", miembro, prestamo["minero"])
+                self._liberar(miembro)
+            except Exception:
+                log.exception("No se pudo devolver el préstamo %s: se reintenta cuando vuelva a vencer", miembro)
+        return devueltos
+
     # ── Métricas ──
 
     def mineros_vivos(self):
@@ -250,6 +285,15 @@ def agregar_rutas(app, gateway):
         return responder(*gateway.siguiente(minero))
 
 
+def revisar_siempre(gateway, cada):
+    while True:
+        try:
+            gateway.revisar_vencidos()
+        except Exception:
+            log.exception("Falló la revisión de préstamos vencidos")
+        time.sleep(cada)
+
+
 def main():
     servicio = Servicio("gateway")
     c = servicio.config
@@ -263,6 +307,8 @@ def main():
                       lease=config.entero("TASK_LEASE_SECONDS", 30),
                       minero_vivo=config.entero("MINERO_VIVO_SEGUNDOS", MINERO_VIVO))
     agregar_rutas(servicio.app, gateway)
+    threading.Thread(target=revisar_siempre, args=(gateway, config.entero("REVISAR_PRESTAMOS_SEGUNDOS", 5)),
+                     name="prestamos", daemon=True).start()
     for conexion in (rabbit, servicio.rabbit):  # la de los pedidos y la de /health
         threading.Thread(target=conexion.conectar, name="rabbit-conectar", daemon=True).start()
     servicio.servir_http(en_hilo=False)

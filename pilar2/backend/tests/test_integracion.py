@@ -122,7 +122,7 @@ def armar_cadena(redis, largo):
         texto = contrato.texto_bloque(hashes[-1], 1793836800 + altura, [tx])
         bloque = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "transactions": [tx],
                   "nonce": altura, "block_hash": contrato.hash_bloque(texto, altura),
-                  "prefijo": "0", "minero": "gpu-1", "recompensa": 10}
+                  "prefijo": "0", "minero": "gpu-1", "recompensa": 10, "altura": altura}
         guardar_bloque(redis, bloque)
         hashes.append(bloque["block_hash"])
     return hashes
@@ -174,6 +174,7 @@ def test_bloque_por_hash_con_su_altura(entorno):
     bloque = cliente.get(f"/api/bloques/{hashes[1]}").json()
 
     assert (bloque["altura"], bloque["block_hash"], bloque["previous_hash"]) == (1, hashes[1], hashes[0])
+    assert isinstance(bloque["altura"], int)
     assert cliente.get("/api/bloques/noexiste").status_code == 404
 
 

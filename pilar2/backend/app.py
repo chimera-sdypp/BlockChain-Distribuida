@@ -42,7 +42,7 @@ def invalido(errores):
 
 LOTE_MAXIMO = 1000
 LIMITE_BLOQUES, LIMITE_MAXIMO_BLOQUES = 20, 100
-CAMPOS_ENTEROS_BLOQUE = ("nonce", "timestamp", "recompensa")
+CAMPOS_ENTEROS_BLOQUE = ("nonce", "timestamp", "recompensa", "altura")
 
 
 def _entero(texto):
@@ -52,9 +52,9 @@ def _entero(texto):
         return None
 
 
-def _bloque(guardado, altura):
-    """bloque:<hash> como lo guarda el NCT, con los tipos de verdad y su altura en la cadena."""
-    bloque = dict(guardado, altura=altura, transactions=json.loads(guardado.get("transactions", "[]")))
+def _bloque(guardado):
+    """bloque:<hash> como lo guarda el NCT (con su altura), con los tipos de verdad."""
+    bloque = dict(guardado, transactions=json.loads(guardado.get("transactions", "[]")))
     for campo in CAMPOS_ENTEROS_BLOQUE:
         if campo in bloque:
             bloque[campo] = int(bloque[campo])
@@ -185,16 +185,14 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         for hash_ in hashes:
             tuberia.hgetall(contrato.BLOQUE.format(hash_))
         guardados = tuberia.execute()
-        return [_bloque(guardado, altura) for altura, guardado in
-                reversed(list(enumerate(guardados, start=ultima)))]
+        return [_bloque(guardado) for guardado in reversed(guardados)]
 
     @app.get("/api/bloques/{hash_}")
     def bloque(hash_: str):
         guardado = redis.hgetall(contrato.BLOQUE.format(hash_))
         if not guardado:
             return JSONResponse({"error": "no existe el bloque"}, status_code=404)
-        # O(n) sobre la cadena; alcanza mientras el contrato no guarde la altura en el bloque.
-        return _bloque(guardado, redis.lpos(contrato.CADENA, hash_))
+        return _bloque(guardado)
 
     @app.exception_handler(redislib.RedisError)
     def redis_caido(request, error):

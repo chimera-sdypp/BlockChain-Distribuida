@@ -8,18 +8,18 @@ Qué datos viajan entre los servicios. El código está en [`comun/contrato.py`]
 |---|---|---|
 | `id` | string (uuid4 hex) | backend |
 | `origen`, `destino` | string: 1 a 32 letras, números, `_` o `-` | cliente |
-| `monto` | entero > 0 | cliente |
+| `monto` | entero de 1 a 10^12 | cliente |
 | `timestamp` | entero, segundos Unix | backend |
 
-- **Formato** (backend, `validar_transaccion`): campos completos, monto entero > 0, origen ≠ destino y origen distinto de `genesis` (reservado). Si no, 400 con los errores.
+- **Formato** (backend, `validar_transaccion`): campos completos, monto entero de 1 a 10^12, origen ≠ destino y ninguno de los dos `genesis` (reservado). Si no, 400 con los errores.
 - **Saldo** (NCT): al origen le alcanza descontando sus transacciones pendientes; si no, queda `rechazada`.
 - **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` (con el motivo).
 - El destino puede no existir: se lo crea con saldo 0.
-- El monto es entero para que el texto del bloque salga igual en Python y en C++. `:` y `|` no se permiten en los usuarios porque separan campos al serializar.
+- El monto es entero para que el texto del bloque salga igual en Python y en C++. El tope es para que los saldos no desborden el entero de 64 bits de Redis (`HINCRBY`). `:` y `|` no se permiten en los usuarios porque separan campos al serializar.
 
 ## Bloque
 
-Campos: `previous_hash`, `nonce`, `timestamp`, `transactions` y `block_hash`, más `prefijo`, `minero` y `recompensa`.
+Campos: `previous_hash`, `nonce`, `timestamp`, `transactions` y `block_hash`, más `prefijo`, `minero`, `recompensa` y `altura` (posición en `cadena`; el génesis es 0).
 
 Cómo se calcula el hash:
 
@@ -36,7 +36,7 @@ block_hash     = MD5(texto + nonce)             (nonce en decimal, entero de 64 
 
 ## Recompensa
 
-La cobra el minero que encontró el nonce: `R = 10 × largo del prefijo`, sumado a `saldos[<id del minero>]`. Con eso el minero puede transferir como cualquier usuario.
+La cobra el minero que encontró el nonce: `R = 10 × largo del prefijo`, sumado a `saldos[<id del minero>]`. Con eso el minero puede transferir como cualquier usuario: por eso su id tiene el mismo formato que un usuario (`usuario_valido`).
 
 ## Tarea modelo (bench)
 
@@ -57,7 +57,7 @@ Todas son colas quorum durables con mensajes JSON persistentes. No hay cola `kee
 
 ## API del gateway
 
-Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401.
+Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el formato de un usuario; si no, 400.
 
 | Pedido | Envía el minero | Contesta el gateway |
 |---|---|---|
@@ -72,7 +72,7 @@ Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401.
 | Clave | Tipo | Contenido |
 |---|---|---|
 | `cadena` | lista | Los `block_hash` en orden; la posición es la altura y el último es la punta |
-| `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON) |
+| `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), con su `altura` |
 | `saldos` | hash | usuario → saldo |
 | `tx:<id>` | hash | origen, destino, monto, timestamp, estado, motivo y bloque |
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |

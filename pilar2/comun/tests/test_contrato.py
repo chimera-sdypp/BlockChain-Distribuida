@@ -32,6 +32,18 @@ def test_cambiar_una_transaccion_cambia_el_hash():
 
 def test_transaccion_valida():
     assert contrato.validar_transaccion({"origen": "alice", "destino": "bob", "monto": 10}) == []
+    assert contrato.validar_transaccion({"origen": "alice", "destino": "bob", "monto": contrato.MONTO_MAXIMO}) == []
+
+
+@pytest.mark.parametrize("minero, valido", [
+    ("gpu-tomas", True), ("cpu_vm_3", True), ("", False), ("vm:1", False), ("x" * 33, False), (7, False),
+])
+def test_id_del_minero_con_formato_de_usuario(minero, valido):
+    assert contrato.usuario_valido(minero) is valido
+
+
+def test_el_genesis_tiene_altura_0():
+    assert contrato.bloque_genesis({"alice": 1}, 1)["altura"] == 0
 
 
 @pytest.mark.parametrize("datos, campo", [
@@ -41,8 +53,10 @@ def test_transaccion_valida():
     ({"origen": "alice", "destino": "bob", "monto": 0}, "monto"),
     ({"origen": "alice", "destino": "bob", "monto": 1.5}, "monto"),
     ({"origen": "alice", "destino": "bob", "monto": True}, "monto"),
+    ({"origen": "alice", "destino": "bob", "monto": contrato.MONTO_MAXIMO + 1}, "monto"),
     ({"origen": "alice", "destino": "alice", "monto": 10}, "distintos"),
-    ({"origen": "genesis", "destino": "bob", "monto": 10}, "reservado"),
+    ({"origen": "genesis", "destino": "bob", "monto": 10}, "origen: «genesis»"),
+    ({"origen": "alice", "destino": "genesis", "monto": 10}, "destino: «genesis»"),
     ([1, 2], "objeto"),
 ])
 def test_transaccion_invalida(datos, campo):

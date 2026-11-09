@@ -17,6 +17,8 @@ ESTADOS_TX = ("recibida", "pendiente", "confirmada", "rechazada")
 CEROS = "0" * 32
 ORIGEN_GENESIS = "genesis"
 USUARIO = re.compile(r"^[A-Za-z0-9_-]{1,32}$")  # sin ":" ni "|", que separan campos al serializar
+# Los saldos van a Redis con HINCRBY (entero de 64 bits, hasta ~9,2 × 10^18): con este tope no se desborda.
+MONTO_MAXIMO = 10**12
 
 # Tarea modelo (bench): el prefijo no aparece nunca, así el minero recorre el rango entero.
 BENCH = {"bloque": "bench;", "desde": 0, "hasta": 2**24 - 1, "prefijo": "f" * 32}
@@ -26,6 +28,11 @@ def md5(texto):
     return hashlib.md5(texto.encode()).hexdigest()
 
 
+def usuario_valido(valor):
+    """Usuarios y ids de minero: el minero cobra la recompensa en saldos y la gasta como un usuario más."""
+    return isinstance(valor, str) and bool(USUARIO.match(valor))
+
+
 def validar_transaccion(datos):
     """Validación de formato (la hace el backend). Devuelve la lista de errores; vacía si es válida."""
     if not isinstance(datos, dict):
@@ -33,15 +40,16 @@ def validar_transaccion(datos):
     errores = []
     for campo in ("origen", "destino"):
         valor = datos.get(campo)
-        if not isinstance(valor, str) or not USUARIO.match(valor):
+        if not usuario_valido(valor):
             errores.append(f"{campo}: de 1 a 32 letras, números, «_» o «-»")
     monto = datos.get("monto")
-    if not isinstance(monto, int) or isinstance(monto, bool) or monto <= 0:
-        errores.append("monto: entero mayor que 0")
+    if not isinstance(monto, int) or isinstance(monto, bool) or not 0 < monto <= MONTO_MAXIMO:
+        errores.append(f"monto: entero entre 1 y {MONTO_MAXIMO}")
     if not errores and datos["origen"] == datos["destino"]:
         errores.append("origen y destino tienen que ser distintos")
-    if datos.get("origen") == ORIGEN_GENESIS:
-        errores.append("origen: «genesis» está reservado")
+    for campo in ("origen", "destino"):
+        if datos.get(campo) == ORIGEN_GENESIS:
+            errores.append(f"{campo}: «genesis» está reservado")
     return errores
 
 
@@ -82,4 +90,4 @@ def bloque_genesis(saldos, timestamp):
                       "monto": monto, "timestamp": timestamp} for usuario, monto in sorted(saldos.items())]
     texto = texto_bloque(CEROS, timestamp, transacciones)
     return {"previous_hash": CEROS, "timestamp": timestamp, "transactions": transacciones, "nonce": 0,
-            "block_hash": hash_bloque(texto, 0), "prefijo": "", "minero": "", "recompensa": 0}
+            "block_hash": hash_bloque(texto, 0), "prefijo": "", "minero": "", "recompensa": 0, "altura": 0}

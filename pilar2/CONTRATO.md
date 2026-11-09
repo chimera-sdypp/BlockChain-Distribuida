@@ -83,8 +83,9 @@ Todos con `Authorization: Bearer MINER_TOKEN`; sin token, 401. `minero` tiene el
 | `tx:<id>` | hash | origen, destino, monto, timestamp, estado, motivo y bloque |
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
 | `comprometido` | hash | usuario → suma de sus transacciones validadas que todavía no entraron en un bloque. Lo suma el NCT al validar y lo resta al confirmar: lo disponible es `saldos − comprometido` |
-| `cajas` | lista | Cada elemento, una caja (JSON con los id); la primera es la próxima a minar |
-| `tarea:<id>` | hash | Bloque candidato, prefijo, rangos totales, sin solución, ganador y estado |
+| `cajas` | lista | Cada elemento, una caja: una lista JSON de ids (`["a1…", "b2…"]`), de como mucho `TX_POR_CAJA`. La primera es la que se está minando o la próxima: el NCT la saca recién al confirmar su bloque |
+| `tarea:<id>` | hash | Lo escribe el NCT al armarla: `previous_hash`, `timestamp`, `transacciones` (JSON, completas y en orden), `caja` (JSON con los ids), `estado` y `publicada` (segundos Unix). Lo agrega el TrP: `prefijo` (el que eligió; el NCT verifica con éste), `rangos` y `ganador`. Estados: `en_curso`, `confirmada`, `descartada` (cambió la punta), `sin_solucion` y `rechazada` (no pasó la verificación) |
+| `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Si el NCT muere, vence y se vuelve a armar la misma caja |
 | `nodo:<id>` | hash, permanente | `tipo` (`gpu` o `cpu`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix). El `<id>` cumple `usuario_valido` |
 | `prestamos` | sorted set | rango prestado → cuándo vence (lo maneja el gateway) |
 

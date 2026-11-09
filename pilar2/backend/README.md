@@ -49,3 +49,17 @@ Medido en local (un pod, RabbitMQ y Redis en Docker, 16 núcleos), con 1.000 POS
 | Lotes de 1.000 | ~1.100 |
 
 Lo que frena es la confirmación del broker, que `comun/rabbit.py` espera mensaje por mensaje. Con 2 pods, 100.000 transacciones (BC-38) entran en ~45 s. Si hace falta más, el paso siguiente es publicar con confirmaciones asíncronas en `comun/`.
+
+## Desplegar en k3s
+
+El manifiesto es `k8s/backend.yaml`: un Deployment con 2 réplicas y un Service ClusterIP en el 8080. Usa `RABBIT_HOST=rabbitmq`, `REDIS_SENTINELS=redis:26379` y las claves del Secret `blockchain-secretos`. Hasta que haya registry, la imagen se importa a mano:
+
+```bash
+docker build --build-arg SERVICIO=backend -t backend:dev .
+docker save backend:dev | sudo k3s ctr images import -
+kubectl apply -k k8s
+kubectl -n blockchain rollout status deploy/backend
+kubectl -n blockchain port-forward svc/backend 8080:8080   # y los curl de arriba
+```
+
+La readiness usa `/health`: si el pod no llega a RabbitMQ o a Redis, sale del Service. La liveness usa `/metrics`, para que no lo reinicie mientras RabbitMQ o Redis están caídos.

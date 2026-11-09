@@ -1,0 +1,64 @@
+# Backend (BC-20): la API de transacciones. Sin estado, así que 2 réplicas cualesquiera.
+# La imagen se construye e importa a mano en k3s (ver pilar2/backend/README.md) hasta que haya
+# Artifact Registry (BC-31); ahí se cambia con `images:` en el kustomization.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels: { app: backend }
+spec:
+  selector: { app: backend }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels: { app: backend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: backend }
+  template:
+    metadata:
+      labels: { app: backend }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: backend
+          image: backend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: RABBIT_HOST, value: rabbitmq }
+            - { name: REDIS_SENTINELS, value: "redis:26379" }
+            - name: RABBIT_USUARIO
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
+            - name: RABBIT_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+            - name: REDIS_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          # /health da 503 si no llega a RabbitMQ o a Redis: sale del Service hasta que vuelvan.
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # Para reiniciarlo sólo si el proceso se colgó, no si RabbitMQ o Redis están caídos:
+          # /metrics no depende de ellos.
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001     # el usuario «app» del Dockerfile; con un nombre, runAsNonRoot no lo puede verificar

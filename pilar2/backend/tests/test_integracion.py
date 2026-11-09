@@ -192,3 +192,42 @@ def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
     assert [m["id"] for m in mensajes] == ids
     assert [m["monto"] for m in mensajes] == list(range(1, 51))
     assert all(redis.hget(f"tx:{id_}", "estado") == "recibida" for id_ in ids)
+
+
+# ── Pendientes y cajas (BC-28) ──
+
+def guardar_tx(redis, id_, estado, monto=1):
+    redis.hset(f"tx:{id_}", mapping={"origen": "alice", "destino": "bob", "monto": monto,
+                                     "timestamp": 1793836800, "estado": estado})
+
+
+def test_cajas_con_las_pendientes_y_lo_apilado(entorno):
+    cliente, _, redis = entorno
+    for i in range(3):
+        guardar_tx(redis, f"p{i}", "pendiente", monto=i + 1)
+        redis.rpush("tx:pendientes", f"p{i}")
+    redis.rpush("cajas", json.dumps(["a", "b"]), json.dumps(["c"]))
+
+    respuesta = cliente.get("/api/cajas").json()
+
+    assert respuesta["total_pendientes"] == 3
+    assert [tx["id"] for tx in respuesta["pendientes"]] == ["p0", "p1", "p2"]
+    assert respuesta["pendientes"][2]["monto"] == 3 and respuesta["pendientes"][2]["estado"] == "pendiente"
+    assert respuesta["cajas"] == [2, 1]
+
+
+def test_cajas_muestra_como_mucho_50_pendientes(entorno):
+    cliente, _, redis = entorno
+    for i in range(60):
+        guardar_tx(redis, f"p{i}", "pendiente")
+        redis.rpush("tx:pendientes", f"p{i}")
+
+    respuesta = cliente.get("/api/cajas").json()
+
+    assert respuesta["total_pendientes"] == 60
+    assert len(respuesta["pendientes"]) == 50
+
+
+def test_cajas_vacias(entorno):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/cajas").json() == {"pendientes": [], "total_pendientes": 0, "cajas": []}

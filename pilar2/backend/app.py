@@ -42,6 +42,7 @@ def invalido(errores):
 
 LOTE_MAXIMO = 1000
 LIMITE_BLOQUES, LIMITE_MAXIMO_BLOQUES = 20, 100
+PENDIENTES_VISIBLES = 50
 CAMPOS_ENTEROS_BLOQUE = ("nonce", "timestamp", "recompensa", "altura")
 
 
@@ -59,6 +60,11 @@ def _bloque(guardado):
         if campo in bloque:
             bloque[campo] = int(bloque[campo])
     return bloque
+
+
+def _transaccion(id_, tx):
+    """tx:<id> como lo guardan el backend y el NCT, con los tipos de verdad."""
+    return {"id": id_, **tx, "monto": int(tx["monto"]), "timestamp": int(tx["timestamp"])}
 
 
 def nueva_transaccion(datos):
@@ -152,7 +158,21 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         tx = redis.hgetall(contrato.TX.format(id_))
         if not tx:
             return JSONResponse({"error": "no existe la transacción"}, status_code=404)
-        return {"id": id_, **tx, "monto": int(tx["monto"]), "timestamp": int(tx["timestamp"])}
+        return _transaccion(id_, tx)
+
+    @app.get("/api/cajas")
+    def cajas():
+        """Las transacciones validadas que esperan caja y cuántas hay apiladas en cada caja."""
+        tuberia = redis.pipeline(transaction=False)
+        tuberia.lrange(contrato.PENDIENTES, 0, PENDIENTES_VISIBLES - 1)
+        tuberia.llen(contrato.PENDIENTES)
+        tuberia.lrange(contrato.CAJAS, 0, -1)
+        ids, total, guardadas = tuberia.execute()
+        for id_ in ids:
+            tuberia.hgetall(contrato.TX.format(id_))
+        pendientes = [_transaccion(id_, tx) for id_, tx in zip(ids, tuberia.execute()) if tx]
+        return {"pendientes": pendientes, "total_pendientes": total,
+                "cajas": [len(json.loads(caja)) for caja in guardadas]}
 
     @app.get("/api/saldos")
     def saldos():

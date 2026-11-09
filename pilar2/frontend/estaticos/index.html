@@ -81,6 +81,12 @@
     <ul id="mias" class="lista"><li class="vacio">Todavía no hiciste ninguna.</li></ul>
   </section>
 
+  <section aria-labelledby="t-pendientes">
+    <h2 id="t-pendientes">Esperando bloque</h2>
+    <p id="resumen-cajas" class="suave">Cargando…</p>
+    <ul id="pendientes" class="lista"></ul>
+  </section>
+
   <section aria-labelledby="t-cadena">
     <h2 id="t-cadena">Cadena</h2>
     <ul id="bloques" class="lista"><li class="vacio">Cargando…</li></ul>
@@ -250,12 +256,30 @@ $("formulario").addEventListener("submit", async (evento) => {
   }
 });
 
+// ── Pendientes y cajas ──
+
+async function cargarCajas() {
+  const { ok, cuerpo } = await api("/api/cajas");
+  if (!ok) return;
+  const apiladas = cuerpo.cajas.reduce((total, n) => total + n, 0);
+  $("resumen-cajas").textContent =
+    `${cuerpo.total_pendientes} validadas sin caja · ${apiladas} en ${cuerpo.cajas.length} ` +
+    `caja${cuerpo.cajas.length === 1 ? "" : "s"}` +
+    (cuerpo.cajas.length ? ` (${cuerpo.cajas.join(", ")})` : "");
+  const resto = cuerpo.total_pendientes - cuerpo.pendientes.length;
+  $("pendientes").replaceChildren(...cuerpo.pendientes.map((tx) => el("li", { clase: "tx" },
+    el("span", { clase: "chip pendiente" }, "pendiente"),
+    el("span", {}, `${tx.origen} → ${tx.destino}: ${tx.monto}`),
+    el("span", { clase: "mono suave" }, corto(tx.id)))),
+    ...(resto > 0 ? [el("li", { clase: "suave" }, `y ${resto} más`)] : []));
+}
+
 // ── Todo junto ──
 
-const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas];
+const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas];
 
 function recargarTodo() {
-  return Promise.all([cargarCadena(), cargarMias()]);
+  return Promise.all([cargarCadena(), cargarMias(), cargarCajas()]);
 }
 
 // ── Avisos en vivo (SSE) ──

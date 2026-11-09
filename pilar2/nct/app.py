@@ -118,6 +118,19 @@ if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
 return {'confirmada', ARGV[2], altura}
 """
 
+# Cierra una tarea en curso que no terminó en bloque («sin_solucion» o «rechazada») y le pasa la
+# marca de tarea actual a la nueva, que va a minar la misma caja. Si la tarea ya no estaba en curso
+# (un aviso tardío) o la marca es de otra tarea, no hace nada.
+# KEYS: tarea:<vieja>, tarea:actual. ARGV: vieja, nueva, estado, vencimiento. Devuelve 1 si rearma.
+LUA_REARMAR = """
+if redis.call('HGET', KEYS[1], 'estado') ~= 'en_curso' then return 0 end
+local actual = redis.call('GET', KEYS[2])
+if actual and actual ~= ARGV[1] then return 0 end
+redis.call('HSET', KEYS[1], 'estado', ARGV[3])
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[4])
+return 1
+"""
+
 TAREA_ACTUAL, TICKER = contrato.TAREA_ACTUAL, "ticker"
 COLA_TAREAS = contrato.COLAS[1]  # tareas
 VENTANA, TX_POR_CAJA, TAREA_VENCE = 30, 100, 600
@@ -154,6 +167,7 @@ class Nct:
         self._cerrar_cajas = redis.register_script(LUA_CERRAR_CAJAS)
         self._soltar = redis.register_script(LUA_SOLTAR)
         self._consenso = redis.register_script(LUA_CONSENSO)
+        self._rearmar = redis.register_script(LUA_REARMAR)
         TX_PENDIENTES.set_function(self._contar_pendientes)
         TX_EN_CAJAS.set_function(self._contar_en_cajas)
 
@@ -221,11 +235,15 @@ class Nct:
         self._publicar_tarea(id_tarea, caja)
         return id_tarea
 
-    def _publicar_tarea(self, id_tarea, caja):
-        """`caja` es el texto tal cual está en `cajas`: el consenso lo compara para sacarla de la fila."""
+    def _publicar_tarea(self, id_tarea, caja, despues_de=0):
+        """`caja` es el texto tal cual está en `cajas`: el consenso lo compara para sacarla de la fila.
+
+        `despues_de`: al rearmar, el timestamp tiene que ser otro (si no, el hash a buscar es el
+        mismo y no hay soluciones nuevas), aunque se rearme en el mismo segundo.
+        """
         punta = self.redis.lindex(contrato.CADENA, -1)
         transacciones = self._transacciones(json.loads(caja))
-        timestamp = int(time.time())
+        timestamp = max(int(time.time()), despues_de + 1)
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "transacciones": json.dumps(transacciones),
             "caja": caja, "estado": "en_curso", "publicada": time.time()})
@@ -250,12 +268,25 @@ class Nct:
         if not tarea:
             log.warning("Solución para la tarea %s, que no existe: se descarta", id_tarea)
             return None
+        if mensaje.get("sin_solucion"):
+            log.info("La tarea %s volvió sin solución: se rearma su caja con otro timestamp", id_tarea)
+            return self.rearmar(id_tarea, tarea, "sin_solucion")
         transacciones = json.loads(tarea["transacciones"])
         problema = self.verificar(tarea, transacciones, mensaje)
         if problema:
             log.warning("La solución de %s para la tarea %s no sirve: %s", mensaje.get("minero"), id_tarea, problema)
-            return None
+            return self.rearmar(id_tarea, tarea, "rechazada")
         return self._guardar(id_tarea, tarea, transacciones, mensaje)
+
+    def rearmar(self, id_tarea, tarea, estado):
+        """La misma caja como una tarea nueva (otro id: el TrP ya tiene estado guardado para la vieja)."""
+        nueva = uuid.uuid4().hex
+        if not self._rearmar(keys=[contrato.TAREA.format(id_tarea), TAREA_ACTUAL],
+                             args=[id_tarea, nueva, estado, self.tarea_vence]):
+            log.info("La tarea %s ya no estaba en curso: no se rearma", id_tarea)
+            return None
+        self._publicar_tarea(nueva, tarea["caja"], despues_de=int(tarea["timestamp"]))
+        return estado
 
     @staticmethod
     def verificar(tarea, transacciones, mensaje):
@@ -287,7 +318,9 @@ class Nct:
                   contrato.COMPROMETIDO, TAREA_ACTUAL, contrato.BLOQUE.format(hash_)],
             args=[id_tarea, hash_, mensaje["minero"], recompensa, len(bloque), *plano(bloque), *movimientos])
         if resultado == "descartada":
+            # La caja sigue primera en `cajas`: se arma otra vez sobre la punta nueva.
             log.info("La tarea %s ya no extiende la punta o no sigue en curso: el bloque no entra", id_tarea)
+            self.armar_si_libre()
             return resultado
         hash_, altura = datos[0], int(datos[1])
         if resultado == "confirmada":

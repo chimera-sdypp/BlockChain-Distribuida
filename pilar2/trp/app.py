@@ -1,22 +1,25 @@
-"""TrP (pool de transacciones, P5): parte cada tarea del NCT en rangos de nonce (BC-21, NCT.2).
+"""TrP (pool de transacciones, P5): un servicio con 2 funciones.
 
-Recibir los resultados de los mineros (BC-22) va en este mismo servicio.
+- Parte cada tarea del NCT en rangos de nonce (BC-21, NCT.2): `tareas` → `rangos`.
+- Recibe lo que devuelven los mineros y le pasa al NCT el ganador (BC-22): `resultados` → `soluciones`.
 """
 
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 
 from prometheus_client import Counter, Gauge
 
-from comun import Servicio, config, contrato
+from comun import Rabbit, Servicio, config, contrato
 
 from .particion import largo_prefijo, partir, potencia_viva
+from .resultados import SOLUCIONES, recibir
 
 log = logging.getLogger("trp")
 
-TAREAS, RANGOS = "tareas", "rangos"
+TAREAS, RANGOS, RESULTADOS = "tareas", "rangos", "resultados"
 HASH = re.compile(r"^[0-9a-f]{32}$")
 
 RANGOS_PUBLICADOS = Counter("blockchain_rangos_publicados", "Rangos de nonce publicados en la cola rangos")
@@ -105,5 +108,9 @@ def main():
     servicio = Servicio("trp", colas=[TAREAS, RANGOS])
     servicio.log.info("Ajustes: %s", ajustes)
     servicio.servir_http()
-    # El consumidor publica los rangos desde su propio manejador (ver comun/rabbit.py).
+    # Una conexión por cola consumida, cada una en su hilo; cada consumidor publica desde su propio
+    # manejador (ver comun/rabbit.py).
+    de_resultados = Rabbit(servicio.config, [RESULTADOS, SOLUCIONES])
+    threading.Thread(target=de_resultados.consumir, name="resultados", daemon=True,
+                     args=(RESULTADOS, lambda r: recibir(r, servicio.redis, de_resultados.publicar))).start()
     servicio.rabbit.consumir(TAREAS, lambda tarea: particionar(tarea, servicio.redis, servicio.rabbit.publicar, ajustes))

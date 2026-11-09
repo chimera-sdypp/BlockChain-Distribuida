@@ -66,3 +66,24 @@ Los servicios usan `RABBIT_HOST=rabbitmq` y `REDIS_SENTINELS=redis:26379`, más 
 - La copia a las réplicas es asíncrona: por eso el NCT hace `WAIT 1` antes de avisar un bloque.
 - `redis/iniciar.sh` arma la configuración al arrancar: el primario es el que diga Sentinel, o redis-0 si ninguno contesta.
 - Las claves están en el [contrato](CONTRATO.md#claves-de-redis).
+
+## Minero CPU (`minero_cpu/`)
+
+Corre fuera del cluster y sólo habla con el gateway por HTTP (API en el [contrato](CONTRATO.md#api-del-gateway)).
+
+```bash
+docker build --build-arg SERVICIO=minero_cpu -t minero-cpu .
+docker run -e GATEWAY_URL=http://<gateway>:8080 -e MINER_TOKEN=... minero-cpu
+```
+
+| Variable | Por defecto | Qué es |
+|---|---|---|
+| `GATEWAY_URL` | `http://localhost:8080` | Dónde está el gateway |
+| `MINER_TOKEN` | — (obligatoria) | Token de los mineros |
+| `MINERO_ID` | el hostname | Su id; cobra la recompensa en `saldos` |
+| `PROCESOS` | un proceso por núcleo | Procesos que recorren el rango (por el GIL, no hilos) |
+| `KEEPALIVE_SEGUNDOS` | 5 | Cada cuánto avisa que está vivo |
+
+- Devuelve el **menor** nonce del rango, como el minero GPU del Hit 7: los procesos toman trozos de 2^16 en orden.
+- Si el keep-alive contesta `cortar`, deja el rango sin mandar resultado. Si el gateway no contesta, reintenta con espera creciente.
+- En un Ryzen 5 3600: 1,7 MH/s por núcleo y 8,6 MH/s con 12 procesos (la tarea modelo, en ~2 s).

@@ -11,6 +11,8 @@ resources:
   - backend.yaml
   - nct.yaml
   - gateway.yaml
+  - frontend.yaml
+  - ingress.yaml
 
 configMapGenerator:
   - name: rabbitmq-config

@@ -192,3 +192,68 @@ def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
     assert [m["id"] for m in mensajes] == ids
     assert [m["monto"] for m in mensajes] == list(range(1, 51))
     assert all(redis.hget(f"tx:{id_}", "estado") == "recibida" for id_ in ids)
+
+
+# ── Pendientes y cajas (BC-28) ──
+
+def guardar_tx(redis, id_, estado, monto=1):
+    redis.hset(f"tx:{id_}", mapping={"origen": "alice", "destino": "bob", "monto": monto,
+                                     "timestamp": 1793836800, "estado": estado})
+
+
+def test_cajas_con_las_pendientes_y_lo_apilado(entorno):
+    cliente, _, redis = entorno
+    for i in range(3):
+        guardar_tx(redis, f"p{i}", "pendiente", monto=i + 1)
+        redis.rpush("tx:pendientes", f"p{i}")
+    redis.rpush("cajas", json.dumps(["a", "b"]), json.dumps(["c"]))
+
+    respuesta = cliente.get("/api/cajas").json()
+
+    assert respuesta["total_pendientes"] == 3
+    assert [tx["id"] for tx in respuesta["pendientes"]] == ["p0", "p1", "p2"]
+    assert respuesta["pendientes"][2]["monto"] == 3 and respuesta["pendientes"][2]["estado"] == "pendiente"
+    assert respuesta["cajas"] == [2, 1]
+
+
+def test_cajas_muestra_como_mucho_50_pendientes(entorno):
+    cliente, _, redis = entorno
+    for i in range(60):
+        guardar_tx(redis, f"p{i}", "pendiente")
+        redis.rpush("tx:pendientes", f"p{i}")
+
+    respuesta = cliente.get("/api/cajas").json()
+
+    assert respuesta["total_pendientes"] == 60
+    assert len(respuesta["pendientes"]) == 50
+
+
+def test_cajas_vacias(entorno):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/cajas").json() == {"pendientes": [], "total_pendientes": 0, "cajas": []}
+
+
+# ── Mineros (BC-28) ──
+
+def test_mineros_con_si_estan_vivos_y_su_saldo(entorno):
+    cliente, _, redis = entorno
+    ahora = int(time.time())
+    # Lo que escribe el gateway (BC-43).
+    redis.hset("nodo:gpu-1", mapping={"tipo": "gpu", "placa": "RTX 4060", "bench": 2400000000,
+                                      "hashes_por_segundo": 2350000000.5, "ultimo_aviso": ahora - 2})
+    redis.hset("nodo:cpu-1", mapping={"tipo": "cpu", "placa": "Ryzen 7", "bench": 1100000,
+                                      "hashes_por_segundo": 1000000, "ultimo_aviso": ahora - 60})
+    redis.hset("saldos", mapping={"gpu-1": 40, "alice": 1000})
+
+    mineros = {m["id"]: m for m in cliente.get("/api/mineros").json()}
+
+    assert set(mineros) == {"gpu-1", "cpu-1"}
+    gpu = mineros["gpu-1"]
+    assert (gpu["tipo"], gpu["placa"], gpu["vivo"], gpu["saldo"]) == ("gpu", "RTX 4060", True, 40)
+    assert (gpu["bench"], gpu["hashes_por_segundo"], gpu["ultimo_aviso"]) == (2400000000, 2350000000.5, ahora - 2)
+    assert (mineros["cpu-1"]["vivo"], mineros["cpu-1"]["saldo"]) == (False, 0)
+
+
+def test_mineros_sin_mineros(entorno):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/mineros").json() == []

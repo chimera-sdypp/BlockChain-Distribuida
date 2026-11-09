@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 
-from prometheus_client import Gauge
+from prometheus_client import Counter, Gauge, Histogram
 
 from comun import Rabbit, Servicio, config, contrato
 
@@ -80,10 +80,53 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) 
 return 0
 """
 
+# El consenso (BC-26, NCT.4): agrega el bloque sólo si la tarea sigue en curso y su previous_hash
+# sigue siendo la punta de `cadena`. Todo en una sola escritura atómica: con 2 réplicas nunca
+# entran dos bloques sobre la misma punta, y una solución repetida no guarda nada dos veces.
+# KEYS: tarea:<id>, cadena, cajas, saldos, comprometido, tarea:actual, bloque:<hash>.
+# ARGV: id_tarea, block_hash, minero, recompensa, n campos, campo, valor…, (id, origen, destino, monto)…
+# Devuelve {resultado, block_hash, altura}: «confirmada», «repetida» (ya estaba confirmada: con su
+# bloque, para repetir el aviso) o «descartada» (la tarea no seguía en curso o cambió la punta).
+LUA_CONSENSO = """
+local estado = redis.call('HGET', KEYS[1], 'estado')
+if estado == 'confirmada' then
+  local hash = redis.call('HGET', KEYS[1], 'bloque')
+  return {'repetida', hash, redis.call('HGET', 'bloque:' .. hash, 'altura')}
+end
+if estado ~= 'en_curso' then return {'descartada'} end
+if redis.call('LINDEX', KEYS[2], -1) ~= redis.call('HGET', KEYS[1], 'previous_hash') then
+  redis.call('HSET', KEYS[1], 'estado', 'descartada')
+  if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
+  return {'descartada'}
+end
+local altura = redis.call('LLEN', KEYS[2])
+local n = tonumber(ARGV[5])
+for i = 6, 5 + 2 * n, 2 do redis.call('HSET', KEYS[7], ARGV[i], ARGV[i + 1]) end
+redis.call('HSET', KEYS[7], 'altura', altura)
+redis.call('RPUSH', KEYS[2], ARGV[2])
+for i = 6 + 2 * n, #ARGV, 4 do
+  local id, origen, destino, monto = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3]
+  redis.call('HINCRBY', KEYS[4], origen, -tonumber(monto))
+  redis.call('HINCRBY', KEYS[4], destino, monto)
+  redis.call('HINCRBY', KEYS[5], origen, -tonumber(monto))
+  redis.call('HSET', 'tx:' .. id, 'estado', 'confirmada', 'bloque', ARGV[2])
+end
+redis.call('HINCRBY', KEYS[4], ARGV[3], ARGV[4])
+if redis.call('LINDEX', KEYS[3], 0) == redis.call('HGET', KEYS[1], 'caja') then redis.call('LPOP', KEYS[3]) end
+redis.call('HSET', KEYS[1], 'estado', 'confirmada', 'bloque', ARGV[2])
+if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
+return {'confirmada', ARGV[2], altura}
+"""
+
 TAREA_ACTUAL, TICKER = contrato.TAREA_ACTUAL, "ticker"
 COLA_TAREAS = contrato.COLAS[1]  # tareas
 VENTANA, TX_POR_CAJA, TAREA_VENCE = 30, 100, 600
 
+BLOQUES = Counter("blockchain_bloques", "Bloques confirmados por esta réplica del NCT")
+TIEMPO_BLOQUE = Histogram("blockchain_tiempo_bloque_segundos", "Desde que se publica la tarea hasta que se confirma",
+                          buckets=(1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600))
+SIN_REPLICA = Counter("blockchain_bloques_sin_replica",
+                      "Bloques avisados sin que una réplica de Redis confirmara tenerlos a tiempo")
 TX_PENDIENTES = Gauge("blockchain_tx_pendientes", "Transacciones validadas que esperan caja")
 TX_EN_CAJAS = Gauge("blockchain_tx_en_cajas",
                     "Transacciones apiladas en cajas esperando bloque (las dos réplicas reportan lo mismo: usar max)")
@@ -110,6 +153,7 @@ class Nct:
         self._validar = redis.register_script(LUA_VALIDAR)
         self._cerrar_cajas = redis.register_script(LUA_CERRAR_CAJAS)
         self._soltar = redis.register_script(LUA_SOLTAR)
+        self._consenso = redis.register_script(LUA_CONSENSO)
         TX_PENDIENTES.set_function(self._contar_pendientes)
         TX_EN_CAJAS.set_function(self._contar_en_cajas)
 
@@ -174,16 +218,17 @@ class Nct:
         if caja is None:
             self._soltar(keys=[TAREA_ACTUAL], args=[id_tarea])
             return None
-        self._publicar_tarea(id_tarea, json.loads(caja))
+        self._publicar_tarea(id_tarea, caja)
         return id_tarea
 
     def _publicar_tarea(self, id_tarea, caja):
+        """`caja` es el texto tal cual está en `cajas`: el consenso lo compara para sacarla de la fila."""
         punta = self.redis.lindex(contrato.CADENA, -1)
-        transacciones = self._transacciones(caja)
+        transacciones = self._transacciones(json.loads(caja))
         timestamp = int(time.time())
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "transacciones": json.dumps(transacciones),
-            "caja": json.dumps(caja), "estado": "en_curso", "publicada": time.time()})
+            "caja": caja, "estado": "en_curso", "publicada": time.time()})
         self.publicador.publicar(COLA_TAREAS, {"tarea": id_tarea, "previous_hash": punta,
                                                "transacciones": transacciones, "timestamp": timestamp})
         log.info("Tarea %s publicada: %d transacciones sobre %s", id_tarea, len(transacciones), punta)
@@ -195,6 +240,75 @@ class Nct:
             tuberia.hgetall(contrato.TX.format(id_))
         return [{"id": id_, "origen": tx["origen"], "destino": tx["destino"], "monto": int(tx["monto"]),
                  "timestamp": int(tx["timestamp"])} for id_, tx in zip(ids, tuberia.execute())]
+
+    # ── BC-26: verificar, guardar y avisar ──
+
+    def procesar_solucion(self, mensaje):
+        """Una solución de `soluciones`: si es válida y extiende la punta, entra el bloque y se avisa."""
+        id_tarea = mensaje["tarea"]
+        tarea = self.redis.hgetall(contrato.TAREA.format(id_tarea))
+        if not tarea:
+            log.warning("Solución para la tarea %s, que no existe: se descarta", id_tarea)
+            return None
+        transacciones = json.loads(tarea["transacciones"])
+        problema = self.verificar(tarea, transacciones, mensaje)
+        if problema:
+            log.warning("La solución de %s para la tarea %s no sirve: %s", mensaje.get("minero"), id_tarea, problema)
+            return None
+        return self._guardar(id_tarea, tarea, transacciones, mensaje)
+
+    @staticmethod
+    def verificar(tarea, transacciones, mensaje):
+        """NCT.3: el NCT nunca confía en el minero. Devuelve el problema, o None si sirve."""
+        prefijo = tarea.get("prefijo")
+        if not prefijo:
+            return "la tarea no tiene prefijo (lo escribe el TrP)"
+        if not contrato.usuario_valido(mensaje.get("minero")):
+            return "el minero no tiene el formato de un usuario"
+        if not isinstance(mensaje.get("nonce"), int) or isinstance(mensaje.get("nonce"), bool) or mensaje["nonce"] < 0:
+            return "el nonce no es un entero positivo"
+        texto = contrato.texto_bloque(tarea["previous_hash"], int(tarea["timestamp"]), transacciones)
+        hash_ = contrato.hash_bloque(texto, mensaje["nonce"])
+        if hash_ != mensaje.get("hash"):
+            return f"el hash no coincide (da {hash_})"
+        if not contrato.cumple(hash_, prefijo):
+            return f"el hash no empieza con {prefijo}"
+        return None
+
+    def _guardar(self, id_tarea, tarea, transacciones, mensaje):
+        prefijo, hash_ = tarea["prefijo"], mensaje["hash"]
+        recompensa = contrato.recompensa(prefijo)
+        bloque = {"previous_hash": tarea["previous_hash"], "timestamp": tarea["timestamp"],
+                  "transactions": json.dumps(transacciones), "nonce": mensaje["nonce"], "block_hash": hash_,
+                  "prefijo": prefijo, "minero": mensaje["minero"], "recompensa": recompensa}
+        movimientos = [str(x) for tx in transacciones for x in (tx["id"], tx["origen"], tx["destino"], tx["monto"])]
+        resultado, *datos = self._consenso(
+            keys=[contrato.TAREA.format(id_tarea), contrato.CADENA, contrato.CAJAS, contrato.SALDOS,
+                  contrato.COMPROMETIDO, TAREA_ACTUAL, contrato.BLOQUE.format(hash_)],
+            args=[id_tarea, hash_, mensaje["minero"], recompensa, len(bloque), *plano(bloque), *movimientos])
+        if resultado == "descartada":
+            log.info("La tarea %s ya no extiende la punta o no sigue en curso: el bloque no entra", id_tarea)
+            return resultado
+        hash_, altura = datos[0], int(datos[1])
+        if resultado == "confirmada":
+            BLOQUES.inc()
+            TIEMPO_BLOQUE.observe(max(0.0, time.time() - float(tarea["publicada"])))
+            log.info("Bloque %d confirmado: %s (minó %s, cobra %d)", altura, hash_, mensaje["minero"], recompensa)
+        self._esperar_replica(hash_)
+        self.publicador.avisar(contrato.EXCHANGE_EVENTOS, contrato.BLOQUE_CONFIRMADO,
+                               {"tarea": id_tarea, "block_hash": hash_, "altura": altura})
+        self.armar_si_libre()
+        return resultado
+
+    def _esperar_replica(self, hash_):
+        """Que una réplica de Redis tenga el bloque antes de anunciarlo (WAIT). Si no llega a tiempo,
+        se avisa igual: el bloque ya está en el primario con AOF, y callarlo dejaría a todos esperando."""
+        if self.wait_replicas <= 0:
+            return
+        confirmaron = self.redis.execute_command("WAIT", self.wait_replicas, self.wait_ms)
+        if confirmaron < self.wait_replicas:
+            SIN_REPLICA.inc()
+            log.warning("El bloque %s se avisa con %d de %d réplicas de Redis", hash_, confirmaron, self.wait_replicas)
 
     def _contar_pendientes(self):
         try:
@@ -234,6 +348,7 @@ def main():
     publicador.conectar()
     servicio.rabbit.conectar()  # la de /health
     consumir(c, contrato.COLAS[0], nct.validar)  # transacciones
+    consumir(c, contrato.COLAS[4], nct.procesar_solucion)  # soluciones
     threading.Thread(target=tictac, args=(nct,), name="ticker", daemon=True).start()
     threading.Event().wait()
 

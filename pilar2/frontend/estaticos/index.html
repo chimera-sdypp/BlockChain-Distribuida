@@ -218,9 +218,19 @@ async function actualizarAbiertas() {
   pintarMias();
 }
 
+// El NCT valida en milisegundos: el aviso puede llegar por SSE antes que la respuesta del POST.
+// Los avisos de ids que todavía no conocemos se guardan un rato y se aplican al registrar la tx.
+const AVISOS_GUARDADOS = 200;
+const avisosSinDueño = new Map();
+
 function estadoDeTransaccion(aviso) {
   const tx = mias.find((t) => t.id === aviso.id);
-  if (!tx || cerrada(tx)) return;
+  if (!tx) {
+    avisosSinDueño.set(aviso.id, aviso);
+    if (avisosSinDueño.size > AVISOS_GUARDADOS) avisosSinDueño.delete(avisosSinDueño.keys().next().value);
+    return;
+  }
+  if (cerrada(tx)) return;
   tx.estado = aviso.estado;
   if (aviso.motivo) tx.motivo = aviso.motivo;
   pintarMias();
@@ -247,6 +257,8 @@ $("formulario").addEventListener("submit", async (evento) => {
       mias = [{ ...tx, id: cuerpo.id, estado: "recibida" }, ...mias].slice(0, MIAS_MAXIMO);
       guardarIds();
       pintarMias();
+      const adelantado = avisosSinDueño.get(cuerpo.id);
+      if (adelantado) { avisosSinDueño.delete(cuerpo.id); estadoDeTransaccion(adelantado); }
       mostrarMensaje(`Recibida: ${cuerpo.id}`);
       formulario.reset();
     } else if (status === 400) {

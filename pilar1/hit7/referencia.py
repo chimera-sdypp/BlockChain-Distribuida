@@ -23,6 +23,7 @@ Códigos de retorno:
 """
 
 import hashlib
+import os
 import re
 import sys
 import time
@@ -37,6 +38,30 @@ def error(msg: str) -> None:
     sys.exit(1)
 
 
+def parsear_u64(texto: str):
+    """Entero decimal sin signo de 64 bits, solo [0-9]+. Devuelve None si no es válido.
+
+    Se sacan los ceros a la izquierda antes de convertir: así "0000...05" es válido
+    (igual que en C) y un número con miles de dígitos no choca con el límite de
+    dígitos de int() de Python 3.11+ (ValueError).
+    """
+    if not re.fullmatch(r"[0-9]+", texto):
+        return None
+    significativo = texto.lstrip("0") or "0"
+    if len(significativo) > 20:
+        return None
+    valor = int(significativo)
+    return valor if valor <= MAX_U64 else None
+
+
+def formatear_metricas(evaluados: int, duracion: float) -> str:
+    """segundos con 6 decimales y hps calculado con ESE mismo valor redondeado
+    (si se imprime segundos=0.000000, hps=0), igual que cli_rango.h."""
+    segundos = round(duracion, 6)
+    hps = evaluados / segundos if segundos > 0 else 0.0
+    return f"segundos={segundos:.6f} hps={hps:.0f}"
+
+
 def main() -> None:
     args = sys.argv[1:]
     if len(args) != 4:
@@ -45,8 +70,9 @@ def main() -> None:
 
     cadena_str, prefijo_str, min_str, max_str = args
 
-    # Validar cadena
-    cadena_bytes = cadena_str.encode("utf-8")
+    # Validar cadena. os.fsencode devuelve los bytes EXACTOS que recibió el proceso
+    # (los mismos que ven los binarios C en argv), también si no es ASCII.
+    cadena_bytes = os.fsencode(cadena_str)
     if len(cadena_bytes) > CADENA_MAX_BYTES:
         error(f"la cadena base no puede superar los {CADENA_MAX_BYTES} bytes (tiene {len(cadena_bytes)}).")
 
@@ -56,17 +82,13 @@ def main() -> None:
     prefijo = prefijo_str.lower()
 
     # Validar min y max (solo dígitos, sin signos ni espacios, rango u64)
-    if not re.fullmatch(r"[0-9]+", min_str):
+    min_val = parsear_u64(min_str)
+    if min_val is None:
         error(f"min inválido \"{min_str}\" (solo dígitos, 0 a {MAX_U64}).")
-    min_val = int(min_str)
-    if min_val > MAX_U64:
-        error(f"min inválido \"{min_str}\" (supera {MAX_U64}).")
 
-    if not re.fullmatch(r"[0-9]+", max_str):
+    max_val = parsear_u64(max_str)
+    if max_val is None:
         error(f"max inválido \"{max_str}\" (solo dígitos, 0 a {MAX_U64}).")
-    max_val = int(max_str)
-    if max_val > MAX_U64:
-        error(f"max inválido \"{max_str}\" (supera {MAX_U64}).")
 
     if min_val > max_val:
         error(f"min ({min_val}) es mayor que max ({max_val}).")
@@ -80,8 +102,12 @@ def main() -> None:
     encontrado = False
     hash_encontrado = ""
 
+    # El estado MD5 de la cadena se calcula una vez y se copia en cada intento.
+    md5_base = hashlib.md5(cadena_bytes)
     while n <= max_val:
-        h = hashlib.md5(f"{cadena_str}{n}".encode("ascii")).hexdigest()
+        m = md5_base.copy()
+        m.update(str(n).encode("ascii"))  # el nonce en decimal sí es siempre ASCII
+        h = m.hexdigest()
         if h.startswith(prefijo):
             encontrado = True
             hash_encontrado = h
@@ -93,15 +119,16 @@ def main() -> None:
 
     if encontrado:
         evaluados = n - min_val + 1
-        hps = evaluados / duracion if duracion > 0 else 0.0
-        print(f"OK nonce={n} hash={hash_encontrado} evaluados={evaluados} segundos={duracion:.6f} hps={hps:.0f}")
+        print(f"OK nonce={n} hash={hash_encontrado} evaluados={evaluados} "
+              f"{formatear_metricas(evaluados, duracion)}", flush=True)
         sys.exit(0)
     else:
         evaluados = max_val - min_val + 1
-        hps = evaluados / duracion if duracion > 0 else 0.0
-        print(f"SIN_SOLUCION evaluados={evaluados} segundos={duracion:.6f} hps={hps:.0f}")
+        print(f"SIN_SOLUCION evaluados={evaluados} {formatear_metricas(evaluados, duracion)}",
+              flush=True)
         sys.exit(2)
 
 
 if __name__ == "__main__":
     main()
+

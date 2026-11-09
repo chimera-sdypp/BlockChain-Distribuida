@@ -1,0 +1,66 @@
+# Gateway de los mineros (BC-43): la única puerta de los mineros (fuera del cluster) al sistema.
+# 2 réplicas sin estado: los préstamos de los rangos están en Redis. Su propio LoadBalancer en el
+# 8081 (el 80 es del Ingress). La imagen se construye a mano (ver pilar2/gateway/README.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels: { app: gateway }
+spec:
+  type: LoadBalancer
+  selector: { app: gateway }
+  ports:
+    - { name: http, port: 8081, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels: { app: gateway }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: gateway
+          image: gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: RABBIT_HOST, value: rabbitmq }
+            - { name: REDIS_SENTINELS, value: "redis:26379" }
+            - { name: TASK_LEASE_SECONDS, value: "30" }
+            - { name: REVISAR_PRESTAMOS_SEGUNDOS, value: "5" }
+            - name: MINER_TOKEN
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: MINER_TOKEN } }
+            - name: RABBIT_USUARIO
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
+            - name: RABBIT_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+            - name: REDIS_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001     # el usuario «app» del Dockerfile

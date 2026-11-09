@@ -51,5 +51,9 @@ jobs:
         run: docker build --build-arg SERVICIO=ejemplo -t ejemplo .
       - name: Imagen del backend
         run: docker build --build-arg SERVICIO=backend -t backend .
+      - name: Imagen del NCT
+        run: docker build --build-arg SERVICIO=nct -t nct .
+      - name: Imagen del gateway
+        run: docker build --build-arg SERVICIO=gateway -t gateway .
       - name: Imagen del frontend
         run: docker build --build-arg SERVICIO=frontend -t frontend .

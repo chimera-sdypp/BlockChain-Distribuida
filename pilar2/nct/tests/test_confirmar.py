@@ -99,3 +99,15 @@ def test_si_ninguna_replica_de_redis_confirma_a_tiempo_avisa_igual_y_lo_cuenta(a
 
     assert len(avisos_de_bloque(publicador)) == 1
     assert REGISTRY.get_sample_value("blockchain_bloques_sin_replica_total") == sin_replica + 1
+
+
+def test_confirmar_no_pisa_el_texto_del_bloque_que_escribio_el_trp(armar, redis):
+    nct = armar()
+    id_tarea = tarea_en_curso(redis, nct)
+    redis.hset(f"tarea:{id_tarea}", "bloque", "texto-a-hashear;")  # lo escribe el TrP (BC-21)
+    solucion = minar(redis, id_tarea)
+
+    nct.procesar_solucion(solucion)
+
+    assert redis.hget(f"tarea:{id_tarea}", "bloque") == "texto-a-hashear;"
+    assert redis.hget(f"tarea:{id_tarea}", "block_hash") == solucion["hash"]

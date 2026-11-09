@@ -90,7 +90,7 @@ return 0
 LUA_CONSENSO = """
 local estado = redis.call('HGET', KEYS[1], 'estado')
 if estado == 'confirmada' then
-  local hash = redis.call('HGET', KEYS[1], 'bloque')
+  local hash = redis.call('HGET', KEYS[1], 'block_hash')
   return {'repetida', hash, redis.call('HGET', 'bloque:' .. hash, 'altura')}
 end
 if estado ~= 'en_curso' then return {'descartada'} end
@@ -113,7 +113,7 @@ for i = 6 + 2 * n, #ARGV, 4 do
 end
 redis.call('HINCRBY', KEYS[4], ARGV[3], ARGV[4])
 if redis.call('LINDEX', KEYS[3], 0) == redis.call('HGET', KEYS[1], 'caja') then redis.call('LPOP', KEYS[3]) end
-redis.call('HSET', KEYS[1], 'estado', 'confirmada', 'bloque', ARGV[2])
+redis.call('HSET', KEYS[1], 'estado', 'confirmada', 'block_hash', ARGV[2])
 if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
 return {'confirmada', ARGV[2], altura}
 """

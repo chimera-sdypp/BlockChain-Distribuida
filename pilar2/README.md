@@ -27,7 +27,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 | `config` | Lee las variables de entorno |
 | `registro` | Logs `fecha \| NIVEL \| mensaje` a stderr, a memoria (últimas 500) y a `logs/<servicio>.log` (1 MB × 3) |
 | `web` | `/health` (503 si RabbitMQ o Redis no responden) y `/metrics` en el puerto 8080; cada servicio suma sus rutas |
-| `rabbit` | Colas quorum durables, publicar con confirmación del broker, consumir con ack manual y reconexión sola |
+| `rabbit` | Colas quorum durables, publicar con confirmación del broker, consumir con ack manual y reconexión sola; `avisar` y `suscribir` para los avisos de un exchange topic (cada suscriptor con su cola exclusiva) |
 | `redisdb` | Redis directo o, con `REDIS_SENTINELS`, el primario que indique Sentinel |
 | `contrato` | Validación de transacciones, el texto que se hashea, recompensa, génesis y nombres de colas y claves |
 

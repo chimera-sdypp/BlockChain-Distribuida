@@ -21,7 +21,11 @@ TX_RECIBIDAS = Counter("blockchain_tx_recibidas", "Transacciones recibidas por e
 
 
 class NoDisponible(Exception):
-    """RabbitMQ o Redis no respondieron: el cliente tiene que reintentar."""
+    """RabbitMQ o Redis no respondieron: el cliente tiene que reintentar las que no se encolaron."""
+
+    def __init__(self, motivo, encoladas):
+        super().__init__(motivo)
+        self.motivo, self.encoladas = motivo, encoladas
 
 
 async def leer_json(request):
@@ -36,10 +40,7 @@ def invalido(errores):
     return JSONResponse({"errores": errores}, status_code=400)
 
 
-def no_disponible(error):
-    return JSONResponse({"error": str(error)}, status_code=503)
-
-
+LOTE_MAXIMO = 1000
 LIMITE_BLOQUES, LIMITE_MAXIMO_BLOQUES = 20, 100
 CAMPOS_ENTEROS_BLOQUE = ("nonce", "timestamp", "recompensa")
 
@@ -65,52 +66,84 @@ def nueva_transaccion(datos):
             "monto": datos["monto"], "timestamp": int(time.time())}
 
 
-def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0]):
-    def registrar_y_encolar(tx):
+def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LOTE_MAXIMO):
+    def registrar_y_encolar(txs):
         """Primero Redis y después la cola: así el NCT nunca ve una tx que todavía no está en Redis.
 
-        Si la cola falla, se borra el registro para que no quede «recibida» para siempre.
+        Si la cola falla a mitad, las que ya se publicaron quedan (el NCT las va a procesar) y se
+        borran las demás, para que no queden «recibida» para siempre. NoDisponible dice cuáles quedaron.
         """
-        clave = contrato.TX.format(tx["id"])
+        claves = [contrato.TX.format(tx["id"]) for tx in txs]
         try:
-            redis.hset(clave, mapping={"origen": tx["origen"], "destino": tx["destino"],
-                                       "monto": tx["monto"], "timestamp": tx["timestamp"],
-                                       "estado": "recibida"})
+            tuberia = redis.pipeline(transaction=False)
+            for clave, tx in zip(claves, txs):
+                tuberia.hset(clave, mapping={"origen": tx["origen"], "destino": tx["destino"],
+                                             "monto": tx["monto"], "timestamp": tx["timestamp"],
+                                             "estado": "recibida"})
+            tuberia.execute()
         except redislib.RedisError as error:
-            log.error("Redis no respondió al guardar %s: %r", clave, error)
-            raise NoDisponible("Redis no disponible") from error
-        try:
-            publicador.publicar(cola, tx)
-        except Exception as error:
-            log.error("No se pudo publicar %s en %s: %r", tx["id"], cola, error)
-            _borrar(clave)
-            raise NoDisponible("RabbitMQ no disponible") from error
+            log.error("Redis no respondió al guardar %d transacciones: %r", len(txs), error)
+            _borrar(*claves)
+            raise NoDisponible("Redis no disponible", []) from error
+        encoladas = []
+        for tx in txs:
+            try:
+                publicador.publicar(cola, tx)
+            except Exception as error:
+                log.error("No se pudo publicar %s en %s: %r", tx["id"], cola, error)
+                _borrar(*claves[len(encoladas):])
+                raise NoDisponible("RabbitMQ no disponible", encoladas) from error
+            encoladas.append(tx["id"])
 
     def _borrar(*claves):
         try:
             redis.delete(*claves)
         except redislib.RedisError:
-            log.exception("No se pudieron borrar %s", claves)
+            log.exception("No se pudieron borrar %d transacciones de Redis", len(claves))
+
+    async def encolar(txs):
+        """Registra y publica fuera del event loop (Redis y pika bloquean) y cuenta la métrica."""
+        try:
+            await run_in_threadpool(registrar_y_encolar, txs)
+        except NoDisponible as error:
+            TX_RECIBIDAS.labels("aceptada").inc(len(error.encoladas))
+            TX_RECIBIDAS.labels("error").inc(len(txs) - len(error.encoladas))
+            raise
+        TX_RECIBIDAS.labels("aceptada").inc(len(txs))
 
     @app.post("/api/transacciones", status_code=202)
     async def recibir(request: Request):
         datos = await leer_json(request)
-        if datos is None:
-            TX_RECIBIDAS.labels("invalida").inc()
-            return invalido(["el cuerpo no es JSON válido"])
-        errores = contrato.validar_transaccion(datos)
+        errores = ["el cuerpo no es JSON válido"] if datos is None else contrato.validar_transaccion(datos)
         if errores:
             TX_RECIBIDAS.labels("invalida").inc()
             return invalido(errores)
         tx = nueva_transaccion(datos)
         try:
-            # Redis y pika bloquean: fuera del event loop, para no frenar los otros pedidos.
-            await run_in_threadpool(registrar_y_encolar, tx)
+            await encolar([tx])
         except NoDisponible as error:
-            TX_RECIBIDAS.labels("error").inc()
-            return no_disponible(error)
-        TX_RECIBIDAS.labels("aceptada").inc()
+            return JSONResponse({"error": error.motivo}, status_code=503)
         return {"id": tx["id"]}
+
+    @app.post("/api/transacciones/lote", status_code=202)
+    async def recibir_lote(request: Request):
+        """Todo o nada: si una es inválida no entra ninguna (400 con los errores por índice)."""
+        datos = await leer_json(request)
+        if not isinstance(datos, list) or not datos:
+            return invalido(["el cuerpo tiene que ser una lista de transacciones, no vacía"])
+        if len(datos) > lote_maximo:
+            return JSONResponse({"errores": [f"el lote tiene {len(datos)} transacciones; el máximo es {lote_maximo}"]},
+                                status_code=413)
+        errores = {str(i): e for i, e in enumerate(map(contrato.validar_transaccion, datos)) if e}
+        if errores:
+            TX_RECIBIDAS.labels("invalida").inc(len(datos))
+            return invalido(errores)
+        txs = [nueva_transaccion(tx) for tx in datos]
+        try:
+            await encolar(txs)
+        except NoDisponible as error:
+            return JSONResponse({"error": error.motivo, "encoladas": error.encoladas}, status_code=503)
+        return {"ids": [tx["id"] for tx in txs]}
 
     # Las consultas son sync: FastAPI las corre en su threadpool, así Redis no frena el event loop.
 
@@ -166,13 +199,14 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0]):
     @app.exception_handler(redislib.RedisError)
     def redis_caido(request, error):
         log.error("Redis no respondió en %s: %r", request.url.path, error)
-        return no_disponible("Redis no disponible")
+        return JSONResponse({"error": "Redis no disponible"}, status_code=503)
 
 
 def main():
     cola = config.texto("COLA_TRANSACCIONES", contrato.COLAS[0])
     servicio = Servicio("backend", colas=[cola])
     # Nadie consume en esta conexión: se usa sólo para publicar desde los hilos HTTP.
-    agregar_rutas(servicio.app, servicio.redis, servicio.rabbit, cola=cola)
+    agregar_rutas(servicio.app, servicio.redis, servicio.rabbit, cola=cola,
+                  lote_maximo=config.entero("LOTE_MAXIMO", LOTE_MAXIMO))
     threading.Thread(target=servicio.rabbit.conectar, name="rabbit-conectar", daemon=True).start()
     servicio.servir_http(en_hilo=False)

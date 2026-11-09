@@ -1,9 +1,8 @@
-"""POST /api/transacciones, con Redis y RabbitMQ falsos."""
+"""La API del backend con Redis y RabbitMQ falsos: formato, fallas, lote y métricas."""
 
 import re
 
 import pytest
-
 import redis
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
@@ -32,6 +31,24 @@ class RedisFalso:
         for clave in claves:
             self.hashes.pop(clave, None)
 
+    def pipeline(self, transaction=True):
+        return TuberiaFalsa(self)
+
+
+class TuberiaFalsa:
+    """Junta los HSET y los aplica todos en execute(), como un pipeline de Redis."""
+
+    def __init__(self, redis_falso):
+        self.redis, self.pendientes = redis_falso, []
+
+    def hset(self, clave, mapping):
+        self.pendientes.append((clave, mapping))
+
+    def execute(self):
+        for clave, mapping in self.pendientes:
+            self.redis.hset(clave, mapping=mapping)
+        return [1] * len(self.pendientes)
+
 
 class PublicadorFalso:
     def __init__(self, falla_desde=None):
@@ -43,9 +60,10 @@ class PublicadorFalso:
         self.publicados.append((cola, mensaje))
 
 
-def cliente(redis=None, publicador=None):
+def cliente(redis=None, publicador=None, lote_maximo=1000):
     app = web.crear_app("backend", {})
-    backend.agregar_rutas(app, redis or RedisFalso(), publicador or PublicadorFalso(), cola=COLA)
+    backend.agregar_rutas(app, redis or RedisFalso(), publicador or PublicadorFalso(), cola=COLA,
+                          lote_maximo=lote_maximo)
     return TestClient(app)
 
 
@@ -136,3 +154,70 @@ def test_la_metrica_cuenta_aceptadas_invalidas_y_errores():
 def test_si_redis_falla_una_consulta_da_503():
     respuesta = cliente(RedisFalso(falla=True)).get("/api/transacciones/abc")
     assert respuesta.status_code == 503
+
+
+# ── Ticket 04: lote de transacciones ──
+
+def lote(*montos):
+    return [{"origen": "alice", "destino": "bob", "monto": monto} for monto in montos]
+
+
+def test_lote_valido_encola_todas_en_orden():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=lote(1, 2, 3))
+
+    assert respuesta.status_code == 202
+    ids = respuesta.json()["ids"]
+    assert len(set(ids)) == 3
+    assert [m["id"] for _, m in publicador.publicados] == ids
+    assert [m["monto"] for _, m in publicador.publicados] == [1, 2, 3]
+    assert all(redis.hashes[f"tx:{id_}"]["estado"] == "recibida" for id_ in ids)
+
+
+def test_lote_con_una_invalida_se_rechaza_entero_con_los_errores_por_indice():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    cuerpo = lote(1, 0, 3) + [{"origen": "alice", "destino": "alice", "monto": 1}]
+    respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=cuerpo)
+
+    assert respuesta.status_code == 400
+    errores = respuesta.json()["errores"]
+    assert set(errores) == {"1", "3"}
+    assert any("monto" in e for e in errores["1"]) and any("distintos" in e for e in errores["3"])
+    assert publicador.publicados == [] and redis.hashes == {}
+
+
+@pytest.mark.parametrize("cuerpo", [[], {"origen": "alice"}, "texto"])
+def test_lote_vacio_o_que_no_es_lista_da_400(cuerpo):
+    assert cliente().post("/api/transacciones/lote", json=cuerpo).status_code == 400
+
+
+def test_lote_mas_grande_que_el_maximo_da_413():
+    publicador = PublicadorFalso()
+    respuesta = cliente(publicador=publicador, lote_maximo=2).post("/api/transacciones/lote", json=lote(1, 2, 3))
+    assert respuesta.status_code == 413
+    assert publicador.publicados == []
+
+
+def test_si_la_publicacion_se_corta_a_mitad_del_lote_dice_cuales_quedaron():
+    redis, publicador = RedisFalso(), PublicadorFalso(falla_desde=3)
+    respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=lote(1, 2, 3, 4))
+
+    assert respuesta.status_code == 503
+    encoladas = respuesta.json()["encoladas"]
+    assert encoladas == [m["id"] for _, m in publicador.publicados]
+    assert len(encoladas) == 2
+    assert set(redis.hashes) == {f"tx:{id_}" for id_ in encoladas}
+
+
+def test_el_lote_cuenta_la_metrica_por_transaccion():
+    publicador = PublicadorFalso()
+    c = cliente(publicador=publicador)
+    antes = contadores(c)
+    c.post("/api/transacciones/lote", json=lote(1, 2))           # 2 aceptadas
+    c.post("/api/transacciones/lote", json=lote(1, 0, 3))        # 3 inválidas: el lote entero no entra
+    publicador.falla_desde = 4
+    c.post("/api/transacciones/lote", json=lote(1, 2, 3))        # 1 aceptada y 2 con error
+    despues = contadores(c)
+
+    delta = {r: despues.get(r, 0) - antes.get(r, 0) for r in ("aceptada", "invalida", "error")}
+    assert delta == {"aceptada": 3, "invalida": 3, "error": 2}

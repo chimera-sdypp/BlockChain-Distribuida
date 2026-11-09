@@ -175,3 +175,19 @@ def test_bloque_por_hash_con_su_altura(entorno):
 
     assert (bloque["altura"], bloque["block_hash"], bloque["previous_hash"]) == (1, hashes[1], hashes[0])
     assert cliente.get("/api/bloques/noexiste").status_code == 404
+
+
+# ── Ticket 04: lote ──
+
+def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
+    cliente, cola, redis = entorno
+    cuerpo = [{"origen": "alice", "destino": "bob", "monto": m} for m in range(1, 51)]
+
+    respuesta = cliente.post("/api/transacciones/lote", json=cuerpo)
+
+    assert respuesta.status_code == 202
+    ids = respuesta.json()["ids"]
+    mensajes = recibir(cola, 50)
+    assert [m["id"] for m in mensajes] == ids
+    assert [m["monto"] for m in mensajes] == list(range(1, 51))
+    assert all(redis.hget(f"tx:{id_}", "estado") == "recibida" for id_ in ids)

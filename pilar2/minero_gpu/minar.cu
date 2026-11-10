@@ -1,11 +1,12 @@
-// Minero GPU del sistema (BC-27): el minero del Hit 7 para bloques de cualquier largo.
+// Minero GPU del sistema (BC-27): el minero del Hit 7 con "midstate".
 //
-// El Hit 7 copia la cadena entera a cada hilo (hasta 120 bytes). El texto de un bloque real
-// (previous_hash + timestamp + transacciones en JSON) tiene miles de bytes, pero sólo cambia
-// el nonce, que va al final. Así que se hace lo de los mineros de Bitcoin, el "midstate":
+// El texto de un bloque mide 77 caracteres (contrato.texto_bloque) y sólo cambia el nonce, que
+// va al final. El Hit 7 hashea por nonce los 77 + hasta 20 dígitos: 2 bloques de MD5. Acá se hace
+// lo de los mineros de Bitcoin, el "midstate":
 //   - el host pasa por MD5 los bloques completos de 64 bytes del texto (iguales para todo nonce);
-//   - cada hilo arranca de ese estado y procesa sólo la cola (< 64 bytes) + su nonce: 1 o 2
-//     bloques de MD5, sea el texto de 100 bytes o de 10 KB.
+//   - cada hilo arranca de ese estado y procesa sólo la cola (< 64 bytes) + su nonce: con 77
+//     caracteres, 1 bloque de MD5 por nonce. En una RTX 4060: 2,03 GH/s contra 1,50 del Hit 7.
+// Sirve para textos de cualquier largo (el Hit 7 acepta hasta 120 bytes).
 // Igual que el Hit 7: un hilo por nonce y, de haber varios, gana el MENOR.
 //
 // Corre como servidor para no pagar el arranque de CUDA en cada rango. Por stdin, cada pedido:

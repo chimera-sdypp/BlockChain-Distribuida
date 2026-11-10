@@ -57,6 +57,8 @@ jobs:
         run: docker build --build-arg SERVICIO=gateway -t gateway .
       - name: Imagen del frontend
         run: docker build --build-arg SERVICIO=frontend -t frontend .
+      - name: Imagen del escalador
+        run: docker build -f escalador/Dockerfile -t escalador .
 
   minero-gpu:
     name: Minero GPU · imagen (GHCR)

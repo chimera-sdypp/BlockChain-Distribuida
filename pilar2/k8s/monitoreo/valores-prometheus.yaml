@@ -1,0 +1,18 @@
+# kube-prometheus-stack para el namespace monitoring (lo arma a mano en k3s; en GKE, el Pipeline 2, BC-33).
+# Lo nuestro (PodMonitor, reglas, dashboard) va en este directorio con kustomize: ver kustomization.yaml.
+fullnameOverride: monitoreo
+prometheus:
+  prometheusSpec:
+    # Que tome todos los PodMonitor/ServiceMonitor/PrometheusRule, no sólo los que lleven la etiqueta del release.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    scrapeInterval: 10s
+    retention: 3d
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+# k3s mete el control plane en un solo proceso: estos targets quedarían caídos para siempre.
+kubeEtcd: { enabled: false }
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }

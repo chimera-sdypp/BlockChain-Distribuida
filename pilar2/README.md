@@ -37,18 +37,48 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 - La conexión que consume es de su hilo: para publicar desde los endpoints HTTP se usa otra instancia de `Rabbit` (ver `ejemplo/app.py`).
 - En Kubernetes, `/health` va como readiness probe: da 503 mientras falte una dependencia.
 
-## Kubernetes (`k8s/`)
+## Todo junto en k3s
 
-RabbitMQ y Redis, 3 pods cada uno, en el namespace `blockchain`. Sólo tienen Services internos (ClusterIP).
+![Pilar 2: qué recibe, envía y guarda cada pieza](diagrama.png)
+
+Los números del diagrama son el recorrido de una transferencia (1 a 11); las letras, cómo se levanta una VM con un minero CPU.
 
 ```bash
 kubectl create namespace blockchain
 kubectl -n blockchain create secret generic blockchain-secretos --from-literal=RABBIT_USUARIO=blockchain \
   --from-literal=RABBIT_CLAVE="$(openssl rand -hex 16)" --from-literal=RABBIT_COOKIE="$(openssl rand -hex 32)" \
   --from-literal=REDIS_CLAVE="$(openssl rand -hex 16)" --from-literal=MINER_TOKEN="$(openssl rand -hex 24)"
-kubectl apply -k k8s
-k8s/probar.sh    # que todo aparezca solo y que cada uno aguante la caída de un pod
+k8s/imagenes.sh                      # construye las imágenes y las importa en k3s (containerd)
+kubectl apply -k k8s                 # RabbitMQ, Redis, backend, frontend, nct, trp, gateway e Ingress
+helm install monitoreo prometheus-community/kube-prometheus-stack --version 92.13.1 \
+  -n monitoring --create-namespace -f k8s/monitoreo/valores-prometheus.yaml
+helm install keda kedacore/keda --version 2.21.0 -n keda --create-namespace
+kubectl apply -k k8s/monitoreo && kubectl apply -k k8s/escalador
 ```
+
+- La página y la API, por el Ingress: `http://localhost` (`/api` → backend; `/` y `/eventos` → frontend).
+- Los mineros, al gateway por su LoadBalancer: `GATEWAY_URL=http://localhost:8081` y el `MINER_TOKEN` del Secret. El CPU con `python -m minero_cpu`; el GPU con `python -m minero_gpu` o su imagen.
+- 2 réplicas de cada servicio; el escalador, 0 o 1 pod según KEDA.
+
+### Pruebas del sistema desplegado
+
+`k8s/probar.sh` prueba RabbitMQ y Redis solos. `k8s/probar_sistema.sh` corre `sistema/` contra lo desplegado, como un cliente más (el Ingress y el gateway), con un minero CPU de prueba:
+
+| Prueba | Qué tiene que pasar |
+|---|---|
+| Transferencia válida | Recibida → confirmada, en un bloque que extiende la cadena; el hash se verifica desde afuera, los saldos se mueven y el minero cobra |
+| Sin saldo | Rechazada, con el motivo |
+| Doble gasto simultáneo | Dos transferencias a la vez que gastan el mismo saldo: una confirmada y una rechazada |
+| Cadena íntegra | Los últimos 100 bloques encadenan, cada hash se verifica y ninguna transacción está en dos |
+| Minero muerto a mitad de un rango (`kill -9`) | A los 30 s el gateway devuelve el rango a la cola y otro minero resuelve el bloque |
+| Matar una réplica del NCT, del TrP y del gateway | Una transferencia hecha enseguida se confirma igual, y el Deployment vuelve a 2 |
+| Matar el primario de Redis | Sentinel promueve una réplica, lo ya confirmado sigue y lo nuevo se confirma |
+
+Tras cada caída se vuelve a revisar la cadena. El 09/11, en k3s: las 9 pasan en unos 5 min (dos corridas seguidas). KEDA y el escalador se probaron aparte (ver [escalador/README.md](escalador/README.md)), igual que el minero GPU contra este gateway ([minero_gpu/README.md](minero_gpu/README.md)).
+
+## Kubernetes (`k8s/`)
+
+RabbitMQ y Redis, 3 pods cada uno, en el namespace `blockchain`. Sólo tienen Services internos (ClusterIP).
 
 Los servicios usan `RABBIT_HOST=rabbitmq` y `REDIS_SENTINELS=redis:26379`, más las claves del Secret.
 
@@ -65,6 +95,7 @@ Los servicios usan `RABBIT_HOST=rabbitmq` y `REDIS_SENTINELS=redis:26379`, más 
 - **Persistencia:** AOF cada segundo + RDB, en un volumen por pod. Ante una caída se pierde a lo sumo 1 s de escrituras.
 - La copia a las réplicas es asíncrona: por eso el NCT hace `WAIT 1` antes de avisar un bloque.
 - `redis/iniciar.sh` arma la configuración al arrancar: el primario es el que diga Sentinel, o redis-0 si ninguno contesta.
+- Un pod que se cayó siendo primario **no vuelve como primario**: si Sentinel todavía lo nombra, espera (hasta 3 min) a que promueva a otro y arranca como réplica. Antes volvía como primario con datos viejos y durante ~10 s había dos primarios: lo que se escribía en el viejo se perdía (lo encontró la prueba de matar el primario).
 - Las claves están en el [contrato](CONTRATO.md#claves-de-redis).
 
 ## TrP (`trp/`)

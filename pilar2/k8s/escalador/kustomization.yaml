@@ -1,0 +1,7 @@
+# El escalador y su ScaledObject. Necesita KEDA (sus CRDs) y el Prometheus de k8s/monitoreo:
+# por eso no está en k8s/kustomization.yaml. Ver pilar2/escalador/README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: blockchain
+resources:
+  - escalador.yaml

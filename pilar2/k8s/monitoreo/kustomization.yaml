@@ -1,0 +1,7 @@
+# Lo que Prometheus tiene que leer del sistema. Necesita kube-prometheus-stack instalado
+# (sus CRDs): por eso no está en k8s/kustomization.yaml. Ver pilar2/README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: blockchain
+resources:
+  - monitores.yaml

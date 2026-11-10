@@ -15,6 +15,7 @@ import time
 import uuid
 
 from prometheus_client import Counter, Gauge, Histogram
+from redis import exceptions as redis_errores
 
 from comun import Rabbit, Servicio, config, contrato
 
@@ -192,8 +193,15 @@ class Nct:
         id_ = mensaje["id"]
         estado = self._validar(keys=[contrato.TX.format(id_), contrato.SALDOS, contrato.COMPROMETIDO,
                                      contrato.PENDIENTES], args=[id_, SALDO_INSUFICIENTE])
+        if estado is None:
+            # El backend la guarda en Redis antes de publicarla: si no está, este NCT le habla a un
+            # Redis que no es el primario de verdad (uno que acaba de reiniciar, en un failover).
+            # Se sueltan las conexiones, para volver a preguntarle a Sentinel, y el mensaje vuelve a
+            # la cola (comun/rabbit.py). Las colas quorum lo descartan tras 20 entregas.
+            self.redis.connection_pool.disconnect()
+            raise redis_errores.ConnectionError(f"la transacción {id_} no está en Redis")
         if estado not in ("pendiente", "rechazada"):
-            log.warning("La transacción %s no se valida: está %s", id_, estado or "ausente de Redis")
+            log.warning("La transacción %s no se valida: está %s", id_, estado)
             return None
         aviso = {"id": id_, "estado": estado}
         if estado == "rechazada":

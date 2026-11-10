@@ -2,12 +2,13 @@
 
 El minero CUDA del Pilar 1 conectado al sistema. La parte HTTP es la del minero CPU (`minero_cpu/minero.py`: `/hello`, bench, `/tasks/next`, `/results`, keep-alive y «cortá»); la búsqueda la hace `minar.cu` en la GPU.
 
-## `minar.cu`: el Hit 7 para bloques de cualquier largo
+## `minar.cu`: el Hit 7 con *midstate*
 
-El Hit 7 copia la cadena entera a cada hilo y acepta hasta 120 bytes; el texto de un bloque con 100 transacciones tiene miles. Como sólo cambia el nonce, que va al final, se usa el *midstate* (lo mismo que hacen los mineros de Bitcoin):
+El texto de un bloque mide 77 caracteres (`contrato.texto_bloque`) y sólo cambia el nonce, que va al final. El Hit 7 hashea por nonce los 77 caracteres más hasta 20 dígitos: 2 bloques de MD5. Acá se usa el *midstate* (lo mismo que hacen los mineros de Bitcoin):
 
 - El host pasa por MD5 los bloques completos de 64 bytes del texto, una vez por rango.
-- Cada hilo arranca de ese estado y procesa sólo la cola (< 64 bytes) más su nonce: 1 o 2 bloques de MD5, sea el texto de 100 bytes o de 10 KB.
+- Cada hilo arranca de ese estado y procesa sólo la cola (< 64 bytes) más su nonce: con 77 caracteres, **1 bloque de MD5 por nonce**. En la RTX 4060, con el texto de un bloque: **2,03 GH/s contra 1,50 del Hit 7**.
+- Sirve para textos de cualquier largo (el Hit 7 acepta hasta 120 bytes).
 - Igual que el Hit 7: un hilo por nonce, y si hay varios gana el **menor** (`atomicMin`). El host recalcula el hash del ganador, lo que además verifica a la GPU.
 
 Queda abierto como servidor (arrancar CUDA cuesta): por stdin `<prefijo> <min> <max> <largo>\n<texto>` y por stdout una línea `OK …` / `SIN_SOLUCION …` / `ERROR …`, como el Hit 7. El minero le pasa el rango de a trozos de 2^30 nonces (~1 s) para poder cortar a mitad.

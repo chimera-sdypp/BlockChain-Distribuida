@@ -3,6 +3,9 @@
 import threading
 import uuid
 
+import pytest
+from redis.exceptions import ConnectionError
+
 
 def recibida(redis, origen, destino, monto):
     """Lo que dejan el backend en Redis y en la cola `transacciones`."""
@@ -74,10 +77,12 @@ def test_un_mensaje_reentregado_no_se_cuenta_dos_veces(armar, redis, publicador)
     assert publicador.avisos == [("transaccion.estado", {"id": tx["id"], "estado": "pendiente"})] * 2
 
 
-def test_una_transaccion_que_no_esta_en_redis_se_ignora(armar, redis, publicador):
+def test_una_transaccion_que_no_esta_en_redis_vuelve_a_la_cola(armar, redis, publicador):
+    # Sólo pasa si se le habla a un Redis equivocado (un failover): error transitorio, no se descarta.
     nct = armar()
     nct.cargar_genesis()
-    nct.validar({"id": "fantasma", "origen": "alice", "destino": "bob", "monto": 1, "timestamp": 1})
+    with pytest.raises(ConnectionError):
+        nct.validar({"id": "fantasma", "origen": "alice", "destino": "bob", "monto": 1, "timestamp": 1})
     assert not redis.exists("tx:fantasma") and publicador.avisos == []
 
 

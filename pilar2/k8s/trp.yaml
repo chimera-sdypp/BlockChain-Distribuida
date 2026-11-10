@@ -1,0 +1,55 @@
+# TrP (BC-21 y BC-22): parte las tareas en rangos y elige al ganador de cada una.
+# 2 réplicas que se coordinan sólo por Redis (HSETNX y conjuntos). No recibe tráfico HTTP: sin Service.
+# La imagen se construye a mano hasta que haya Artifact Registry (BC-31).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trp
+  labels: { app: trp }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: trp }
+  template:
+    metadata:
+      labels: { app: trp }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: trp
+          image: trp:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: RABBIT_HOST, value: rabbitmq }
+            - { name: REDIS_SENTINELS, value: "redis:26379" }
+            - { name: PREFIJO_BASE, value: "6" }
+            - { name: SEGUNDOS_POR_BLOQUE, value: "30" }
+            - { name: FRAGMENTO_PORCENTAJE, value: "10" }
+            - name: RABBIT_USUARIO
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
+            - name: RABBIT_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+            - name: REDIS_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # /metrics no depende de RabbitMQ ni de Redis: reinicia sólo si el proceso se colgó.
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001     # el usuario «app» del Dockerfile

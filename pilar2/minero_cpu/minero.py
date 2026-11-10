@@ -60,17 +60,20 @@ class Gateway:
 
 
 class Minero:
-    def __init__(self, gateway, minero_id, procesos, espera=2, latido=5):
+    """El cliente del gateway. Lo usa también el minero GPU, con su propio buscador y tipo «gpu»."""
+
+    def __init__(self, gateway, minero_id, procesos=None, espera=2, latido=5, buscador=None, tipo="cpu", placa=None):
         self.gateway, self.id = gateway, minero_id
         self.espera, self.latido = espera, latido
-        self.buscador = Buscador(procesos)
+        self.buscador = buscador or Buscador(procesos)
+        self.tipo, self.placa = tipo, placa or modelo_cpu()
         self.rango = None          # el rango en curso, para el keep-alive
         self.detenido = threading.Event()
 
     # --- Al arrancar -----------------------------------------------------------------------
     def presentarse(self):
         """POST /hello; si el gateway devuelve la tarea modelo, la resuelve y manda POST /bench."""
-        _, respuesta = self._insistir("POST", "/hello", {"minero": self.id, "tipo": "cpu", "placa": modelo_cpu()})
+        _, respuesta = self._insistir("POST", "/hello", {"minero": self.id, "tipo": self.tipo, "placa": self.placa})
         if not respuesta or "bloque" not in respuesta:
             log.info("Registrado en el gateway")
             return

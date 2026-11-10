@@ -80,5 +80,5 @@ jobs:
           file: pilar2/minero_gpu/Dockerfile
           push: ${{ github.event_name == 'push' }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/minero-gpu:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/minero-gpu:${{ github.event_name == 'push' && github.ref_name || 'pr' }}
             ghcr.io/${{ github.repository_owner }}/minero-gpu:${{ github.sha }}

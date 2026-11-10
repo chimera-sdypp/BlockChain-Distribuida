@@ -84,7 +84,9 @@ class GatewayFalso:
                 if not self._autorizado():
                     return
                 falso.recibido.append((self.path, None))
-                if falso.rangos:
+                if self.path != "/tasks/next?minero=cpu-prueba":
+                    self._responder(400, {"error": "falta ?minero=<id>"})
+                elif falso.rangos:
                     self._responder(200, falso.rangos.pop(0))
                 else:
                     self._responder(204)
@@ -166,12 +168,12 @@ def test_si_el_gateway_dice_cortar_deja_el_rango_sin_resultado(armar):
     falso.cortar = True
     threading.Thread(target=minero.trabajar, daemon=True).start()
     limite = time.monotonic() + 10
-    while time.monotonic() < limite and len([r for r, _ in falso.recibido if r == "/tasks/next"]) < 2:
+    while time.monotonic() < limite and len([r for r, _ in falso.recibido if r.startswith("/tasks/next")]) < 2:
         time.sleep(0.1)
-    assert len([r for r, _ in falso.recibido if r == "/tasks/next"]) >= 2  # volvió a pedir trabajo
+    assert len([r for r, _ in falso.recibido if r.startswith("/tasks/next")]) >= 2  # volvió a pedir trabajo
     assert falso.de("/results") == []
     aviso = falso.de("/keepalive")[0]
-    assert aviso["minero"] == "cpu-prueba" and aviso["rango"] == 0
+    assert aviso["minero"] == "cpu-prueba" and aviso["rango"] == {"tarea": "t1", "rango": 0}
 
 
 def test_token_invalido(armar):

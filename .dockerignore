@@ -1,0 +1,11 @@
+# Sólo lo usa la imagen del minero GPU (las demás se construyen desde pilar2/).
+*
+!pilar1/hit4/md5.cuh
+!pilar1/hit7/md5_cpu.h
+!pilar2/comun
+!pilar2/minero_cpu
+!pilar2/minero_gpu
+**/tests
+**/__pycache__
+**/*.pyc
+**/logs

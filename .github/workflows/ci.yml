@@ -59,3 +59,28 @@ jobs:
         run: docker build --build-arg SERVICIO=frontend -t frontend .
       - name: Imagen del escalador
         run: docker build -f escalador/Dockerfile -t escalador .
+
+  minero-gpu:
+    name: Minero GPU · imagen (GHCR)
+    runs-on: ubuntu-latest
+    needs: [gitleaks]
+    permissions:
+      contents: read
+      packages: write   # GITHUB_TOKEN alcanza para publicar en el GHCR de la organización
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # En los PR sólo se construye; al mergear a dev o main se publica (la baja la cátedra, BC-36).
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: pilar2/minero_gpu/Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/minero-gpu:${{ github.event_name == 'push' && github.ref_name || 'pr' }}
+            ghcr.io/${{ github.repository_owner }}/minero-gpu:${{ github.sha }}

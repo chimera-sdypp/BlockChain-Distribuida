@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from comun import config, contrato, registro
@@ -59,17 +60,20 @@ class Gateway:
 
 
 class Minero:
-    def __init__(self, gateway, minero_id, procesos, espera=2, latido=5):
+    """El cliente del gateway. Lo usa también el minero GPU, con su propio buscador y tipo «gpu»."""
+
+    def __init__(self, gateway, minero_id, procesos=None, espera=2, latido=5, buscador=None, tipo="cpu", placa=None):
         self.gateway, self.id = gateway, minero_id
         self.espera, self.latido = espera, latido
-        self.buscador = Buscador(procesos)
+        self.buscador = buscador or Buscador(procesos)
+        self.tipo, self.placa = tipo, placa or modelo_cpu()
         self.rango = None          # el rango en curso, para el keep-alive
         self.detenido = threading.Event()
 
     # --- Al arrancar -----------------------------------------------------------------------
     def presentarse(self):
         """POST /hello; si el gateway devuelve la tarea modelo, la resuelve y manda POST /bench."""
-        _, respuesta = self._insistir("POST", "/hello", {"minero": self.id, "tipo": "cpu", "placa": modelo_cpu()})
+        _, respuesta = self._insistir("POST", "/hello", {"minero": self.id, "tipo": self.tipo, "placa": self.placa})
         if not respuesta or "bloque" not in respuesta:
             log.info("Registrado en el gateway")
             return
@@ -84,7 +88,8 @@ class Minero:
     # --- Un ciclo: pedir, minar, devolver --------------------------------------------------
     def un_rango(self):
         """Pide un rango y lo resuelve. Devuelve False si no había trabajo."""
-        codigo, rango = self._insistir("GET", "/tasks/next")
+        # El id va en la query: el gateway presta el rango a nombre de este minero.
+        codigo, rango = self._insistir("GET", "/tasks/next?" + urllib.parse.urlencode({"minero": self.id}))
         if codigo == 204 or not rango:
             return False
         self.rango = rango
@@ -117,7 +122,7 @@ class Minero:
         while not self.detenido.wait(self.latido):
             rango = self.rango
             aviso = {"minero": self.id, "hashes_por_segundo": self.buscador.hashes_por_segundo(),
-                     "rango": rango["rango"] if rango else None}
+                     "rango": {"tarea": rango["tarea"], "rango": rango["rango"]} if rango else None}
             try:
                 _, respuesta = self.gateway.pedir("POST", "/keepalive", aviso)
             except (urllib.error.URLError, OSError) as error:

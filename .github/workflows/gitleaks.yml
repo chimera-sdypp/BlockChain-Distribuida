@@ -1,0 +1,21 @@
+# gitleaks para los pipelines del Pilar 3: si encuentra un secreto en el historial, el pipeline falla.
+name: gitleaks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Buscar secretos en todo el historial
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz gitleaks
+          ./gitleaks git --redact -v .

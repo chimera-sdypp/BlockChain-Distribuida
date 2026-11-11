@@ -1,0 +1,36 @@
+# El escalador en GKE: con VMs de verdad (BC-35). El módulo vms/instancias/ llega como ConfigMap y el
+# initContainer lo copia a /tofu, donde tofu init escribe .terraform. Entra a GCP por Workload Identity
+# (la anotación del ServiceAccount la pone kustomization.yaml, desde gcp.env).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: escalador
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: modulo
+          image: escalador:dev
+          command: ["sh", "-c", "cp /modulo/*.tf /modulo/.terraform.lock.hcl /tofu/"]
+          volumeMounts:
+            - { name: modulo, mountPath: /modulo }
+            - { name: tofu, mountPath: /tofu }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+      containers:
+        - name: escalador
+          env:
+            - { name: VMS_ACTIVAS, value: "1" }
+          envFrom:
+            - configMapRef: { name: escalador-gcp }   # TF_VAR_proyecto y TF_CLI_ARGS_init (el bucket)
+          volumeMounts:
+            - { name: tofu, mountPath: /tofu }
+          resources:
+            limits: { memory: 512Mi }               # tofu con el provider de Google no entra en 256Mi
+      volumes:
+        - name: modulo
+          configMap: { name: escalador-tofu }
+        - name: tofu
+          emptyDir: {}

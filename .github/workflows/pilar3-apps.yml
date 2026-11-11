@@ -1,0 +1,208 @@
+# Pipeline 3 (BC-34): cada app del Pilar 2 en el nodegroup de apps de GKE.
+# Por cada app que cambió: tests → docker build → push a Artifact Registry (tag = sha).
+# Después, un solo apply de pilar3/k8s/apps con la imagen nueva de las que cambiaron y la que ya corre
+# de las demás: un rolling update sólo de lo que cambió.
+# PR → tests, build y validar los manifiestos. Merge a main → push y despliegue.
+# Mientras no exista la variable GCP_PROYECTO (falta la nube) no hay push ni despliegue.
+# La imagen del minero GPU no va acá: se publica en GHCR desde ci.yml (la baja la cátedra).
+name: "Pipeline 3 · Apps"
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "pilar2/backend/**"
+      - "pilar2/frontend/**"
+      - "pilar2/nct/**"
+      - "pilar2/trp/**"
+      - "pilar2/gateway/**"
+      - "pilar2/escalador/**"
+      - "pilar2/comun/**"
+      - "pilar2/Dockerfile"
+      - "pilar2/k8s/*.yaml"
+      - "pilar2/k8s/escalador/**"
+      - "pilar3/k8s/apps/**"
+      - "pilar3/k8s/nodegroup-apps.yaml"
+      - "pilar3/vms/instancias/**"
+      - ".github/workflows/pilar3-apps.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pilar2/backend/**"
+      - "pilar2/frontend/**"
+      - "pilar2/nct/**"
+      - "pilar2/trp/**"
+      - "pilar2/gateway/**"
+      - "pilar2/escalador/**"
+      - "pilar2/comun/**"
+      - "pilar2/Dockerfile"
+      - "pilar2/k8s/*.yaml"
+      - "pilar2/k8s/escalador/**"
+      - "pilar3/k8s/apps/**"
+      - "pilar3/k8s/nodegroup-apps.yaml"
+      - "pilar3/vms/instancias/**"
+      - ".github/workflows/pilar3-apps.yml"
+  workflow_dispatch:
+    inputs:
+      todas:
+        description: "Construir y desplegar todas las apps (la primera vez, o si falta alguna en el cluster)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read   # paths-filter lee los archivos del PR
+
+concurrency:
+  group: pilar3-apps
+
+env:
+  # Con nube y en main (o a mano): se sube y se despliega.
+  DESPLEGAR: ${{ vars.GCP_PROYECTO != '' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+
+  cambios:
+    name: Qué apps cambiaron
+    needs: [gitleaks]
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ inputs.todas && '["backend","frontend","nct","trp","gateway","escalador"]' || steps.filtro.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filtro
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend: [pilar2/backend/**, pilar2/comun/**, pilar2/Dockerfile]
+            frontend: [pilar2/frontend/**, pilar2/comun/**, pilar2/Dockerfile]
+            nct: [pilar2/nct/**, pilar2/comun/**, pilar2/Dockerfile]
+            trp: [pilar2/trp/**, pilar2/comun/**, pilar2/Dockerfile]
+            gateway: [pilar2/gateway/**, pilar2/comun/**, pilar2/Dockerfile]
+            escalador: [pilar2/escalador/**, pilar2/comun/**]
+
+  app:
+    name: ${{ matrix.app }}
+    needs: [cambios]
+    if: needs.cambios.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: ${{ fromJSON(needs.cambios.outputs.apps) }}
+    # Los tests de integración (INTEGRACION=1) usan RabbitMQ y Redis reales, como en ci.yml.
+    services:
+      rabbitmq:
+        image: rabbitmq:4.1-alpine
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:8.0-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: pilar2
+    env:
+      IMAGEN: ${{ vars.GCP_REGISTRO }}/${{ matrix.app }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements-dev.txt
+      - name: Tests de ${{ matrix.app }}
+        run: python -m pytest -v ${{ matrix.app }}/tests
+        env:
+          INTEGRACION: "1"
+
+      - name: Imagen
+        run: |
+          if [ "${{ matrix.app }}" = escalador ]; then
+            docker build -f escalador/Dockerfile -t app .
+          else
+            docker build --build-arg SERVICIO=${{ matrix.app }} -t app .
+          fi
+
+      - id: gcp
+        if: env.DESPLEGAR == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+          token_format: access_token
+      # El login al registry es con el token de 1 h de WIF: no hay credenciales guardadas.
+      - name: Subir a Artifact Registry
+        if: env.DESPLEGAR == 'true'
+        env:
+          TOKEN_GCP: ${{ steps.gcp.outputs.access_token }}
+        run: |
+          echo "$TOKEN_GCP" | docker login -u oauth2accesstoken --password-stdin "${IMAGEN%%/*}"
+          docker tag app "$IMAGEN"
+          docker push "$IMAGEN"
+
+  manifiestos:
+    name: Validar los manifiestos
+    needs: [gitleaks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/apps > /dev/null
+      - name: Falta la nube
+        if: vars.GCP_PROYECTO == ''
+        run: echo "::notice::Sin GCP_PROYECTO (falta la nube, BC-31) no se sube ni se despliega."
+
+  desplegar:
+    name: Desplegar en GKE
+    needs: [cambios, app, manifiestos]
+    # También si no cambió ninguna app (sólo los manifiestos): `app` queda salteado, no fallado.
+    if: always() && !failure() && !cancelled() && vars.GCP_PROYECTO != '' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    environment: produccion
+    defaults:
+      run:
+        working-directory: pilar3/k8s/apps
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: blockchain
+          location: ${{ vars.GCP_ZONA || 'us-central1-a' }}
+
+      - name: Imágenes y proyecto
+        env:
+          CAMBIADAS: ${{ needs.cambios.outputs.apps }}
+          REGISTRO: ${{ vars.GCP_REGISTRO }}
+          PROYECTO: ${{ vars.GCP_PROYECTO }}
+        run: |
+          sed -i "s/PROYECTO/$PROYECTO/g" gcp.env
+          echo "images:" >> kustomization.yaml
+          for app in backend frontend nct trp gateway escalador; do
+            if echo "$CAMBIADAS" | jq -e --arg a "$app" 'index($a) != null' > /dev/null; then
+              imagen="$REGISTRO/$app:$GITHUB_SHA"
+            else
+              imagen=$(kubectl -n blockchain get deployment "$app" \
+                -o jsonpath="{.spec.template.spec.containers[?(@.name=='$app')].image}" 2>/dev/null || true)
+              if [ -z "$imagen" ]; then
+                echo "::error::$app no está en el cluster y no se construyó: correr el pipeline a mano con «todas»."
+                exit 1
+              fi
+            fi
+            echo "$app → $imagen"
+            echo "  - { name: $app, newName: ${imagen%:*}, newTag: ${imagen##*:} }" >> kustomization.yaml
+          done
+
+      - name: Apply y rolling update
+        run: |
+          kubectl kustomize --load-restrictor LoadRestrictionsNone . | kubectl apply -f -
+          for app in backend frontend nct trp gateway; do
+            kubectl -n blockchain rollout status deployment/$app --timeout=5m
+          done

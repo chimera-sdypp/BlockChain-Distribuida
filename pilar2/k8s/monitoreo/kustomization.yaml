@@ -1,7 +1,16 @@
-# Lo que Prometheus tiene que leer del sistema. Necesita kube-prometheus-stack instalado
+# Lo que Prometheus y Grafana tienen que leer del sistema. Necesita kube-prometheus-stack instalado
 # (sus CRDs): por eso no está en k8s/kustomization.yaml. Ver pilar2/README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: blockchain
 resources:
   - monitores.yaml
+  - alertas.yaml
+# El dashboard se diseña en Grafana y se exporta a dashboard.json; el sidecar de Grafana carga los
+# ConfigMap con grafana_dashboard=1 de todos los namespaces.
+configMapGenerator:
+  - name: blockchain-dashboard
+    files: [dashboard.json]
+    options:
+      labels: { grafana_dashboard: "1" }
+      disableNameSuffixHash: true

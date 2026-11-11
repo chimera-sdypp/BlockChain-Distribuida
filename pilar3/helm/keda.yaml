@@ -1,0 +1,6 @@
+# KEDA (Pipeline 2, BC-33): prende y apaga el escalador según Prometheus (BC-29), en el nodegroup de infra.
+#   helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda --create-namespace -f keda.yaml
+nodeSelector:
+  nodegroup: infra
+tolerations:
+  - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }

@@ -1,8 +1,7 @@
-# Minero GPU (BC-27) para el K3s de la cátedra (lo despliega BC-36): no va en k8s/kustomization.yaml,
+# Minero GPU (BC-27) para el K3s de la cátedra (BC-36): no va en k8s/kustomization.yaml,
 # porque corre en otro cluster y le habla al gateway por su IP pública.
-#   kubectl -n <namespace del grupo> create secret generic minero-gpu --from-literal=MINER_TOKEN=...
-#   kubectl -n <namespace del grupo> apply -f minero-gpu.yaml   (con GATEWAY_URL ajustada)
-# Que entre o salga una GPU es escalar este Deployment.
+# Se despliega con desplegar.sh (ver README.md de esta carpeta), que completa GATEWAY_URL y la imagen.
+# Que entre o salga una GPU es escalar este Deployment: kubectl scale deployment minero-gpu --replicas=N
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,7 +17,8 @@ spec:
     spec:
       containers:
         - name: minero-gpu
-          image: ghcr.io/chimera-sdypp/minero-gpu:main
+          # La CI publica :dev al mergear a dev y :main al mergear a main (también :<sha>).
+          image: ghcr.io/chimera-sdypp/minero-gpu:dev
           env:
             - { name: GATEWAY_URL, value: "http://GATEWAY_IP:8081" }
             # El id de cada minero es el nombre del pod: cada réplica cobra lo suyo.

@@ -58,6 +58,12 @@ resource "google_container_cluster" "blockchain" {
 
   # Que un tofu destroy lo pueda borrar al terminar la evaluación.
   deletion_protection = false
+
+  # node_config es el del pool por defecto, que se borra al crearlo: después el provider lee el de
+  # un nodegroup (spot) y, sin esto, cada plan querría recrear el cluster.
+  lifecycle {
+    ignore_changes = [node_config]
+  }
 }
 
 # Cuenta de los nodos: logs, métricas y bajar imágenes del Artifact Registry.
@@ -93,6 +99,7 @@ resource "google_container_node_pool" "nodegroup" {
 
   node_config {
     machine_type    = var.maquina
+    spot            = var.spot
     disk_type       = "pd-standard"
     disk_size_gb    = var.disco_gb
     service_account = google_service_account.nodos.email

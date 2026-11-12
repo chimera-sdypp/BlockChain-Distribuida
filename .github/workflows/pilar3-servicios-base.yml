@@ -1,8 +1,8 @@
 # Pipeline 2 (BC-33): los servicios base en el nodegroup de infra de GKE:
-# Traefik (la IP pública), KEDA, RabbitMQ x3 y Redis x3, y el Secret con las credenciales.
-# PR → arma todo (helm template y kustomize) para ver que es válido. Merge a main → lo despliega.
+# Traefik (la IP pública), KEDA, RabbitMQ x3 y Redis x3, el Secret con las credenciales, y la
+# observabilidad (BC-37): Prometheus, Grafana, Loki y Fluent Bit con los values de pilar2/k8s/monitoreo.
+# PR → arma todo (helm template y kustomize) para ver que es válido. Merge a main (o a mano) → lo despliega.
 # Mientras no exista la variable GCP_PROYECTO (falta la nube) sólo valida.
-# La observabilidad (BC-37) va también en este pipeline: todavía no está.
 name: "Pipeline 2 · Servicios base"
 
 on:
@@ -17,6 +17,7 @@ on:
       - "pilar2/k8s/rabbitmq/**"
       - "pilar2/k8s/redis.yaml"
       - "pilar2/k8s/redis/**"
+      - "pilar2/k8s/monitoreo/**"
       - ".github/workflows/pilar3-servicios-base.yml"
   push:
     branches: [main]
@@ -29,7 +30,9 @@ on:
       - "pilar2/k8s/rabbitmq/**"
       - "pilar2/k8s/redis.yaml"
       - "pilar2/k8s/redis/**"
+      - "pilar2/k8s/monitoreo/**"
       - ".github/workflows/pilar3-servicios-base.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,6 +44,9 @@ concurrency:
 env:
   TRAEFIK_VERSION: 42.3.2
   KEDA_VERSION: 2.21.0
+  PROMETHEUS_VERSION: 92.13.1   # kube-prometheus-stack
+  LOKI_VERSION: 7.6.0
+  FLUENT_BIT_VERSION: 0.58.3
 
 jobs:
   gitleaks:
@@ -58,8 +64,21 @@ jobs:
           helm repo add kedacore https://kedacore.github.io/charts
           helm template traefik traefik/traefik --version "$TRAEFIK_VERSION" -n traefik -f pilar3/helm/traefik.yaml > /dev/null
           helm template keda kedacore/keda --version "$KEDA_VERSION" -n keda -f pilar3/helm/keda.yaml > /dev/null
-      - name: RabbitMQ y Redis
-        run: kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base > /dev/null
+      - name: Observabilidad
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add fluent https://fluent.github.io/helm-charts
+          helm template monitoreo prometheus-community/kube-prometheus-stack --version "$PROMETHEUS_VERSION" -n monitoring \
+            -f pilar2/k8s/monitoreo/valores-prometheus.yaml -f pilar3/helm/monitoreo.yaml > /dev/null
+          helm template loki grafana/loki --version "$LOKI_VERSION" -n monitoring \
+            -f pilar2/k8s/monitoreo/valores-loki.yaml -f pilar3/helm/loki.yaml > /dev/null
+          helm template fluent-bit fluent/fluent-bit --version "$FLUENT_BIT_VERSION" -n monitoring \
+            -f pilar2/k8s/monitoreo/valores-fluent-bit.yaml > /dev/null
+      - name: RabbitMQ, Redis y lo nuestro del monitoreo
+        run: |
+          kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base > /dev/null
+          kubectl kustomize pilar2/k8s/monitoreo > /dev/null
       - name: Falta la nube
         if: vars.GCP_PROYECTO == ''
         run: echo "::notice::Sin GCP_PROYECTO (falta la nube, BC-31) sólo se valida; no se despliega."
@@ -67,7 +86,7 @@ jobs:
   desplegar:
     name: Desplegar en GKE
     needs: [validar]
-    if: vars.GCP_PROYECTO != '' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: vars.GCP_PROYECTO != '' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     environment: produccion   # las credenciales de RabbitMQ, Redis y los mineros son secretos de este ambiente
     steps:
@@ -110,3 +129,23 @@ jobs:
           kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base | kubectl apply -f -
           kubectl -n blockchain rollout status statefulset/rabbitmq --timeout=10m
           kubectl -n blockchain rollout status statefulset/redis --timeout=10m
+
+      # Prometheus, Alertmanager, Grafana y Loki en el nodegroup de infra; Fluent Bit en todos los nodos.
+      # KEDA consulta monitoreo-prometheus.monitoring.svc:9090 (el escalador, BC-29).
+      - name: Observabilidad
+        env:
+          GRAFANA_CLAVE: ${{ secrets.GRAFANA_CLAVE }}
+        run: |
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin \
+            --from-literal=admin-password="$GRAFANA_CLAVE" --dry-run=client -o yaml | kubectl apply -f -
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add fluent https://fluent.github.io/helm-charts
+          helm upgrade --install monitoreo prometheus-community/kube-prometheus-stack --version "$PROMETHEUS_VERSION" \
+            -n monitoring -f pilar2/k8s/monitoreo/valores-prometheus.yaml -f pilar3/helm/monitoreo.yaml --wait --timeout 10m
+          helm upgrade --install loki grafana/loki --version "$LOKI_VERSION" \
+            -n monitoring -f pilar2/k8s/monitoreo/valores-loki.yaml -f pilar3/helm/loki.yaml --wait --timeout 10m
+          helm upgrade --install fluent-bit fluent/fluent-bit --version "$FLUENT_BIT_VERSION" \
+            -n monitoring -f pilar2/k8s/monitoreo/valores-fluent-bit.yaml --wait
+          kubectl apply -k pilar2/k8s/monitoreo

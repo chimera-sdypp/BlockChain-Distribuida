@@ -65,6 +65,14 @@ resource "google_compute_instance_template" "minero" {
     access_config {} # IP pública efímera: para salir a Internet sin Cloud NAT
   }
 
+  # Spot: si GCP la reclama se borra, y el escalador la vuelve a crear en su próximo apply.
+  scheduling {
+    provisioning_model          = "SPOT"
+    preemptible                 = true
+    automatic_restart           = false
+    instance_termination_action = "DELETE"
+  }
+
   service_account {
     email  = google_service_account.minero.email
     scopes = ["cloud-platform"]

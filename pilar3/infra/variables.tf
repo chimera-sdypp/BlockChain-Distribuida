@@ -15,15 +15,15 @@ variable "zona" {
 }
 
 variable "nodos_infra" {
-  description = "Nodos del nodegroup de infra: RabbitMQ x3, Redis x3, Traefik, KEDA y la observabilidad"
+  description = "Nodos del nodegroup de infra: RabbitMQ x3, Redis x3, Traefik y KEDA (los requests suman ~0,5 vCPU)"
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "nodos_apps" {
-  description = "Nodos del nodegroup de apps: frontend, backend, nct, trp y gateway (x2) y el escalador"
+  description = "Nodos del nodegroup de apps: frontend, backend, nct, trp y gateway (x2) y el escalador (~0,5 vCPU)"
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "maquina" {
@@ -32,6 +32,13 @@ variable "maquina" {
 }
 
 # Disco estándar y chico: la quota de SSD de la cuenta de prueba es baja.
+# Spot: ~70 % más barato que el normal. Si GCP se lleva el nodo, GKE crea otro y los pods vuelven
+# (RabbitMQ y Redis con sus discos). Para una demo de la cátedra alcanza.
+variable "spot" {
+  type    = bool
+  default = true
+}
+
 variable "disco_gb" {
   type    = number
   default = 30

@@ -1,13 +1,14 @@
 # Pilar 3 — Despliegue, pruebas y escalabilidad
 
-> **Falta la nube.** El código está, pero todavía no se aplicó en GCP: no hay proyecto, ni cluster, ni
-> variables `GCP_*` en el repo. Sin esas variables los pipelines sólo validan (`fmt` y `validate`).
+> **Desplegado** en el proyecto `chimera-blockchain` (org `distribuidos-chimera`). Sistema en `http://<IP de Traefik>`
+> y estado de cada servicio en `/salud/<servicio>`; los mineros entran por `http://<IP del gateway>:8081`.
+> Sin las variables `GCP_*` en el repo los pipelines sólo validan (`fmt` y `validate`).
 
 | Carpeta | Qué es | Pipeline |
 |---|---|---|
 | `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager y Workload Identity Federation (BC-31) | A mano, una vez |
 | `infra/` | VPC y GKE zonal con dos nodegroups, `infra` (con taint) y `apps` (BC-32) | 1 · `pilar3-cluster.yml` |
-| `helm/`, `k8s/servicios-base/` | Traefik, KEDA, RabbitMQ ×3 y Redis ×3 en el nodegroup de infra (BC-33) | 2 · `pilar3-servicios-base.yml` |
+| `helm/`, `k8s/servicios-base/` | Traefik, KEDA, RabbitMQ ×3, Redis ×3 y la observabilidad en el nodegroup de infra (BC-33, BC-37) | 2 · `pilar3-servicios-base.yml` |
 | `k8s/apps/` | frontend, backend, nct, trp, gateway y escalador en el nodegroup de apps, y `/salud/<servicio>` (BC-34) | 3 · `pilar3-apps.yml` |
 | `vms/` | Plantilla de las VMs minero-cpu, firewall y permisos (BC-35) | 4 · `pilar3-vms.yml` |
 | `vms/instancias/` | Las VMs `minero-cpu-0…N-1` (BC-35) | Ninguno: lo aplica el escalador |
@@ -43,24 +44,23 @@ El proveedor OIDC sólo acepta tokens de `chimera-sdypp/BlockChain-Distribuida`.
 
 - **En un PR:** gitleaks, `tofu fmt`, `validate` y `plan`. El plan queda comentado en el PR.
 - **Al mergear a `main`:** `apply`.
-- **Nodegroups:** `infra` tiene 2 nodos y taint `nodegroup=infra:NoSchedule`; `apps`, 2 nodos. Las máquinas son `e2-standard-2` con disco estándar de 30 GB.
+- **Nodegroups:** `infra` tiene 1 nodo y taint `nodegroup=infra:NoSchedule`; `apps`, 1 nodo (los requests de cada uno suman ~0,5 vCPU). Las máquinas son `e2-standard-2` **spot** con disco estándar de 30 GB: si GCP se lleva un nodo, GKE crea otro y los pods vuelven.
 - **Cuentas de servicio:**
   - La de los nodos (`gke-nodos`) baja las imágenes de Artifact Registry, así que no hacen falta pull secrets.
   - La del escalador entra a GCP desde el ServiceAccount `blockchain/escalador` por Workload Identity. Los permisos sobre las VMs se los da `vms/` (BC-35).
-- **Costo estimado:** 4 × e2-standard-2 ≈ USD 0,27/h (≈ USD 6,5/día), más los LoadBalancer. El cluster zonal no paga la administración. **Cobra desde que existe:** al terminar, `tofu destroy`.
+- **Costo estimado:** ≈ USD 0,10/h (≈ USD 2,5/día): 2 nodos spot, los 2 LoadBalancer (Traefik y gateway, lo que más pesa) y los discos. El cluster zonal no paga la administración. **Cobra desde que existe:** al terminar, `tofu destroy`.
 
 Para conectarse: `tofu output -raw conectarse`.
 
 ## Pipeline 2 · Servicios base
 
-> **Falta la observabilidad** (BC-37): Prometheus, Grafana y Loki también van en este pipeline.
-
-- **En un PR:** gitleaks, `helm template` de Traefik y KEDA, y `kubectl kustomize` de RabbitMQ y Redis.
-- **Al mergear a `main`:** los instala en GKE y espera a que estén listos.
+- **En un PR:** gitleaks, `helm template` de todos los charts y `kubectl kustomize` de RabbitMQ, Redis y el monitoreo.
+- **Al mergear a `main`** (o a mano, con *Run workflow*): los instala en GKE y espera a que estén listos.
 - **Traefik** (chart 42.3.2) es la clase de Ingress por defecto, con 2 réplicas. Su LoadBalancer es la IP pública del sistema, en el puerto 80. El balanceador HTTP de GKE está desactivado en `infra/`.
 - **KEDA** usa el chart 2.21.0, el mismo que en k3s.
 - **RabbitMQ y Redis** usan los manifiestos del Pilar 2 sin cambios: [`servicios-base/`](k8s/servicios-base/kustomization.yaml) sólo les agrega el nodeSelector y la toleration de infra. Sus Services son internos.
 - **El Secret `blockchain-secretos`** sale de los secretos del ambiente `produccion` de GitHub: `RABBIT_USUARIO`, `RABBIT_CLAVE`, `RABBIT_COOKIE`, `REDIS_CLAVE` y `MINER_TOKEN`. El `MINER_TOKEN` tiene que ser el mismo que el de Secret Manager, porque es el que leen las VMs.
+- **Observabilidad (BC-37):** los mismos charts y values que en k3s ([pilar2](../pilar2/README.md)), más [`monitoreo.yaml`](helm/monitoreo.yaml) y [`loki.yaml`](helm/loki.yaml), que los mandan al nodegroup de infra. La contraseña de Grafana sale del secreto `GRAFANA_CLAVE` del ambiente. Se entra por port-forward: `kubectl -n monitoring port-forward svc/monitoreo-grafana 3000:80`.
 
 ## Pipeline 3 · Apps
 
@@ -75,7 +75,7 @@ Para conectarse: `tofu output -raw conectarse`.
   - el proyecto y el bucket salen de [`gcp.env`](k8s/apps/gcp.env), que completa el pipeline;
   - Workload Identity se configura con la anotación del ServiceAccount.
 
-  Sin Prometheus (BC-37), KEDA no lo prende.
+  KEDA lo prende y lo apaga según el Prometheus del Pipeline 2 (0 pods en reposo).
 - **Health-check público:** `http://<IP de Traefik>/salud/<servicio>` para `backend`, `frontend`, `nct`, `trp` y `gateway`. Devuelve el `/health` del servicio: `{servicio: estado, rabbitmq: …, redis: …}`, y 503 si algo está caído. El escalador no tiene, porque apagado es su estado normal.
 - La imagen del minero GPU no va en este pipeline: la publica `ci.yml` en GHCR.
 
@@ -105,4 +105,4 @@ Lo arma `k8s/apps/` (Pipeline 3). El pod necesita:
 
 A mano, desde `pilar3/vms/instancias/`: `tofu apply -var proyecto=$PROYECTO -var cantidad=1` crea `minero-cpu-0`, y con `cantidad=0` se borra.
 
-> **Quota de la cuenta de prueba:** los términos del Free Trial limitan Compute Engine a **8 vCPU a la vez** (también cuentan los nodos de GKE). Con 4 nodos e2-standard-2 ya son 8, así que no queda lugar para las VMs. `VMS_MAXIMO` del escalador tiene que entrar en lo que sobre: cada e2-highcpu-2 usa 2 vCPU.
+> **Quotas del proyecto:** 32 vCPU en todas las regiones y **8 IPs públicas en us-central1**. Las IPs son el límite: 2 nodos + 2 LoadBalancer usan 4, y cada VM minera (e2-highcpu-2 spot) usa una, así que `VMS_MAXIMO=3` entra.

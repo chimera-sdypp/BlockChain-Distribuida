@@ -98,12 +98,18 @@ def test_tofu_inicia_lee_y_aplica_la_cantidad():
     tofu = Tofu("/tofu", ejecutar=ejecutar)
     assert tofu.actual() == 2
     tofu.aplicar(3)
-    assert ejecutar.comandos == [["init", "-input=false"], ["output", "-raw", "cantidad"],
+    assert ejecutar.comandos == [["init", "-input=false"], ["output", "-no-color", "-raw", "cantidad"],
                                  ["apply", "-auto-approve", "-input=false", "-var", "cantidad=3"]]
 
 
 def test_tofu_sin_state_es_cero():
     tofu = Tofu("/tofu", ejecutar=Ejecutar({"output": subprocess.CalledProcessError(1, "tofu")}))
+    assert tofu.actual() == 0
+
+
+def test_tofu_con_state_vacio_es_cero():
+    aviso = "Warning: No outputs found\n\nThe state file either has no outputs defined, or all the defined outputs\n"
+    tofu = Tofu("/tofu", ejecutar=Ejecutar({"output": aviso}))
     assert tofu.actual() == 0
 
 

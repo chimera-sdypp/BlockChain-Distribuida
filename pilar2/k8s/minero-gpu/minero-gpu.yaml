@@ -1,0 +1,37 @@
+# Minero GPU (BC-27) en el k3s de una PC con NVIDIA (BC-36): no va en k8s/kustomization.yaml,
+# porque corre en otro cluster y le habla al gateway de GKE por su IP pública.
+# Se despliega con desplegar.sh (ver README.md de esta carpeta), que completa GATEWAY_URL y la imagen.
+# Que entre o salga una GPU es escalar este Deployment: kubectl scale deployment minero-gpu --replicas=N
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minero-gpu
+  labels: { app: minero-gpu }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: minero-gpu }
+  template:
+    metadata:
+      labels: { app: minero-gpu }
+    spec:
+      # El runtime de NVIDIA (nvidia-container-toolkit) le pasa la GPU y el driver al contenedor.
+      runtimeClassName: nvidia
+      containers:
+        - name: minero-gpu
+          # La CI la publica en GHCR: :main al mergear a main, :dev a dev y :<sha>.
+          image: ghcr.io/chimera-sdypp/minero-gpu:main
+          env:
+            - { name: GATEWAY_URL, value: "http://GATEWAY_IP:8081" }
+            # El id de cada minero es el nombre del pod: cada réplica cobra lo suyo.
+            - name: MINERO_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: MINER_TOKEN
+              valueFrom: { secretKeyRef: { name: minero-gpu, key: MINER_TOKEN } }
+          resources:
+            limits: { nvidia.com/gpu: 1, memory: 512Mi }
+            requests: { cpu: 100m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001

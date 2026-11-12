@@ -6,9 +6,14 @@ import sys
 from collections import deque
 from logging.handlers import RotatingFileHandler
 
+from prometheus_client import Counter
+
 # Fluent Bit separa este formato en fecha, nivel y mensaje.
 FORMATO = "%(asctime)s | %(levelname)s | %(message)s"
 FECHA = "%Y-%m-%d %H:%M:%S"
+
+# Uno por proceso: configurar() puede llamarse varias veces (los tests lo hacen).
+ERRORES = Counter("blockchain_errores", "Logs de nivel ERROR o superior", ["servicio", "tipo"])
 
 
 class Memoria(logging.Handler):
@@ -22,6 +27,21 @@ class Memoria(logging.Handler):
         self.lineas.append(self.format(registro))
 
 
+class ContadorDeErrores(logging.Handler):
+    """Suma cada log ERROR o superior a blockchain_errores_total{servicio, tipo}.
+
+    `tipo` es la clase de la excepción adjunta, o "log" si no trae ninguna.
+    """
+
+    def __init__(self, servicio):
+        super().__init__(logging.ERROR)
+        self.servicio = servicio
+
+    def emit(self, registro):
+        excepcion = registro.exc_info[0] if registro.exc_info else None
+        ERRORES.labels(self.servicio, excepcion.__name__ if excepcion else "log").inc()
+
+
 def configurar(servicio, nivel="INFO", directorio="logs"):
     os.makedirs(directorio, exist_ok=True)
     formato = logging.Formatter(FORMATO, FECHA)
@@ -30,6 +50,7 @@ def configurar(servicio, nivel="INFO", directorio="logs"):
         Memoria(),
         RotatingFileHandler(os.path.join(directorio, f"{servicio}.log"),
                             maxBytes=1_000_000, backupCount=3, encoding="utf-8"),
+        ContadorDeErrores(servicio),
     ]
     raiz = logging.getLogger()
     for viejo in raiz.handlers[:]:

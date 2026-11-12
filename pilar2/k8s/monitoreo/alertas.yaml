@@ -1,0 +1,47 @@
+# Alertas del sistema (BC-37). Sin receivers: se ven en la UI de Grafana, Prometheus o Alertmanager.
+# Las métricas que vienen de Redis las reportan igual las 2 réplicas: por eso max().
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: blockchain-alertas
+spec:
+  groups:
+    - name: blockchain
+      rules:
+        - alert: SinMinerosGPU
+          # «vale 0 o no existe»: sin el gateway (o antes del primer scrape) no hay serie.
+          expr: (max(blockchain_mineros{tipo="gpu"}) or vector(0)) == 0
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: No queda ningún minero GPU vivo
+            description: El sistema mina sólo con CPU (o no mina); KEDA debería prender el escalador.
+
+        - alert: ColaRangosAcumulada
+          # Umbral provisorio: se ajusta con las pruebas de desempeño (BC-38 a BC-41).
+          expr: max(rabbitmq_queue_messages{queue="rangos"}) > 50
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $value }} rangos esperan un minero"
+            description: Los mineros no dan abasto con los rangos publicados por el TrP.
+
+        - alert: SinBloquesNuevos
+          # Sólo con trabajo apilado: el sistema ocioso no confirma bloques y está bien.
+          expr: |
+            sum(increase(blockchain_bloques_total[10m])) == 0
+            and on() (max(blockchain_tx_pendientes) + max(blockchain_tx_en_cajas)) > 0
+          labels: { severity: critical }
+          annotations:
+            summary: Hay transacciones apiladas y no salió ningún bloque en 10 minutos
+
+        - alert: ServicioCaido
+          # El escalador apagado (0 réplicas) es su estado normal: KEDA lo prende cuando hace falta.
+          expr: |
+            up{namespace="blockchain"} == 0
+            or kube_deployment_status_replicas_available{namespace="blockchain", deployment!="escalador"} == 0
+            or kube_statefulset_status_replicas_ready{namespace="blockchain", statefulset!="escalador"} == 0
+          for: 30s
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $labels.namespace }}: {{ $labels.pod }}{{ $labels.deployment }}{{ $labels.statefulset }} no responde"

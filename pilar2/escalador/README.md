@@ -48,8 +48,7 @@ El tercero existe para que el escalador siga vivo hasta borrar sus VMs (sus mine
 Con RabbitMQ, Redis y los servicios ya desplegados (`kubectl apply -k k8s`):
 
 ```bash
-helm install monitoreo prometheus-community/kube-prometheus-stack --version 92.13.1 \
-  -n monitoring --create-namespace -f k8s/monitoreo/valores-prometheus.yaml
+# el monitoreo (Secret de Grafana, kube-prometheus-stack, Loki y Fluent Bit): ver pilar2/README.md
 helm install keda kedacore/keda --version 2.21.0 -n keda --create-namespace
 kubectl apply -k k8s/monitoreo
 docker build -f escalador/Dockerfile -t escalador:dev .   # e importarla en k3s

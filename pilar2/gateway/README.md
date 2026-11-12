@@ -1,6 +1,6 @@
 # Gateway de los mineros
 
-La única puerta de los mineros al sistema. Los mineros están fuera del cluster (las VMs de Compute Engine y la PC con GPU), y RabbitMQ y Redis no se publican en Internet: el gateway habla HTTP con los mineros y, por adentro, con RabbitMQ y Redis. No guarda estado en memoria, así que cualquier pod atiende a cualquier minero.
+La única puerta de los mineros al sistema. Los mineros están fuera del cluster (las VMs de Compute Engine y el k3s de la PC con GPU), y RabbitMQ y Redis no se publican en Internet: el gateway habla HTTP con los mineros y, por adentro, con RabbitMQ y Redis. No guarda estado en memoria, así que cualquier pod atiende a cualquier minero.
 
 ## API
 

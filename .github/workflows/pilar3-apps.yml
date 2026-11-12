@@ -4,7 +4,7 @@
 # de las demás: un rolling update sólo de lo que cambió.
 # PR → tests, build y validar los manifiestos. Merge a main → push y despliegue.
 # Mientras no exista la variable GCP_PROYECTO (falta la nube) no hay push ni despliegue.
-# La imagen del minero GPU no va acá: se publica en GHCR desde ci.yml (los mineros GPU corren en una PC, BC-36).
+# La imagen del minero GPU no va acá: se publica en GHCR desde ci.yml (la baja el k3s de la PC con GPU, BC-36).
 name: "Pipeline 3 · Apps"
 
 on:

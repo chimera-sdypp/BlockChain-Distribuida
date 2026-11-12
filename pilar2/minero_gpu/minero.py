@@ -1,6 +1,6 @@
 """Minero GPU (BC-27): el mismo cliente del gateway que el minero CPU, buscando con CUDA.
 
-Corre fuera del cluster (en una PC con NVIDIA, BC-36): sólo necesita la URL del gateway,
+Corre fuera del cluster (en el k3s de una PC con NVIDIA, BC-36): sólo necesita la URL del gateway,
 el MINER_TOKEN y una GPU NVIDIA.
 """
 

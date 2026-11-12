@@ -75,7 +75,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # En los PR sólo se construye; al mergear a dev o main se publica (para correrlo con Docker en cualquier máquina con GPU).
+      # En los PR sólo se construye; al mergear a dev o main se publica (la baja el k3s de la PC con GPU, BC-36).
       - uses: docker/build-push-action@v6
         with:
           context: .

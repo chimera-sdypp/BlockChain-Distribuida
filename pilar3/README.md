@@ -7,6 +7,10 @@
 |---|---|---|
 | `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager y Workload Identity Federation (BC-31) | A mano, una vez |
 | `infra/` | VPC y GKE zonal con dos nodegroups, `infra` (con taint) y `apps` (BC-32) | 1 · `pilar3-cluster.yml` |
+| `helm/`, `k8s/servicios-base/` | Traefik, KEDA, RabbitMQ ×3 y Redis ×3 en el nodegroup de infra (BC-33) | 2 · `pilar3-servicios-base.yml` |
+| `k8s/apps/` | frontend, backend, nct, trp, gateway y escalador en el nodegroup de apps, y `/salud/<servicio>` (BC-34) | 3 · `pilar3-apps.yml` |
+| `vms/` | Plantilla de las VMs minero-cpu, firewall y permisos (BC-35) | 4 · `pilar3-vms.yml` |
+| `vms/instancias/` | Las VMs `minero-cpu-0…N-1` (BC-35) | Ninguno: lo aplica el escalador |
 
 Cada módulo tiene `provider.tf`, `variables.tf`, `main.tf` y `outputs.tf`. El state va a un bucket de GCS (`<proyecto>-tfstate`), con lock y con versionado. Nunca va al repo.
 
@@ -46,3 +50,59 @@ El proveedor OIDC sólo acepta tokens de `chimera-sdypp/BlockChain-Distribuida`.
 - **Costo estimado:** 4 × e2-standard-2 ≈ USD 0,27/h (≈ USD 6,5/día), más los LoadBalancer. El cluster zonal no paga la administración. **Cobra desde que existe:** al terminar, `tofu destroy`.
 
 Para conectarse: `tofu output -raw conectarse`.
+
+## Pipeline 2 · Servicios base
+
+> **Falta la observabilidad** (BC-37): Prometheus, Grafana y Loki también van en este pipeline.
+
+- **En un PR:** gitleaks, `helm template` de Traefik y KEDA, y `kubectl kustomize` de RabbitMQ y Redis.
+- **Al mergear a `main`:** los instala en GKE y espera a que estén listos.
+- **Traefik** (chart 42.3.2) es la clase de Ingress por defecto, con 2 réplicas. Su LoadBalancer es la IP pública del sistema, en el puerto 80. El balanceador HTTP de GKE está desactivado en `infra/`.
+- **KEDA** usa el chart 2.21.0, el mismo que en k3s.
+- **RabbitMQ y Redis** usan los manifiestos del Pilar 2 sin cambios: [`servicios-base/`](k8s/servicios-base/kustomization.yaml) sólo les agrega el nodeSelector y la toleration de infra. Sus Services son internos.
+- **El Secret `blockchain-secretos`** sale de los secretos del ambiente `produccion` de GitHub: `RABBIT_USUARIO`, `RABBIT_CLAVE`, `RABBIT_COOKIE`, `REDIS_CLAVE` y `MINER_TOKEN`. El `MINER_TOKEN` tiene que ser el mismo que el de Secret Manager, porque es el que leen las VMs.
+
+## Pipeline 3 · Apps
+
+- **En un PR:** gitleaks y, por cada app que cambió, sus tests con RabbitMQ y Redis reales, y el build de la imagen. Además se valida `k8s/apps/`.
+- **Al mergear a `main`:**
+  - push a Artifact Registry (tag = sha) de las apps que cambiaron;
+  - un solo apply de [`k8s/apps/`](k8s/apps/kustomization.yaml): las que cambiaron usan la imagen nueva y las demás, la que ya corre. Así el rolling update es sólo de lo que cambió.
+  - **La primera vez** se corre a mano (*Run workflow*) con «todas».
+- **Los manifiestos** son los del Pilar 2, con el nodeSelector de apps. Los nodos bajan las imágenes con su cuenta de servicio, sin pull secrets.
+- **El escalador** corre con VMs de verdad:
+  - el módulo `vms/instancias/` entra como ConfigMap y un initContainer lo copia a `/tofu`;
+  - el proyecto y el bucket salen de [`gcp.env`](k8s/apps/gcp.env), que completa el pipeline;
+  - Workload Identity se configura con la anotación del ServiceAccount.
+
+  Sin Prometheus (BC-37), KEDA no lo prende.
+- **Health-check público:** `http://<IP de Traefik>/salud/<servicio>` para `backend`, `frontend`, `nct`, `trp` y `gateway`. Devuelve el `/health` del servicio: `{servicio: estado, rabbitmq: …, redis: …}`, y 503 si algo está caído. El escalador no tiene, porque apagado es su estado normal.
+- La imagen del minero GPU no va en este pipeline: la publica `ci.yml` en GHCR.
+
+## Pipeline 4 · VMs minero-cpu
+
+- **En un PR:** gitleaks, build de la imagen del minero CPU, `fmt`, `validate` (también de `instancias/`) y `plan` comentado.
+- **Al mergear a `main`:** push de la imagen a Artifact Registry (tag = sha) y `apply` de la plantilla. Necesita la variable `GATEWAY_URL`, la IP pública del gateway (`http://<ip>:8081`).
+- **La VM:** Container-Optimized OS con un startup-script ([`arrancar.sh`](vms/arrancar.sh)) que:
+  1. lee el `MINER_TOKEN` de Secret Manager con la cuenta de la VM (queda en `/run`, que está en RAM);
+  2. baja la imagen con esa misma cuenta;
+  3. arranca el minero con `MINERO_ID` = nombre de la VM.
+
+  La VM no tiene puertos de entrada: el minero sólo sale hacia el gateway.
+- **Dos states:** la plantilla (`vms`) la aplica el pipeline y las instancias (`vms-instancias`) las aplica el escalador. Si fueran uno solo, un apply del pipeline volvería a `cantidad = 0` y borraría las VMs del escalador.
+- **Cada imagen nueva crea una plantilla nueva.** Las VMs que ya estaban se recrean con ella en el próximo apply del escalador.
+
+### El escalador con VMs de verdad
+
+Lo arma `k8s/apps/` (Pipeline 3). El pod necesita:
+
+| Variable | Valor |
+|---|---|
+| `VMS_ACTIVAS` | `1` |
+| `TOFU_DIR` | `/tofu` (ahí copia el módulo el initContainer) |
+| `TF_CLI_ARGS_init` | `-backend-config=bucket=<proyecto>-tfstate` |
+| `TF_VAR_proyecto` | el proyecto |
+
+A mano, desde `pilar3/vms/instancias/`: `tofu apply -var proyecto=$PROYECTO -var cantidad=1` crea `minero-cpu-0`, y con `cantidad=0` se borra.
+
+> **Quota de la cuenta de prueba:** los términos del Free Trial limitan Compute Engine a **8 vCPU a la vez** (también cuentan los nodos de GKE). Con 4 nodos e2-standard-2 ya son 8, así que no queda lugar para las VMs. `VMS_MAXIMO` del escalador tiene que entrar en lo que sobre: cada e2-highcpu-2 usa 2 vCPU.

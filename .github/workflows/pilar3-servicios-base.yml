@@ -1,0 +1,112 @@
+# Pipeline 2 (BC-33): los servicios base en el nodegroup de infra de GKE:
+# Traefik (la IP pública), KEDA, RabbitMQ x3 y Redis x3, y el Secret con las credenciales.
+# PR → arma todo (helm template y kustomize) para ver que es válido. Merge a main → lo despliega.
+# Mientras no exista la variable GCP_PROYECTO (falta la nube) sólo valida.
+# La observabilidad (BC-37) va también en este pipeline: todavía no está.
+name: "Pipeline 2 · Servicios base"
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "pilar3/helm/**"
+      - "pilar3/k8s/servicios-base/**"
+      - "pilar3/k8s/nodegroup-infra.yaml"
+      - "pilar2/k8s/namespace.yaml"
+      - "pilar2/k8s/rabbitmq.yaml"
+      - "pilar2/k8s/rabbitmq/**"
+      - "pilar2/k8s/redis.yaml"
+      - "pilar2/k8s/redis/**"
+      - ".github/workflows/pilar3-servicios-base.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pilar3/helm/**"
+      - "pilar3/k8s/servicios-base/**"
+      - "pilar3/k8s/nodegroup-infra.yaml"
+      - "pilar2/k8s/namespace.yaml"
+      - "pilar2/k8s/rabbitmq.yaml"
+      - "pilar2/k8s/rabbitmq/**"
+      - "pilar2/k8s/redis.yaml"
+      - "pilar2/k8s/redis/**"
+      - ".github/workflows/pilar3-servicios-base.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: pilar3-servicios-base
+
+env:
+  TRAEFIK_VERSION: 42.3.2
+  KEDA_VERSION: 2.21.0
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+
+  validar:
+    name: Validar
+    needs: [gitleaks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Charts
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm template traefik traefik/traefik --version "$TRAEFIK_VERSION" -n traefik -f pilar3/helm/traefik.yaml > /dev/null
+          helm template keda kedacore/keda --version "$KEDA_VERSION" -n keda -f pilar3/helm/keda.yaml > /dev/null
+      - name: RabbitMQ y Redis
+        run: kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base > /dev/null
+      - name: Falta la nube
+        if: vars.GCP_PROYECTO == ''
+        run: echo "::notice::Sin GCP_PROYECTO (falta la nube, BC-31) sólo se valida; no se despliega."
+
+  desplegar:
+    name: Desplegar en GKE
+    needs: [validar]
+    if: vars.GCP_PROYECTO != '' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: produccion   # las credenciales de RabbitMQ, Redis y los mineros son secretos de este ambiente
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: blockchain
+          location: ${{ vars.GCP_ZONA || 'us-central1-a' }}
+
+      - name: Traefik y KEDA
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm upgrade --install traefik traefik/traefik --version "$TRAEFIK_VERSION" \
+            -n traefik --create-namespace -f pilar3/helm/traefik.yaml --wait
+          helm upgrade --install keda kedacore/keda --version "$KEDA_VERSION" \
+            -n keda --create-namespace -f pilar3/helm/keda.yaml --wait
+
+      # Desde los secretos del ambiente, nunca desde el repo. apply: si ya existe, lo actualiza.
+      - name: Secret blockchain-secretos
+        env:
+          RABBIT_USUARIO: ${{ secrets.RABBIT_USUARIO }}
+          RABBIT_CLAVE: ${{ secrets.RABBIT_CLAVE }}
+          RABBIT_COOKIE: ${{ secrets.RABBIT_COOKIE }}
+          REDIS_CLAVE: ${{ secrets.REDIS_CLAVE }}
+          MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
+        run: |
+          kubectl create namespace blockchain --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n blockchain create secret generic blockchain-secretos \
+            --from-literal=RABBIT_USUARIO="$RABBIT_USUARIO" --from-literal=RABBIT_CLAVE="$RABBIT_CLAVE" \
+            --from-literal=RABBIT_COOKIE="$RABBIT_COOKIE" --from-literal=REDIS_CLAVE="$REDIS_CLAVE" \
+            --from-literal=MINER_TOKEN="$MINER_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: RabbitMQ y Redis
+        run: |
+          kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base | kubectl apply -f -
+          kubectl -n blockchain rollout status statefulset/rabbitmq --timeout=10m
+          kubectl -n blockchain rollout status statefulset/redis --timeout=10m

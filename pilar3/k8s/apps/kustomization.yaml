@@ -1,0 +1,51 @@
+# Las apps en GKE (Pipeline 3, BC-34): los manifiestos del Pilar 2, en el nodegroup de apps, con las
+# imágenes de Artifact Registry (las agrega el pipeline en `images:`), el escalador con VMs de verdad
+# y el health-check público. Necesita lo del Pipeline 2 (Traefik y KEDA) y gcp.env con el proyecto.
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/apps | kubectl apply -f -
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: blockchain
+
+resources:
+  - ../../../pilar2/k8s/backend.yaml
+  - ../../../pilar2/k8s/frontend.yaml
+  - ../../../pilar2/k8s/nct.yaml
+  - ../../../pilar2/k8s/trp.yaml
+  - ../../../pilar2/k8s/gateway.yaml
+  - ../../../pilar2/k8s/ingress.yaml
+  - ../../../pilar2/k8s/escalador/escalador.yaml
+  - salud.yaml
+
+configMapGenerator:
+  - name: escalador-tofu
+    files:
+      - ../../vms/instancias/provider.tf
+      - ../../vms/instancias/variables.tf
+      - ../../vms/instancias/main.tf
+      - ../../vms/instancias/outputs.tf
+      - ../../vms/instancias/.terraform.lock.hcl
+  - name: escalador-gcp
+    envs:
+      - gcp.env
+
+patches:
+  - path: ../nodegroup-apps.yaml
+    target:
+      kind: Deployment
+  - path: escalador.yaml
+
+# La cuenta de GCP del escalador (Workload Identity), sacada de gcp.env.
+replacements:
+  - source:
+      kind: ConfigMap
+      name: escalador-gcp
+      fieldPath: data.CUENTA_ESCALADOR
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: escalador
+        fieldPaths:
+          - metadata.annotations.[iam.gke.io/gcp-service-account]
+        options:
+          create: true

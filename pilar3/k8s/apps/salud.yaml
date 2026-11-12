@@ -1,0 +1,49 @@
+# Health-check público por servicio (requisito general del enunciado), por la IP de Traefik:
+#   GET /salud/<servicio> → el /health de ese servicio: {servicio: estado, rabbitmq: …, redis: …}
+# El escalador no está: es 0 o 1 pod según KEDA, y apagado es su estado normal.
+
+# El NCT y el TrP no reciben tráfico: estos Services existen sólo para su /salud.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nct
+  labels: { app: nct }
+spec:
+  selector: { app: nct }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trp
+  labels: { app: trp }
+spec:
+  selector: { app: trp }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: salud
+spec:
+  replacePathRegex:
+    regex: "^/salud/.*"
+    replacement: /health
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: salud
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: blockchain-salud@kubernetescrd
+spec:
+  rules:
+    - http:
+        paths:
+          - { path: /salud/backend, pathType: Exact, backend: { service: { name: backend, port: { name: http } } } }
+          - { path: /salud/frontend, pathType: Exact, backend: { service: { name: frontend, port: { name: http } } } }
+          - { path: /salud/nct, pathType: Exact, backend: { service: { name: nct, port: { name: http } } } }
+          - { path: /salud/trp, pathType: Exact, backend: { service: { name: trp, port: { name: http } } } }
+          - { path: /salud/gateway, pathType: Exact, backend: { service: { name: gateway, port: { name: http } } } }

@@ -1,0 +1,102 @@
+# Pipeline 4 (BC-35): la imagen del minero CPU y la plantilla de sus VMs (pilar3/vms/).
+# PR → build de la imagen, fmt, validate y plan (comentado en el PR).
+# Merge a main → push de la imagen a Artifact Registry y apply de la plantilla.
+# Cuántas VMs hay no lo decide este pipeline: lo decide el escalador (vms/instancias/, otro state).
+# Mientras no exista la variable GCP_PROYECTO (falta la nube) sólo construye y valida.
+name: "Pipeline 4 · VMs minero-cpu"
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "pilar3/vms/**"
+      - "pilar2/minero_cpu/**"
+      - "pilar2/comun/**"
+      - "pilar2/Dockerfile"
+      - ".github/workflows/pilar3-vms.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pilar3/vms/**"
+      - "pilar2/minero_cpu/**"
+      - "pilar2/comun/**"
+      - "pilar2/Dockerfile"
+      - ".github/workflows/pilar3-vms.yml"
+
+permissions:
+  contents: read
+  id-token: write        # el token OIDC que se cambia por uno de GCP
+  pull-requests: write   # comentar el plan
+
+concurrency:
+  group: pilar3-vms
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+
+  vms:
+    name: Imagen y plantilla
+    needs: [gitleaks]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pilar3/vms
+    env:
+      TF_VAR_proyecto: ${{ vars.GCP_PROYECTO }}
+      TF_VAR_imagen: ${{ vars.GCP_REGISTRO }}/minero-cpu:${{ github.sha }}
+      TF_VAR_gateway_url: ${{ vars.GATEWAY_URL }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+
+      - name: Formato
+        run: tofu fmt -check -recursive
+      - name: Validar la plantilla y las instancias
+        run: |
+          tofu init -backend=false -input=false && tofu validate
+          tofu -chdir=instancias init -backend=false -input=false && tofu -chdir=instancias validate
+      - name: Imagen del minero CPU
+        working-directory: pilar2
+        run: docker build --build-arg SERVICIO=minero_cpu -t minero-cpu .
+
+      - name: Falta la nube
+        if: vars.GCP_PROYECTO == ''
+        run: echo "::notice::Sin GCP_PROYECTO (falta la nube, BC-31) sólo se construye y valida; no hay push, plan ni apply."
+
+      - id: gcp
+        uses: google-github-actions/auth@v2
+        if: vars.GCP_PROYECTO != ''
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+          token_format: access_token
+
+      - name: Plan
+        if: vars.GCP_PROYECTO != ''
+        run: |
+          tofu init -reconfigure -input=false -backend-config="bucket=${{ vars.GCP_PROYECTO }}-tfstate"
+          tofu plan -input=false -no-color -out=plan.bin | tee plan.txt
+
+      - name: Comentar el plan en el PR
+        if: vars.GCP_PROYECTO != '' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo '### Pipeline 4 · tofu plan'; echo '```'; tail -c 60000 plan.txt; echo '```'; } > comentario.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comentario.md
+
+      # El login al registry es con el token de 1 h de WIF: no hay credenciales guardadas.
+      - name: Subir la imagen y aplicar la plantilla
+        if: vars.GCP_PROYECTO != '' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TOKEN_GCP: ${{ steps.gcp.outputs.access_token }}
+        run: |
+          echo "$TOKEN_GCP" | docker login -u oauth2accesstoken --password-stdin "${TF_VAR_imagen%%/*}"
+          docker tag minero-cpu "$TF_VAR_imagen"
+          docker push "$TF_VAR_imagen"
+          tofu apply -input=false -auto-approve plan.bin

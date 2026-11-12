@@ -1,0 +1,9 @@
+# Manda un workload al nodegroup de infra (que tiene el taint nodegroup=infra:NoSchedule).
+- op: add
+  path: /spec/template/spec/nodeSelector
+  value:
+    nodegroup: infra
+- op: add
+  path: /spec/template/spec/tolerations
+  value:
+    - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }

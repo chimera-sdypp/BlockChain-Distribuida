@@ -49,6 +49,13 @@ resource "google_container_cluster" "blockchain" {
     channel = "REGULAR"
   }
 
+  # El Ingress lo atiende Traefik (Pipeline 2): sin esto, GKE además crearía su balanceador HTTP (pago).
+  addons_config {
+    http_load_balancing {
+      disabled = true
+    }
+  }
+
   # Que un tofu destroy lo pueda borrar al terminar la evaluación.
   deletion_protection = false
 }

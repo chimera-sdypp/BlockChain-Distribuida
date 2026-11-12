@@ -1,0 +1,18 @@
+# Observabilidad en GKE (Pipeline 2, BC-37): los values de k3s (pilar2/k8s/monitoreo/valores-prometheus.yaml)
+# más esto, que manda todo al nodegroup de infra. node-exporter ya corre en todos los nodos.
+#   helm upgrade --install monitoreo prometheus-community/kube-prometheus-stack --version 92.13.1 -n monitoring \
+#     -f pilar2/k8s/monitoreo/valores-prometheus.yaml -f pilar3/helm/monitoreo.yaml
+x-infra: &infra
+  nodeSelector: { nodegroup: infra }
+  tolerations: [{ key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }]
+
+prometheusOperator:
+  <<: *infra
+  admissionWebhooks:
+    patch: *infra
+prometheus:
+  prometheusSpec: *infra
+alertmanager:
+  alertmanagerSpec: *infra
+grafana: *infra
+kube-state-metrics: *infra

@@ -10,6 +10,11 @@ kubeconfig*
 *.out
 pilar1/**/hola
 pilar1/**/hello_world
+pilar1/**/vectors
+pilar1/**/md5
+pilar1/**/pow
+pilar1/**/pow_rango
+pilar1/**/pow_rango_cpu
 pilar1/**/*.exe
 
 # Python
@@ -17,6 +22,7 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.pytest_cache/
 
 # OpenTofu / Terraform
 .terraform/
@@ -25,3 +31,9 @@ venv/
 
 # Logs
 logs/
+
+# Contexto y documentación local (no pushear)
+contexto/
+contexto_temp.html
+
+pilar1/hit6/corrida-*.log

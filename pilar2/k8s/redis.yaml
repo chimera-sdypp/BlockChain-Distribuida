@@ -1,0 +1,112 @@
+# Redis: redis-0 primario y redis-1/-2 réplicas, con un Sentinel en cada pod que elige otro primario si cae.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless      # nombre DNS fijo por pod: redis-0.redis-headless…
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: redis
+  ports:
+    - { name: redis, port: 6379 }
+    - { name: sentinel, port: 26379 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis               # sólo Sentinel: REDIS_SENTINELS=redis:26379; él dice cuál es el primario
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - { name: sentinel, port: 26379 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        runAsUser: 999        # usuario redis de la imagen
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: configurar
+          image: redis:8.0.6-alpine
+          command: ["sh", "/scripts/iniciar.sh"]
+          env: &entorno
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: REDIS_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+            - name: REDISCLI_AUTH     # redis-cli la toma de acá: no queda en los argumentos de las probes
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+            - { name: config, mountPath: /config }
+      containers:
+        - name: redis
+          image: redis:8.0.6-alpine
+          command: ["redis-server", "/config/redis.conf"]
+          env: *entorno
+          ports:
+            - { name: redis, containerPort: 6379 }
+          volumeMounts:
+            - { name: datos, mountPath: /data }
+            - { name: config, mountPath: /config }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 512Mi }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+        - name: sentinel
+          image: redis:8.0.6-alpine
+          command: ["redis-sentinel", "/config/sentinel.conf"]
+          env: *entorno
+          ports:
+            - { name: sentinel, containerPort: 26379 }
+          volumeMounts:
+            - { name: config, mountPath: /config }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -p 26379 ping | grep -q PONG"]
+            periodSeconds: 5
+      volumes:
+        - name: scripts
+          configMap:
+            name: redis-config
+        - name: config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

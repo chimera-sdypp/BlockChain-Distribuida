@@ -1,0 +1,22 @@
+# /metrics de cada servicio Python, pod por pod (el NCT no tiene Service: por eso PodMonitor).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: blockchain-apps
+spec:
+  selector:
+    matchExpressions:
+      - { key: app, operator: In, values: [backend, frontend, nct, trp, gateway, escalador] }
+  podMetricsEndpoints:
+    - { port: http, path: /metrics, interval: 10s }
+---
+# RabbitMQ: /metrics/per-object da los mensajes de cada cola (rabbitmq_queue_messages{queue=…}).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: rabbitmq
+spec:
+  selector:
+    matchLabels: { app: rabbitmq }
+  podMetricsEndpoints:
+    - { port: prometheus, path: /metrics/per-object, interval: 10s }

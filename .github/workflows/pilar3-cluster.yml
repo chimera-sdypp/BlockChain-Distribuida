@@ -1,0 +1,75 @@
+# Pipeline 1 (BC-32): el cluster GKE con OpenTofu (pilar3/infra/).
+# PR → fmt, validate y plan (comentado en el PR). Merge a main → apply.
+# Entra a GCP por Workload Identity Federation (BC-31): no hay claves en GitHub.
+# Mientras no exista la variable GCP_PROYECTO (falta la nube) sólo valida.
+name: "Pipeline 1 · Cluster"
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths: ["pilar3/infra/**", ".github/workflows/pilar3-cluster.yml"]
+  push:
+    branches: [main]
+    paths: ["pilar3/infra/**", ".github/workflows/pilar3-cluster.yml"]
+
+permissions:
+  contents: read
+  id-token: write        # el token OIDC que se cambia por uno de GCP
+  pull-requests: write   # comentar el plan
+
+concurrency:
+  group: pilar3-cluster  # dos apply a la vez no (el state además tiene lock)
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+
+  tofu:
+    name: OpenTofu
+    needs: [gitleaks]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pilar3/infra
+    env:
+      TF_VAR_proyecto: ${{ vars.GCP_PROYECTO }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+
+      - name: Formato
+        run: tofu fmt -check -recursive
+      - name: Validar
+        run: tofu init -backend=false -input=false && tofu validate
+
+      - name: Falta la nube
+        if: vars.GCP_PROYECTO == ''
+        run: echo "::notice::Sin GCP_PROYECTO (falta la nube, BC-31) sólo se valida; no hay plan ni apply."
+
+      - uses: google-github-actions/auth@v2
+        if: vars.GCP_PROYECTO != ''
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+
+      - name: Plan
+        if: vars.GCP_PROYECTO != ''
+        run: |
+          tofu init -reconfigure -input=false -backend-config="bucket=${{ vars.GCP_PROYECTO }}-tfstate"
+          tofu plan -input=false -no-color -out=plan.bin | tee plan.txt
+
+      - name: Comentar el plan en el PR
+        if: vars.GCP_PROYECTO != '' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo '### Pipeline 1 · tofu plan'; echo '```'; tail -c 60000 plan.txt; echo '```'; } > comentario.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comentario.md
+
+      - name: Apply
+        if: vars.GCP_PROYECTO != '' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: tofu apply -input=false -auto-approve plan.bin

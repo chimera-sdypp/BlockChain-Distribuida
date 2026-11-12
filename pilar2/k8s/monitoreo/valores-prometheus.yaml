@@ -1,0 +1,54 @@
+# kube-prometheus-stack para el namespace monitoring (lo arma a mano en k3s; en GKE, el Pipeline 2, BC-33).
+# Lo nuestro (PodMonitor, reglas, dashboard) va en este directorio con kustomize: ver kustomization.yaml.
+# KEDA consulta monitoreo-prometheus.monitoring.svc:9090: no cambiar el release ni fullnameOverride.
+fullnameOverride: monitoreo
+prometheus:
+  prometheusSpec:
+    # Que tome todos los PodMonitor/ServiceMonitor/PrometheusRule, no sólo los que lleven la etiqueta del release.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    scrapeInterval: 10s
+    retention: 3d
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+
+# Sin receivers: las alertas se miran en la UI de Grafana o de Alertmanager.
+alertmanager:
+  config:
+    route: { receiver: "null" }
+    receivers: [{ name: "null" }]
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+
+grafana:
+  # La contraseña no está en el repo: el Secret grafana-admin se crea a mano (ver README).
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  # Sin disco: el dashboard y los datasources salen del provisioning en cada arranque.
+  persistence: { enabled: false }
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+  sidecar:
+    dashboards:
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL  # el ConfigMap del dashboard vive en blockchain
+    datasources:
+      uid: prometheus
+  # Loki (chart grafana/loki, release loki): ver valores-loki.yaml.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      url: http://loki.monitoring.svc:3100
+      access: proxy
+
+# k3s mete el control plane en un solo proceso: estos targets quedarían caídos para siempre.
+kubeEtcd: { enabled: false }
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }

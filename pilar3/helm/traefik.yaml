@@ -1,0 +1,20 @@
+# Traefik (Pipeline 2, BC-33): el Ingress controller del cluster, en el nodegroup de infra.
+# Su Service (LoadBalancer, el tipo por defecto del chart) es la IP pública del sistema (puerto 80): /api → backend; / y /eventos → frontend.
+#   helm upgrade --install traefik traefik/traefik --version 42.3.2 -n traefik --create-namespace -f traefik.yaml
+deployment:
+  replicas: 2
+
+# Clase por defecto: el Ingress del Pilar 2 no nombra ninguna (en k3s también es Traefik).
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+
+providers:
+  kubernetesIngress:
+    publishedService:
+      enabled: true
+
+nodeSelector:
+  nodegroup: infra
+tolerations:
+  - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }

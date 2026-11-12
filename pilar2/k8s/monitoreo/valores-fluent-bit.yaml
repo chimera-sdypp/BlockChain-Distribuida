@@ -1,0 +1,103 @@
+# Fluent Bit (chart fluent/fluent-bit, release fluent-bit, namespace monitoring): un pod por nodo que lee
+# los logs de los contenedores del namespace blockchain y los manda a Loki. Ver pilar2/README.md.
+kind: DaemonSet
+testFramework: { enabled: false }
+tolerations:
+  - operator: Exists  # todos los nodos, aunque tengan taints (los nodegroups de GKE)
+resources:
+  requests: { cpu: 20m, memory: 64Mi }
+
+config:
+  inputs: |
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*_blockchain_*.log
+        multiline.parser cri, docker
+        Tag kube.*
+        DB /var/log/flb_blockchain.db
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+
+  filters: |
+    [FILTER]
+        Name kubernetes
+        Match kube.*
+        Merge_Log Off
+        Labels On
+        Annotations Off
+
+    # Un traceback llega línea por línea: se pega al log que lo trajo (el que empieza con fecha).
+    [FILTER]
+        Name multiline
+        Match kube.*
+        multiline.key_content log
+        multiline.parser traceback_comun
+
+    # «fecha | NIVEL | mensaje» de comun/registro.py: saca el nivel y deja la línea entera en log.
+    [FILTER]
+        Name parser
+        Match kube.*
+        Key_Name log
+        Parser registro_comun
+        Reserve_Data On
+        Preserve_Key On
+
+    # A Loki sólo tiene que llegar la línea. Lo que va como label o metadato queda en un mapa `meta`
+    # que el output borra con remove_keys (con el mapa kubernetes o varias claves sueltas, en
+    # Fluent Bit 5.1 remove_keys dejaba algunas en la línea).
+    [FILTER]
+        Name nest
+        Match kube.*
+        Operation lift
+        Nested_under kubernetes
+        Add_prefix k8s_
+
+    [FILTER]
+        Name nest
+        Match kube.*
+        Operation lift
+        Nested_under k8s_labels
+        Add_prefix k8s_label_
+
+    [FILTER]
+        Name record_modifier
+        Match kube.*
+        Allowlist_key log
+        Allowlist_key nivel
+        Allowlist_key k8s_namespace_name
+        Allowlist_key k8s_label_app
+        Allowlist_key k8s_pod_name
+
+    [FILTER]
+        Name nest
+        Match kube.*
+        Operation nest
+        Wildcard k8s_*
+        Nest_under meta
+        Remove_prefix k8s_
+
+  outputs: |
+    [OUTPUT]
+        Name loki
+        Match kube.*
+        Host loki.monitoring.svc
+        Port 3100
+        labels namespace=$meta['namespace_name'], app=$meta['label_app'], nivel=$nivel
+        structured_metadata pod=$meta['pod_name']
+        remove_keys meta, nivel
+        drop_single_key raw
+        line_format json
+        Retry_Limit 10
+
+  customParsers: |
+    [PARSER]
+        Name registro_comun
+        Format regex
+        Regex ^(?<fecha>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| (?<nivel>[A-Z]+) \| (?<mensaje>[\s\S]*)$
+
+    [MULTILINE_PARSER]
+        Name traceback_comun
+        Type regex
+        Flush_Timeout 1000
+        Rule "start_state" "/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \| /" "cont"
+        Rule "cont" "/^(?!\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \| )/" "cont"

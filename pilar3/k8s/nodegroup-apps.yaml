@@ -1,0 +1,5 @@
+# Manda un workload al nodegroup de apps.
+- op: add
+  path: /spec/template/spec/nodeSelector
+  value:
+    nodegroup: apps

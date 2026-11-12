@@ -1,0 +1,6 @@
+# Loki en GKE (Pipeline 2, BC-37): los values de k3s (pilar2/k8s/monitoreo/valores-loki.yaml) más el nodegroup de infra.
+#   helm upgrade --install loki grafana/loki --version 7.6.0 -n monitoring \
+#     -f pilar2/k8s/monitoreo/valores-loki.yaml -f pilar3/helm/loki.yaml
+singleBinary:
+  nodeSelector: { nodegroup: infra }
+  tolerations: [{ key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }]

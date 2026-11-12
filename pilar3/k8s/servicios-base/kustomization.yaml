@@ -1,0 +1,29 @@
+# RabbitMQ x3 y Redis x3 en GKE (Pipeline 2, BC-33): los mismos manifiestos del Pilar 2 (BC-17 y BC-18),
+# en el nodegroup de infra. Sólo Services internos: los mineros entran por el gateway.
+# Lee archivos de pilar2/, así que se arma con:
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base | kubectl apply -f -
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: blockchain
+
+resources:
+  - ../../../pilar2/k8s/namespace.yaml
+  - ../../../pilar2/k8s/rabbitmq.yaml
+  - ../../../pilar2/k8s/redis.yaml
+
+configMapGenerator:
+  - name: rabbitmq-config
+    files:
+      - ../../../pilar2/k8s/rabbitmq/rabbitmq.conf
+      - ../../../pilar2/k8s/rabbitmq/enabled_plugins
+      - ../../../pilar2/k8s/rabbitmq/colas.json
+      - ../../../pilar2/k8s/rabbitmq/iniciar.sh
+  - name: redis-config
+    files:
+      - ../../../pilar2/k8s/redis/iniciar.sh
+
+patches:
+  - path: ../nodegroup-infra.yaml
+    target:
+      kind: StatefulSet

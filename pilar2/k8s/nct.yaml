@@ -1,0 +1,58 @@
+# NCT (BC-23): valida transacciones, arma cajas y tareas, y verifica y guarda los bloques.
+# 2 réplicas que se coordinan sólo por Redis (Lua y SET NX). No recibe tráfico HTTP: sin Service;
+# /metrics lo lee Prometheus por las anotaciones del pod.
+# La imagen se construye a mano (ver pilar2/nct/README.md) hasta que haya Artifact Registry (BC-31).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nct
+  labels: { app: nct }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: nct }
+  template:
+    metadata:
+      labels: { app: nct }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: nct
+          image: nct:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: RABBIT_HOST, value: rabbitmq }
+            - { name: REDIS_SENTINELS, value: "redis:26379" }
+            - { name: VENTANA_SEGUNDOS, value: "30" }
+            - { name: TX_POR_CAJA, value: "100" }
+            - { name: TAREA_VENCE_SEGUNDOS, value: "600" }
+            - { name: WAIT_REPLICAS, value: "1" }       # Redis tiene 2 réplicas: esperar a una
+            - { name: SALDOS_INICIALES, value: '{"alice": 1000, "bob": 1000, "carol": 1000}' }
+            - name: RABBIT_USUARIO
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
+            - name: RABBIT_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+            - name: REDIS_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # /metrics no depende de RabbitMQ ni de Redis: reinicia sólo si el proceso se colgó.
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001     # el usuario «app» del Dockerfile

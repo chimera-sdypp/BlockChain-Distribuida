@@ -1,0 +1,89 @@
+# Escalador (BC-29): 0 o 1 pod, lo prende y apaga KEDA según lo que ve Prometheus.
+# La cuenta de servicio es la que en GKE se ata por Workload Identity a la de GCP que maneja las VMs (BC-35).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: escalador
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: escalador
+  labels: { app: escalador }
+spec:
+  # Sin `replicas`: lo maneja KEDA, y un `kubectl apply` no lo tiene que pisar.
+  selector:
+    matchLabels: { app: escalador }
+  template:
+    metadata:
+      labels: { app: escalador }
+    spec:
+      serviceAccountName: escalador
+      # Si KEDA lo apaga en medio de un tofu apply, que lo deje terminar (si no, el lock queda tomado).
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: escalador
+          image: escalador:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: REDIS_SENTINELS, value: "redis:26379" }
+            - { name: VMS_ACTIVAS, value: "0" }          # 1 cuando exista el módulo de BC-35
+            - { name: VMS_MAXIMO, value: "3" }
+            - { name: PREFIJO_BASE, value: "6" }          # el mismo que el TrP
+            - { name: SEGUNDOS_POR_BLOQUE, value: "30" }
+            - { name: ESPERA_SUBIR_SEGUNDOS, value: "30" }
+            - { name: ESPERA_BAJAR_SEGUNDOS, value: "120" }
+            - name: REDIS_CLAVE
+              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+---
+# Prende el escalador si se apilan rangos o transacciones, y lo deja prendido mientras queden mineros
+# CPU vivos (sus VMs): si no, KEDA lo apagaría antes de que las borre. Con nada de eso, a los
+# cooldownPeriod segundos lo baja a 0.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: escalador
+spec:
+  scaleTargetRef: { name: escalador }
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 15
+  cooldownPeriod: 180
+  triggers:
+    - type: prometheus
+      name: rangos-sin-tomar
+      metadata:
+        serverAddress: http://monitoreo-prometheus.monitoring.svc:9090
+        query: max(rabbitmq_queue_messages{queue="rangos"}) or vector(0)
+        threshold: "1"
+        activationThreshold: "0"
+    - type: prometheus
+      name: tx-en-cajas
+      metadata:
+        serverAddress: http://monitoreo-prometheus.monitoring.svc:9090
+        query: max(blockchain_tx_en_cajas) or vector(0)
+        threshold: "1"
+        activationThreshold: "0"
+    - type: prometheus
+      name: mineros-cpu-vivos
+      metadata:
+        serverAddress: http://monitoreo-prometheus.monitoring.svc:9090
+        query: max(blockchain_mineros{tipo="cpu"}) or vector(0)
+        threshold: "1"
+        activationThreshold: "0"

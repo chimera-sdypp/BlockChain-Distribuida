@@ -93,6 +93,7 @@ resource "google_container_node_pool" "nodegroup" {
 
   node_config {
     machine_type    = var.maquina
+    spot            = var.spot
     disk_type       = "pd-standard"
     disk_size_gb    = var.disco_gb
     service_account = google_service_account.nodos.email

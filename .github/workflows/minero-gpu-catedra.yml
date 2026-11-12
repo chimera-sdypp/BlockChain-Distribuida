@@ -1,0 +1,53 @@
+# Mineros GPU en el K3s de la cátedra (BC-36): corre pilar2/k8s/minero-gpu/desplegar.sh.
+# Sólo a mano (Actions → Run workflow): cambia lo que corre en un cluster que no es nuestro.
+# Ambiente «catedra»: secrets KUBECONFIG_CATEDRA y MINER_TOKEN; variables CATEDRA_NAMESPACE y GATEWAY_URL.
+name: Minero GPU · K3s de la cátedra
+
+on:
+  workflow_dispatch:
+    inputs:
+      replicas:
+        description: "Réplicas (una GPU cada una; 0 apaga los mineros GPU)"
+        required: true
+        default: "1"
+      tag:
+        description: "Tag de la imagen en GHCR (dev, main o un sha)"
+        required: true
+        default: "dev"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minero-gpu-catedra   # dos despliegues a la vez no
+
+jobs:
+  desplegar:
+    name: Desplegar en el K3s de la cátedra
+    runs-on: ubuntu-latest
+    environment: catedra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kubeconfig
+        env:
+          KUBECONFIG_CATEDRA: ${{ secrets.KUBECONFIG_CATEDRA }}
+        run: |
+          [ -n "$KUBECONFIG_CATEDRA" ] || { echo "::error::Falta el secret KUBECONFIG_CATEDRA en el ambiente catedra"; exit 1; }
+          install -m 600 /dev/null "$RUNNER_TEMP/kubeconfig"
+          printf '%s\n' "$KUBECONFIG_CATEDRA" > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      # Los inputs van por variables de entorno (no interpolados en el script); desplegar.sh los valida.
+      - name: Desplegar
+        env:
+          REPLICAS: ${{ inputs.replicas }}
+          IMAGEN: ghcr.io/${{ github.repository_owner }}/minero-gpu:${{ inputs.tag }}
+          NAMESPACE: ${{ vars.CATEDRA_NAMESPACE }}
+          GATEWAY_URL: ${{ vars.GATEWAY_URL }}
+          MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
+        run: pilar2/k8s/minero-gpu/desplegar.sh "$REPLICAS"
+
+      - name: Borrar el kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kubeconfig"

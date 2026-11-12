@@ -25,7 +25,21 @@ docker build -f pilar2/minero_gpu/Dockerfile -t minero-gpu .
 docker run --gpus all -e GATEWAY_URL=... -e MINER_TOKEN=... minero-gpu
 ```
 
-Mismas variables que el minero CPU, más `MINAR` (el binario; en la imagen, `/usr/local/bin/minar`). La imagen se publica en `ghcr.io/chimera-sdypp/minero-gpu` al mergear a `dev` o `main`; el Deployment para el K3s de la cátedra está en `k8s/minero-gpu/` (BC-36).
+Mismas variables que el minero CPU, más `MINAR` (el binario; en la imagen, `/usr/local/bin/minar`). La imagen se publica en `ghcr.io/chimera-sdypp/minero-gpu` al mergear a `dev` o `main`.
+
+## En una PC con GPU (BC-36)
+
+Los mineros GPU del sistema en GKE corren en la PC de un integrante (RTX 4060), no en el K3s de la cátedra. Desde la raíz del repo, con un Python que tenga `pilar2/comun/requirements.txt`:
+
+```bash
+export GATEWAY_URL=http://<IP del gateway>:8081 GCP_PROYECTO=<id del proyecto>
+pilar2/minero_gpu/correr.sh 1                                  # N mineros en la GPU local; Ctrl-C los corta
+BACKEND_URL=http://<IP de Traefik> pilar2/minero_gpu/verificar.sh   # código 0 si hay al menos 1 GPU vivo
+```
+
+- `correr.sh` compila `minar.cu` la primera vez (en `~/.cache/blockchain-distribuida/`, `ARQUITECTURA=sm_89` por defecto) y lee el `MINER_TOKEN` de Secret Manager con `gcloud`, así no queda en disco. Cada minero se llama `gpu-pc-<n>`.
+- **Entrada y salida de GPU (BC-41):** arrancar `correr.sh` es que entra; Ctrl-C es que sale. El keep-alive vence a los 15 s y el gateway deja de contarlo: `verificar.sh 0` da código 0 cuando ya no queda ninguno. Si hay trabajo apilado, KEDA prende el escalador y aparece una VM CPU (BC-29).
+- `verificar.sh` lista lo que ve el gateway (`/api/mineros`): id, tipo, si está vivo, bench y hashes/s.
 
 ## Pruebas
 

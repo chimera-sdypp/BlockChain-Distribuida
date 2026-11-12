@@ -2,7 +2,7 @@
 # Muestra los mineros que el gateway tiene registrados (nodo:<id>, vía la API del backend) y
 # termina con código 0 si hay al menos MINIMO mineros GPU vivos (por defecto 1).
 #
-#   BACKEND_URL=http://<IP o host del Ingress> ./verificar.sh [MINIMO]
+#   BACKEND_URL=http://<IP de Traefik> pilar2/minero_gpu/verificar.sh [MINIMO]
 #
 # Con MINIMO=0 sirve para comprobar el apagado: termina con 0 si NO queda ningún GPU vivo.
 

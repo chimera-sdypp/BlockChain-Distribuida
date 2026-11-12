@@ -80,6 +80,7 @@ jobs:
         if: vars.GCP_PROYECTO != ''
         run: |
           tofu init -reconfigure -input=false -backend-config="bucket=${{ vars.GCP_PROYECTO }}-tfstate"
+          set -o pipefail   # sin esto, el tee se come el error de tofu y el paso da verde
           tofu plan -input=false -no-color -out=plan.bin | tee plan.txt
 
       - name: Comentar el plan en el PR

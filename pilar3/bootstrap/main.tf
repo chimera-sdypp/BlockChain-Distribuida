@@ -84,8 +84,9 @@ data "google_storage_bucket" "tfstate" {
   name = "${var.proyecto}-tfstate"
 }
 
+# Admin sólo de este bucket: además del state, vms/ le da al escalador permiso sobre él (leer y cambiar su IAM).
 resource "google_storage_bucket_iam_member" "ci_tfstate" {
   bucket = data.google_storage_bucket.tfstate.name
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.admin"
   member = "serviceAccount:${google_service_account.ci.email}"
 }

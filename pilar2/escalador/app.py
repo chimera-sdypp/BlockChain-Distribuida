@@ -59,9 +59,11 @@ class Tofu:
 
     def actual(self):
         try:
-            return int(self._tofu("output", "-raw", "cantidad").stdout.strip() or 0)
+            salida = self._tofu("output", "-no-color", "-raw", "cantidad").stdout.strip()
         except subprocess.CalledProcessError:
             return 0  # sin state todavía: nunca se aplicó
+        # Con el state vacío tofu no falla: avisa «No outputs found» por stdout.
+        return int(salida) if salida.isdigit() else 0
 
     def aplicar(self, cantidad):
         salida = self._tofu("apply", "-auto-approve", "-input=false", "-var", f"cantidad={cantidad}")

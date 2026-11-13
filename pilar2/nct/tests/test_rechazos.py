@@ -81,3 +81,43 @@ def test_un_sin_solucion_tardio_de_una_tarea_ya_confirmada_no_rearma(armar, redi
     nct.procesar_solucion({"tarea": vieja, "sin_solucion": True})
 
     assert len(publicador.tareas()) == 1 and redis.hget(f"tarea:{vieja}", "estado") == "confirmada"
+
+
+def test_si_vence_la_tarea_actual_la_vieja_queda_vencida_y_se_arma_otra_con_la_misma_caja(armar, redis, publicador):
+    nct = armar()
+    vieja = tarea_en_curso(redis, nct)
+    redis.delete("tarea:actual")  # venció sin bloque (TAREA_VENCE_SEGUNDOS)
+
+    nueva = nct.armar_si_libre()
+
+    assert nueva and nueva != vieja and redis.get("tarea:actual") == nueva
+    assert redis.hget(f"tarea:{vieja}", "estado") == "vencida"
+    assert redis.hget(f"tarea:{nueva}", "estado") == "en_curso"
+    assert redis.hget(f"tarea:{nueva}", "caja") == redis.hget(f"tarea:{vieja}", "caja")
+
+
+def test_la_solucion_tardia_de_una_tarea_vencida_no_entra(armar, redis, publicador):
+    nct = armar()
+    vieja = tarea_en_curso(redis, nct)
+    solucion = minar(redis, vieja)
+    redis.delete("tarea:actual")
+    nueva = nct.armar_si_libre()
+
+    nct.procesar_solucion(solucion)
+
+    assert redis.llen("cadena") == 1
+    assert redis.hget(f"tarea:{vieja}", "estado") == "vencida"
+    assert redis.get("tarea:actual") == nueva  # la nueva sigue: nadie le soltó la marca
+
+
+def test_rearmar_o_confirmar_no_marca_como_vencida_a_la_anterior(armar, redis, publicador):
+    nct = armar()
+    vieja = tarea_en_curso(redis, nct)
+    nct.procesar_solucion({"tarea": vieja, "sin_solucion": True})
+    nueva = rearmada(redis, publicador, vieja)["tarea"]
+    redis.hset(f"tarea:{nueva}", "prefijo", "0")
+
+    nct.procesar_solucion(minar(redis, nueva))
+
+    assert redis.hget(f"tarea:{vieja}", "estado") == "sin_solucion"
+    assert redis.hget(f"tarea:{nueva}", "estado") == "confirmada"

@@ -34,6 +34,7 @@ patches:
     target:
       kind: Deployment
   - path: escalador.yaml
+  - path: gateway-ip.yaml
 
 # La cuenta de GCP del escalador (Workload Identity), sacada de gcp.env.
 replacements:

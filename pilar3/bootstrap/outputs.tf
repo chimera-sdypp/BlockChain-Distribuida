@@ -16,3 +16,7 @@ output "GCP_CUENTA_CI" {
 output "GCP_REGISTRO" {
   value = "${var.region}-docker.pkg.dev/${var.proyecto}/${google_artifact_registry_repository.imagenes.repository_id}"
 }
+
+output "GATEWAY_URL" {
+  value = "http://${google_compute_address.gateway.address}:8081"
+}

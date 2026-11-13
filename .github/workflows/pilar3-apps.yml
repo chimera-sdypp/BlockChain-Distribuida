@@ -76,6 +76,9 @@ jobs:
       - id: filtro
         uses: dorny/paths-filter@v3
         with:
+          # En un push compara contra el commit anterior de main; sin esto compara contra la rama por
+          # defecto (dev), que después de mergear dev a main es igual: no desplegaba nada.
+          base: ${{ github.event.before }}
           filters: |
             backend: [pilar2/backend/**, pilar2/comun/**, pilar2/Dockerfile]
             frontend: [pilar2/frontend/**, pilar2/comun/**, pilar2/Dockerfile]

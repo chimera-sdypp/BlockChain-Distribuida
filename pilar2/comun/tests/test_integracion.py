@@ -65,8 +65,8 @@ def test_si_el_manejador_falla_se_reintenta_una_vez_y_se_descarta(cola):
         intentos.append(mensaje)
         raise RuntimeError("falla a propósito")
 
+    publicador.conectar()  # declara la cola antes que el consumidor: así no se publica en una quorum a medio crear
     consumir_en_hilo(consumidor, cola, falla)
-    publicador.conectar()
     publicador.publicar(cola, {"malo": True})
     assert esperar(lambda: len(intentos) == 2)
     time.sleep(1)
@@ -87,8 +87,8 @@ def test_si_falla_redis_el_mensaje_vuelve_hasta_que_se_procesa(cola, monkeypatch
             raise redis.ConnectionError("Sentinel todavía no eligió primario")
         procesados.append(mensaje)
 
+    publicador.conectar()  # declara la cola antes que el consumidor: así no se publica en una quorum a medio crear
     consumir_en_hilo(consumidor, cola, redis_caido_tres_veces)
-    publicador.conectar()
     publicador.publicar(cola, {"tx": 1})
     assert esperar(lambda: procesados == [{"tx": 1}])
     assert len(intentos) == 4

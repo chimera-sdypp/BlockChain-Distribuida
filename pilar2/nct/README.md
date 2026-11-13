@@ -42,7 +42,7 @@ Todo eso pasa en **un script Lua**: leer el saldo, comparar, sumar a `comprometi
 
 - **Ticker:** cada `VENTANA_SEGUNDOS` (30), una sola réplica (lock `ticker` con `SET NX EX`) cierra cajas. Un Lua saca todo `tx:pendientes` y lo agrega a `cajas` en listas de como mucho `TX_POR_CAJA` (100) ids. No se arma un bloque por transacción, sino uno por ventana.
 - **Una sola tarea a la vez:** `tarea:actual` se toma con `SET NX EX TAREA_VENCE_SEGUNDOS` (600). Quien la consigue arma el bloque candidato con la **primera caja** sobre la punta de la cadena: escribe `tarea:<id>` y publica `{tarea, previous_hash, transacciones, timestamp}` en `tareas`. El prefijo lo elige el TrP.
-- **La caja no se saca de la fila hasta que su bloque se confirma.** Si el NCT muere a mitad de camino, `tarea:actual` vence y la misma caja se vuelve a armar: no se pierde ninguna transacción.
+- **La caja no se saca de la fila hasta que su bloque se confirma.** Si el NCT muere a mitad de camino, `tarea:actual` vence y la misma caja se vuelve a armar: no se pierde ninguna transacción. La tarea vieja queda `vencida`, así los mineros cortan sus rangos en vez de seguir minando algo que ya no se espera.
 - **Cuándo se arma:** en cada tic, después de confirmar un bloque y al arrancar.
 
 ## Verificación y consenso (BC-26)

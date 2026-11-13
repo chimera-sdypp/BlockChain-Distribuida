@@ -132,6 +132,20 @@ redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[4])
 return 1
 """
 
+# Releva a la tarea anterior: la nueva pasa a ser la última y, si la anterior sigue en curso (venció
+# tarea:actual sin bloque), queda «vencida». Así el gateway deja de prestar sus rangos y les dice
+# «cortá» a los mineros que la tienen, y si después llega su solución el consenso la descarta.
+# KEYS: tarea:ultima. ARGV: nueva. Devuelve el id de la que venció, o nada.
+LUA_RELEVAR = """
+local vieja = redis.call('GET', KEYS[1])
+redis.call('SET', KEYS[1], ARGV[1])
+if vieja and vieja ~= ARGV[1] and redis.call('HGET', 'tarea:' .. vieja, 'estado') == 'en_curso' then
+  redis.call('HSET', 'tarea:' .. vieja, 'estado', 'vencida')
+  return vieja
+end
+return false
+"""
+
 TAREA_ACTUAL, TICKER = contrato.TAREA_ACTUAL, "ticker"
 COLA_TAREAS = contrato.COLAS[1]  # tareas
 VENTANA, TX_POR_CAJA, TAREA_VENCE = 30, 100, 600
@@ -169,6 +183,7 @@ class Nct:
         self._soltar = redis.register_script(LUA_SOLTAR)
         self._consenso = redis.register_script(LUA_CONSENSO)
         self._rearmar = redis.register_script(LUA_REARMAR)
+        self._relevar = redis.register_script(LUA_RELEVAR)
         TX_PENDIENTES.set_function(self._contar_pendientes)
         TX_EN_CAJAS.set_function(self._contar_en_cajas)
 
@@ -252,6 +267,9 @@ class Nct:
         punta = self.redis.lindex(contrato.CADENA, -1)
         transacciones = self._transacciones(json.loads(caja))
         timestamp = max(int(time.time()), despues_de + 1)
+        vencida = self._relevar(keys=[contrato.TAREA_ULTIMA], args=[id_tarea])
+        if vencida:
+            log.info("La tarea %s venció sin bloque: se cierra y su caja se vuelve a armar", vencida)
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "transacciones": json.dumps(transacciones),
             "caja": caja, "estado": "en_curso", "publicada": time.time()})

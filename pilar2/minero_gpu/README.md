@@ -31,6 +31,10 @@ Mismas variables que el minero CPU, más `MINAR` (el binario; en la imagen, `/us
 
 Los mineros GPU del sistema en GKE corren en el k3s de la PC de un integrante (RTX 4060), no en el K3s de la cátedra: ver [`k8s/minero-gpu/`](../k8s/minero-gpu/) (preparar el k3s, desplegar, verificar y entrada y salida de GPU para BC-41).
 
+## En Google Colab
+
+[`colab.ipynb`](colab.ipynb) suma la GPU de Colab (T4) al pool, en paralelo con la del k3s: clona el repo, compila `minar.cu` para la GPU que tocó y corre el minero contra el gateway. [Abrir en Colab](https://colab.research.google.com/github/chimera-sdypp/BlockChain-Distribuida/blob/main/pilar2/minero_gpu/colab.ipynb).
+
 ## Pruebas
 
 - `tests/test_minero_gpu.py` corre en el CI con `tests/minar_falso.py` (el mismo protocolo con hashlib). Con `MINAR=<binario>` corre además contra la GPU: el menor nonce coincide con Python para textos de 0 a 6000 bytes (todos los bordes del relleno de MD5: 55, 56, 63, 64…).

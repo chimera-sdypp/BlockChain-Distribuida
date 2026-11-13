@@ -99,11 +99,23 @@ def correr_k6(k6, opciones, cantidad, prefijo, resumen):
     return json.loads(Path(resumen).read_text(encoding="utf-8"))["metrics"]
 
 
-def esperar_confirmacion(api, prefijo, aceptadas, altura_inicial, inicio, opciones):
+def timeout_para(tamano, opciones):
+    """Segundos máximos esperando la confirmación de un bulk.
+
+    Entran como mucho `tx_por_bloque` transacciones por bloque (TX_POR_CAJA del NCT) y los bloques
+    salen de a uno, así que 100.000 son 1000 bloques: el tope crece con el tamaño. Los 120 s fijos
+    cubren la ventana del NCT (30 s) y el primer bloque.
+    """
+    if opciones.timeout:
+        return opciones.timeout
+    return 120 + opciones.segundos_por_bloque * math.ceil(tamano / opciones.tx_por_bloque)
+
+
+def esperar_confirmacion(api, prefijo, aceptadas, altura_inicial, inicio, timeout, opciones):
     """Sigue los bloques nuevos hasta ver `aceptadas` tx de la corrida. Devuelve el resumen."""
     marca = prefijo + "-"
     confirmadas, por_bloque, vista, ultima = 0, [], altura_inicial, None
-    limite = time.time() + opciones.timeout
+    limite = time.time() + timeout
     while confirmadas < aceptadas and time.time() < limite:
         for bloque in api.bloques_desde(vista):
             vista = bloque["altura"]
@@ -136,7 +148,12 @@ def main():
     argumentos.add_argument("--vus", type=int, default=10, help="usuarios virtuales de k6")
     argumentos.add_argument("--lote", type=int, default=1000, help="transacciones por pedido (máximo 1000)")
     argumentos.add_argument("--origenes", type=lambda t: [o for o in t.split(",") if o], default=["alice", "bob", "carol"])
-    argumentos.add_argument("--timeout", type=int, default=900, help="segundos máximos esperando la confirmación")
+    argumentos.add_argument("--timeout", type=int, default=0,
+                            help="segundos máximos esperando la confirmación (0: según el tamaño, ver --segundos-por-bloque)")
+    argumentos.add_argument("--segundos-por-bloque", type=float, default=15.0,
+                            help="tope de segundos por bloque para el timeout automático")
+    argumentos.add_argument("--tx-por-bloque", type=int, default=100,
+                            help="transacciones por bloque como mucho (TX_POR_CAJA del NCT)")
     argumentos.add_argument("--intervalo", type=float, default=1.0, help="segundos entre consultas de bloques")
     argumentos.add_argument("--pausa", type=float, default=5.0, help="segundos entre corridas")
     argumentos.add_argument("--permitir-rechazos", action="store_true",
@@ -173,7 +190,8 @@ def main():
                 metricas = correr_k6(k6, opciones, tamano, prefijo, Path(temporal) / f"{corrida}.json")
                 envio = time.time() - inicio
                 aceptadas = int(metrica(metricas, "tx_aceptadas", "count"))
-                sistema = esperar_confirmacion(api, prefijo, aceptadas, altura_inicial, inicio, opciones)
+                timeout = timeout_para(tamano, opciones)
+                sistema = esperar_confirmacion(api, prefijo, aceptadas, altura_inicial, inicio, timeout, opciones)
                 fila = {
                     "corrida": corrida, "inicio": datetime.fromtimestamp(inicio, timezone.utc).isoformat(timespec="seconds"),
                     "tamano": tamano, "repeticion": repeticion, "vus": opciones.vus, "lote": opciones.lote,
@@ -191,7 +209,7 @@ def main():
                 archivo.flush()
                 print(f"   sistema: {fila['confirmadas']}/{aceptadas} confirmadas en {fila['segundos_confirmacion']} s, "
                       f"{fila['bloques']} bloque(s), {fila['tx_por_bloque_prom']} tx/bloque"
-                      + ("" if fila["completa"] == "si" else "  <- INCOMPLETA (timeout)"), flush=True)
+                      + ("" if fila["completa"] == "si" else f"  <- INCOMPLETA (timeout de {timeout:.0f} s)"), flush=True)
                 time.sleep(opciones.pausa)
     print(f"\nResultados en {opciones.csv}")
 

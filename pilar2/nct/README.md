@@ -49,7 +49,7 @@ Todo eso pasa en **un script Lua**: leer el saldo, comparar, sumar a `comprometi
 
 **Verificación (NCT.3).** El NCT nunca confía en el minero. Con lo que guardó en `tarea:<id>`, recalcula `MD5(texto + nonce)`, y el resultado tiene que coincidir con el hash recibido y empezar con el `prefijo` de esa tarea (el que eligió el TrP). Además, el minero tiene que tener formato de usuario, porque cobra la recompensa en `saldos`.
 
-**Consenso (NCT.4): gana el primer bloque válido que extiende la punta.** Un script Lua, en una sola escritura atómica, agrega el bloque **sólo si** la tarea sigue en curso **y** su `previous_hash` sigue siendo la punta de `cadena`. Si se cumple:
+**Consenso (NCT.4): gana el primer bloque válido que extiende la punta.** Un script Lua, en una sola escritura atómica, agrega el bloque **sólo si** la tarea sigue en curso, su `previous_hash` sigue siendo la punta de `cadena` **y** ninguna de sus transacciones está ya confirmada. Si se cumple:
 
 - guarda `bloque:<hash>` (con su `altura`, `prefijo`, `minero` y `recompensa`) y lo agrega a `cadena`;
 - mueve los saldos (origen −, destino +) y descuenta `comprometido`;
@@ -68,6 +68,7 @@ Después, `WAIT` espera a que una réplica de Redis tenga el bloque, se publica 
 | Todos los rangos volvieron «sin solución» | La misma caja como tarea nueva, con otro id y un timestamp mayor (cambia el hash, así que hay soluciones nuevas) |
 | La solución no pasa la verificación | La tarea queda `rechazada` y se rearma igual |
 | Cambió la punta (entró otro bloque antes) | El bloque no entra; la tarea queda `descartada` y la caja, que sigue primera en la fila, se arma sobre la punta nueva |
+| Alguna transacción ya está en otro bloque | El bloque no entra (sería un doble gasto) y la tarea queda `descartada`. Al armar una tarea se saltean las transacciones ya confirmadas, y si una caja no tiene ninguna nueva sale de la fila |
 
 ## Génesis
 

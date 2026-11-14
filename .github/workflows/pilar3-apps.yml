@@ -76,6 +76,9 @@ jobs:
       - id: filtro
         uses: dorny/paths-filter@v3
         with:
+          # En un push compara contra el commit anterior de main; sin esto compara contra la rama por
+          # defecto (dev), que después de mergear dev a main es igual: no desplegaba nada.
+          base: ${{ github.event.before }}
           filters: |
             backend: [pilar2/backend/**, pilar2/comun/**, pilar2/Dockerfile]
             frontend: [pilar2/frontend/**, pilar2/comun/**, pilar2/Dockerfile]
@@ -182,8 +185,15 @@ jobs:
           CAMBIADAS: ${{ needs.cambios.outputs.apps }}
           REGISTRO: ${{ vars.GCP_REGISTRO }}
           PROYECTO: ${{ vars.GCP_PROYECTO }}
+          GATEWAY_URL: ${{ vars.GATEWAY_URL }}
         run: |
           sed -i "s/PROYECTO/$PROYECTO/g" gcp.env
+          ip=${GATEWAY_URL#http://}; ip=${ip%%:*}
+          if [ -z "$ip" ]; then
+            echo "::error::Falta la variable GATEWAY_URL (la IP fija del gateway, salida de pilar3/bootstrap)."
+            exit 1
+          fi
+          sed -i "s/IP_GATEWAY/$ip/" gateway-ip.yaml
           echo "images:" >> kustomization.yaml
           for app in backend frontend nct trp gateway escalador; do
             if echo "$CAMBIADAS" | jq -e --arg a "$app" 'index($a) != null' > /dev/null; then

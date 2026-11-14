@@ -6,7 +6,7 @@
 
 | Carpeta | Qué es | Pipeline |
 |---|---|---|
-| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager y Workload Identity Federation (BC-31) | A mano, una vez |
+| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31) y la IP fija del gateway | A mano, una vez |
 | `infra/` | VPC y GKE zonal con dos nodegroups, `infra` (con taint) y `apps` (BC-32) | 1 · `pilar3-cluster.yml` |
 | `helm/`, `k8s/servicios-base/` | Traefik, KEDA, RabbitMQ ×3, Redis ×3 y la observabilidad en el nodegroup de infra (BC-33, BC-37) | 2 · `pilar3-servicios-base.yml` |
 | `k8s/apps/` | frontend, backend, nct, trp, gateway y escalador en el nodegroup de apps, y `/salud/<servicio>` (BC-34) | 3 · `pilar3-apps.yml` |
@@ -34,7 +34,7 @@ tofu apply -var proyecto=$PROYECTO
 printf '%s' "$MINER_TOKEN" | gcloud secrets versions add miner-token --data-file=- --project $PROYECTO
 
 # Las salidas se cargan como variables del repo (no son secretos)
-for v in GCP_PROYECTO GCP_WIF_PROVEEDOR GCP_CUENTA_CI GCP_REGISTRO; do
+for v in GCP_PROYECTO GCP_WIF_PROVEEDOR GCP_CUENTA_CI GCP_REGISTRO GATEWAY_URL; do
   gh variable set $v --body "$(tofu output -raw $v)"
 done
 ```

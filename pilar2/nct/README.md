@@ -42,14 +42,14 @@ Todo eso pasa en **un script Lua**: leer el saldo, comparar, sumar a `comprometi
 
 - **Ticker:** cada `VENTANA_SEGUNDOS` (30), una sola réplica (lock `ticker` con `SET NX EX`) cierra cajas. Un Lua saca todo `tx:pendientes` y lo agrega a `cajas` en listas de como mucho `TX_POR_CAJA` (100) ids. No se arma un bloque por transacción, sino uno por ventana.
 - **Una sola tarea a la vez:** `tarea:actual` se toma con `SET NX EX TAREA_VENCE_SEGUNDOS` (600). Quien la consigue arma el bloque candidato con la **primera caja** sobre la punta de la cadena: escribe `tarea:<id>` y publica `{tarea, previous_hash, transacciones, timestamp}` en `tareas`. El prefijo lo elige el TrP.
-- **La caja no se saca de la fila hasta que su bloque se confirma.** Si el NCT muere a mitad de camino, `tarea:actual` vence y la misma caja se vuelve a armar: no se pierde ninguna transacción.
+- **La caja no se saca de la fila hasta que su bloque se confirma.** Si el NCT muere a mitad de camino, `tarea:actual` vence y la misma caja se vuelve a armar: no se pierde ninguna transacción. La tarea vieja queda `vencida`, así los mineros cortan sus rangos en vez de seguir minando algo que ya no se espera.
 - **Cuándo se arma:** en cada tic, después de confirmar un bloque y al arrancar.
 
 ## Verificación y consenso (BC-26)
 
 **Verificación (NCT.3).** El NCT nunca confía en el minero. Con lo que guardó en `tarea:<id>`, recalcula `MD5(texto + nonce)`, y el resultado tiene que coincidir con el hash recibido y empezar con el `prefijo` de esa tarea (el que eligió el TrP). Además, el minero tiene que tener formato de usuario, porque cobra la recompensa en `saldos`.
 
-**Consenso (NCT.4): gana el primer bloque válido que extiende la punta.** Un script Lua, en una sola escritura atómica, agrega el bloque **sólo si** la tarea sigue en curso **y** su `previous_hash` sigue siendo la punta de `cadena`. Si se cumple:
+**Consenso (NCT.4): gana el primer bloque válido que extiende la punta.** Un script Lua, en una sola escritura atómica, agrega el bloque **sólo si** la tarea sigue en curso, su `previous_hash` sigue siendo la punta de `cadena` **y** ninguna de sus transacciones está ya confirmada. Si se cumple:
 
 - guarda `bloque:<hash>` (con su `altura`, `prefijo`, `minero` y `recompensa`) y lo agrega a `cadena`;
 - mueve los saldos (origen −, destino +) y descuenta `comprometido`;
@@ -68,6 +68,7 @@ Después, `WAIT` espera a que una réplica de Redis tenga el bloque, se publica 
 | Todos los rangos volvieron «sin solución» | La misma caja como tarea nueva, con otro id y un timestamp mayor (cambia el hash, así que hay soluciones nuevas) |
 | La solución no pasa la verificación | La tarea queda `rechazada` y se rearma igual |
 | Cambió la punta (entró otro bloque antes) | El bloque no entra; la tarea queda `descartada` y la caja, que sigue primera en la fila, se arma sobre la punta nueva |
+| Alguna transacción ya está en otro bloque | El bloque no entra (sería un doble gasto) y la tarea queda `descartada`. Al armar una tarea se saltean las transacciones ya confirmadas, y si una caja no tiene ninguna nueva sale de la fila |
 
 ## Génesis
 

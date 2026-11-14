@@ -81,13 +81,22 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) 
 return 0
 """
 
-# El consenso (BC-26, NCT.4): agrega el bloque sólo si la tarea sigue en curso y su previous_hash
-# sigue siendo la punta de `cadena`. Todo en una sola escritura atómica: con 2 réplicas nunca
-# entran dos bloques sobre la misma punta, y una solución repetida no guarda nada dos veces.
+# Saca la primera caja de `cajas` sólo si sigue siendo ésa (otra réplica pudo haberla sacado ya).
+# KEYS: cajas. ARGV: la caja, tal cual está en la lista.
+LUA_SACAR_CAJA = """
+if redis.call('LINDEX', KEYS[1], 0) == ARGV[1] then redis.call('LPOP', KEYS[1]) return 1 end
+return 0
+"""
+
+# El consenso (BC-26, NCT.4): agrega el bloque sólo si la tarea sigue en curso, su previous_hash
+# sigue siendo la punta de `cadena` y ninguna de sus transacciones está ya en la cadena (si no,
+# sería un doble gasto). Todo en una sola escritura atómica: con 2 réplicas nunca entran dos
+# bloques sobre la misma punta, y una solución repetida no guarda nada dos veces.
 # KEYS: tarea:<id>, cadena, cajas, saldos, comprometido, tarea:actual, bloque:<hash>.
 # ARGV: id_tarea, block_hash, minero, recompensa, n campos, campo, valor…, (id, origen, destino, monto)…
 # Devuelve {resultado, block_hash, altura}: «confirmada», «repetida» (ya estaba confirmada: con su
-# bloque, para repetir el aviso) o «descartada» (la tarea no seguía en curso o cambió la punta).
+# bloque, para repetir el aviso) o «descartada» (la tarea no seguía en curso, cambió la punta o
+# alguna transacción ya estaba confirmada en otro bloque).
 LUA_CONSENSO = """
 local estado = redis.call('HGET', KEYS[1], 'estado')
 if estado == 'confirmada' then
@@ -100,8 +109,15 @@ if redis.call('LINDEX', KEYS[2], -1) ~= redis.call('HGET', KEYS[1], 'previous_ha
   if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
   return {'descartada'}
 end
-local altura = redis.call('LLEN', KEYS[2])
 local n = tonumber(ARGV[5])
+for i = 6 + 2 * n, #ARGV, 4 do
+  if redis.call('HGET', 'tx:' .. ARGV[i], 'estado') == 'confirmada' then
+    redis.call('HSET', KEYS[1], 'estado', 'descartada')
+    if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
+    return {'descartada'}
+  end
+end
+local altura = redis.call('LLEN', KEYS[2])
 for i = 6, 5 + 2 * n, 2 do redis.call('HSET', KEYS[7], ARGV[i], ARGV[i + 1]) end
 redis.call('HSET', KEYS[7], 'altura', altura)
 redis.call('RPUSH', KEYS[2], ARGV[2])
@@ -130,6 +146,20 @@ if actual and actual ~= ARGV[1] then return 0 end
 redis.call('HSET', KEYS[1], 'estado', ARGV[3])
 redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[4])
 return 1
+"""
+
+# Releva a la tarea anterior: la nueva pasa a ser la última y, si la anterior sigue en curso (venció
+# tarea:actual sin bloque), queda «vencida». Así el gateway deja de prestar sus rangos y les dice
+# «cortá» a los mineros que la tienen, y si después llega su solución el consenso la descarta.
+# KEYS: tarea:ultima. ARGV: nueva. Devuelve el id de la que venció, o nada.
+LUA_RELEVAR = """
+local vieja = redis.call('GET', KEYS[1])
+redis.call('SET', KEYS[1], ARGV[1])
+if vieja and vieja ~= ARGV[1] and redis.call('HGET', 'tarea:' .. vieja, 'estado') == 'en_curso' then
+  redis.call('HSET', 'tarea:' .. vieja, 'estado', 'vencida')
+  return vieja
+end
+return false
 """
 
 TAREA_ACTUAL, TICKER = contrato.TAREA_ACTUAL, "ticker"
@@ -167,8 +197,10 @@ class Nct:
         self._validar = redis.register_script(LUA_VALIDAR)
         self._cerrar_cajas = redis.register_script(LUA_CERRAR_CAJAS)
         self._soltar = redis.register_script(LUA_SOLTAR)
+        self._sacar_caja = redis.register_script(LUA_SACAR_CAJA)
         self._consenso = redis.register_script(LUA_CONSENSO)
         self._rearmar = redis.register_script(LUA_REARMAR)
+        self._relevar = redis.register_script(LUA_RELEVAR)
         TX_PENDIENTES.set_function(self._contar_pendientes)
         TX_EN_CAJAS.set_function(self._contar_en_cajas)
 
@@ -240,7 +272,8 @@ class Nct:
         if caja is None:
             self._soltar(keys=[TAREA_ACTUAL], args=[id_tarea])
             return None
-        self._publicar_tarea(id_tarea, caja)
+        if not self._publicar_tarea(id_tarea, caja):
+            return self.armar_si_libre()  # la caja sobraba: se sigue con la próxima
         return id_tarea
 
     def _publicar_tarea(self, id_tarea, caja, despues_de=0):
@@ -248,24 +281,38 @@ class Nct:
 
         `despues_de`: al rearmar, el timestamp tiene que ser otro (si no, el hash a buscar es el
         mismo y no hay soluciones nuevas), aunque se rearme en el mismo segundo.
+
+        Las transacciones que ya están en la cadena no van (serían un doble gasto). Si no queda
+        ninguna, la caja sale de la fila, se suelta la marca y devuelve False: no publica nada.
         """
         punta = self.redis.lindex(contrato.CADENA, -1)
         transacciones = self._transacciones(json.loads(caja))
+        if not transacciones:
+            self._sacar_caja(keys=[contrato.CAJAS], args=[caja])
+            self._soltar(keys=[TAREA_ACTUAL], args=[id_tarea])
+            log.warning("Una caja tenía sólo transacciones ya confirmadas: se saca de la fila")
+            return False
         timestamp = max(int(time.time()), despues_de + 1)
+        vencida = self._relevar(keys=[contrato.TAREA_ULTIMA], args=[id_tarea])
+        if vencida:
+            log.info("La tarea %s venció sin bloque: se cierra y su caja se vuelve a armar", vencida)
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "transacciones": json.dumps(transacciones),
             "caja": caja, "estado": "en_curso", "publicada": time.time()})
         self.publicador.publicar(COLA_TAREAS, {"tarea": id_tarea, "previous_hash": punta,
                                                "transacciones": transacciones, "timestamp": timestamp})
         log.info("Tarea %s publicada: %d transacciones sobre %s", id_tarea, len(transacciones), punta)
+        return True
 
     def _transacciones(self, ids):
-        """Las transacciones de una caja, completas y en su orden, como van en el bloque."""
+        """Las transacciones de una caja que todavía no están en la cadena, completas y en su orden,
+        como van en el bloque."""
         tuberia = self.redis.pipeline(transaction=False)
         for id_ in ids:
             tuberia.hgetall(contrato.TX.format(id_))
         return [{"id": id_, "origen": tx["origen"], "destino": tx["destino"], "monto": int(tx["monto"]),
-                 "timestamp": int(tx["timestamp"])} for id_, tx in zip(ids, tuberia.execute())]
+                 "timestamp": int(tx["timestamp"])}
+                for id_, tx in zip(ids, tuberia.execute()) if tx.get("estado") != "confirmada"]
 
     # ── BC-26: verificar, guardar y avisar ──
 
@@ -293,7 +340,8 @@ class Nct:
                              args=[id_tarea, nueva, estado, self.tarea_vence]):
             log.info("La tarea %s ya no estaba en curso: no se rearma", id_tarea)
             return None
-        self._publicar_tarea(nueva, tarea["caja"], despues_de=int(tarea["timestamp"]))
+        if not self._publicar_tarea(nueva, tarea["caja"], despues_de=int(tarea["timestamp"])):
+            self.armar_si_libre()
         return estado
 
     @staticmethod
@@ -327,7 +375,8 @@ class Nct:
             args=[id_tarea, hash_, mensaje["minero"], recompensa, len(bloque), *plano(bloque), *movimientos])
         if resultado == "descartada":
             # La caja sigue primera en `cajas`: se arma otra vez sobre la punta nueva.
-            log.info("La tarea %s ya no extiende la punta o no sigue en curso: el bloque no entra", id_tarea)
+            log.info("La tarea %s ya no extiende la punta, no sigue en curso o repite una transacción "
+                     "confirmada: el bloque no entra", id_tarea)
             self.armar_si_libre()
             return resultado
         hash_, altura = datos[0], int(datos[1])

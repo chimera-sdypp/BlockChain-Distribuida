@@ -36,6 +36,15 @@ resource "google_secret_manager_secret" "miner_token" {
   depends_on = [google_project_service.apis]
 }
 
+# IP pública fija del gateway de mineros: vive acá y no en infra/ para que sobreviva a un destroy
+# del cluster (los mineros de afuera la tienen configurada). El Service la toma en el Pipeline 3.
+resource "google_compute_address" "gateway" {
+  name        = "gateway"
+  region      = var.region
+  description = "IP fija del gateway de mineros (LoadBalancer en GKE)"
+  depends_on  = [google_project_service.apis]
+}
+
 # ---------------------------------------------------------------- Workload Identity Federation
 # GitHub Actions entra con su token OIDC (vence en 1 h) y nada más: no hay claves en GitHub Secrets.
 

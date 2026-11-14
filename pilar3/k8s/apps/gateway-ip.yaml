@@ -1,0 +1,8 @@
+# El LoadBalancer del gateway con la IP fija de bootstrap/ (así no cambia al recrear el cluster).
+# IP_GATEWAY lo reemplaza el Pipeline 3 con la IP de la variable GATEWAY_URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+spec:
+  loadBalancerIP: IP_GATEWAY

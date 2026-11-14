@@ -1,0 +1,94 @@
+# Prepara GKE para las pruebas de carga del Pilar 3 (BC-38 a BC-41) y lo deja como estaba. Sólo a mano
+# (Actions → «Pilar 3 · Preparar prueba» → Run workflow). Corre pilar3/pruebas/preparar.sh:
+#   estado     IP pública, altura, saldos, mineros y condiciones (no cambia nada)
+#   preparar   (opcional) reinicia la cadena, fija prefijo y fragmentación, y (opcional) fija las VMs
+#   restaurar  TrP y escalador como en los manifiestos
+# Mientras se mide nadie mergea a main: el Pipeline 3 volvería a aplicar los manifiestos.
+name: "Pilar 3 · Preparar prueba"
+
+on:
+  workflow_dispatch:
+    inputs:
+      accion:
+        description: "estado (sólo mirar) · preparar (condiciones de la prueba) · restaurar (volver a lo normal)"
+        type: choice
+        options: [estado, preparar, restaurar]
+        default: estado
+      reiniciar_cadena:
+        description: "Con preparar: escribir REINICIAR para borrar la cadena y cargar el génesis de nuevo (vacío: no se toca)"
+        type: string
+        default: ""
+      prefijo_base:
+        description: "Con preparar: caracteres del prefijo (PREFIJO_BASE del TrP)"
+        type: string
+        default: "5"
+      ajustar_prefijo:
+        description: "Con preparar: que el TrP ajuste el prefijo a la potencia de los mineros (apagado: prefijo fijo)"
+        type: boolean
+        default: false
+      fragmento_porcentaje:
+        description: "Con preparar: FRAGMENTO_PORCENTAJE del TrP (1 a 50)"
+        type: string
+        default: "10"
+      vms_cpu:
+        description: "Con preparar: cuántas VMs minero-cpu dejar fijas, con el escalador pausado (vacío: no se toca)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: pilar3-prueba
+
+jobs:
+  preparar:
+    name: ${{ inputs.accion }}
+    runs-on: ubuntu-latest
+    environment: produccion
+    env:
+      REINICIAR: ${{ inputs.reiniciar_cadena }}
+      PREFIJO: ${{ inputs.prefijo_base }}
+      AJUSTAR: ${{ inputs.ajustar_prefijo && '1' || '0' }}
+      FRAGMENTO: ${{ inputs.fragmento_porcentaje }}
+      VMS: ${{ inputs.vms_cpu }}
+      PROYECTO: ${{ vars.GCP_PROYECTO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: blockchain
+          location: ${{ vars.GCP_ZONA || 'us-central1-a' }}
+      - uses: opentofu/setup-opentofu@v1
+        if: inputs.accion == 'preparar' && inputs.vms_cpu != ''
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+
+      - name: Reiniciar la cadena
+        if: inputs.accion == 'preparar' && inputs.reiniciar_cadena != ''
+        run: |
+          if [ "$REINICIAR" != REINICIAR ]; then
+            echo "::error::Para borrar la cadena hay que escribir exactamente REINICIAR"
+            exit 1
+          fi
+          pilar3/pruebas/preparar.sh reiniciar
+      - name: Prefijo y fragmentación
+        if: inputs.accion == 'preparar'
+        run: pilar3/pruebas/preparar.sh condiciones "$PREFIJO" "$AJUSTAR" "$FRAGMENTO"
+      - name: VMs fijas
+        if: inputs.accion == 'preparar' && inputs.vms_cpu != ''
+        run: pilar3/pruebas/preparar.sh fijar-vms "$VMS"
+      - name: Restaurar
+        if: inputs.accion == 'restaurar'
+        run: pilar3/pruebas/preparar.sh restaurar
+
+      - name: Estado
+        if: always()
+        run: |
+          { echo '```'; pilar3/pruebas/preparar.sh estado; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"

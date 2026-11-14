@@ -1,0 +1,15 @@
+# En GKE el génesis sale con saldos altos: las pruebas de carga (BC-38 a BC-41) mandan hasta 100.000
+# transacciones de monto 1, y el NCT sólo acepta las que cubre el saldo confirmado de cada origen.
+# El génesis se carga una sola vez, con la cadena vacía: para que tome estos saldos en una cadena que ya
+# existe hay que reiniciarla (pilar3/pruebas/preparar.sh reiniciar, o el workflow «Preparar prueba»).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nct
+spec:
+  template:
+    spec:
+      containers:
+        - name: nct
+          env:
+            - { name: SALDOS_INICIALES, value: '{"alice": 1000000000, "bob": 1000000000, "carol": 1000000000}' }

@@ -11,7 +11,7 @@ from minero_cpu.minero import Gateway, Minero
 from minero_cpu.tests.test_minero import TOKEN, GatewayFalso
 from minero_gpu.busqueda import BuscadorGPU, ErrorGPU
 
-VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
+VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba_v1.json").read_text())
 FALSO = Path(__file__).with_name("minar_falso.py")
 
 

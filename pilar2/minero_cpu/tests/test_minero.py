@@ -11,7 +11,7 @@ from minero_cpu.busqueda import Buscador
 from minero_cpu.minero import Gateway, Minero, TokenInvalido
 
 TOKEN = "token-de-prueba"
-VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
+VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba_v1.json").read_text())
 
 
 def menor_nonce(bloque, desde, hasta, prefijo):

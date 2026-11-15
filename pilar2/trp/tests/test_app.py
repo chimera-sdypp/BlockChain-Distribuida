@@ -10,13 +10,14 @@ import pytest
 from comun import Rabbit, config, contrato, redisdb
 from trp.app import Ajustes, RANGOS, TAREAS, particionar
 
-VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba_v1.json").read_text())
+VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
 AHORA = 1_800_000_000
 
 
 def tarea(id_="t1"):
-    return {"tarea": id_, "previous_hash": VECTOR["previous_hash"],
-            "transacciones": VECTOR["transacciones"], "timestamp": VECTOR["timestamp"]}
+    t = VECTOR["tarea"]
+    return {"tarea": id_, "previous_hash": t["previous_hash"], "altura": t["altura"],
+            "transacciones": t["transacciones"], "timestamp": t["timestamp"]}
 
 
 def ajustes(**cambios):
@@ -50,16 +51,22 @@ def test_publica_los_rangos_y_registra_la_tarea():
     publicados = correr(tarea(), redis)
     assert len(publicados) == 10 and all(cola == RANGOS for cola, _ in publicados)
     primero, ultimo = publicados[0][1], publicados[-1][1]
-    assert primero == {"tarea": "t1", "rango": 0, "bloque": VECTOR["texto"],
-                       "desde": 0, "hasta": 429_496_729, "prefijo": "000000"}
+    # Sin texto: el de cada minero, con su coinbase, lo arma el gateway al prestar el rango.
+    assert primero == {"tarea": "t1", "rango": 0, "desde": 0, "hasta": 429_496_729, "prefijo": "000000"}
     assert (ultimo["rango"], ultimo["hasta"]) == (9, 2**32 - 1)
-    assert redis.hashes["tarea:t1"] == {"bloque": VECTOR["texto"], "prefijo": "000000", "rangos": "10"}
+    assert redis.hashes["tarea:t1"] == {"prefijo": "000000", "rangos": "10"}
 
 
-def test_el_texto_es_el_del_contrato():
-    # El minero le concatena el nonce al texto y tiene que dar el block_hash del vector.
-    mensaje = correr(tarea(), RedisFalso())[0][1]
-    assert contrato.hash_bloque(mensaje["bloque"], VECTOR["nonce"]) == VECTOR["block_hash"]
+def test_con_lo_que_anota_el_texto_de_cada_minero_es_el_del_contrato():
+    # tarea:<id> del NCT más el prefijo del TrP: el minero le concatena el nonce y da el block_hash del vector.
+    redis = RedisFalso()
+    t = tarea()
+    redis.hashes["tarea:t1"] = {"previous_hash": t["previous_hash"], "timestamp": str(t["timestamp"]),
+                                "altura": str(t["altura"]), "transacciones": json.dumps(t["transacciones"])}
+    correr(t, redis, ajustar=False, prefijo_base=4)
+    texto = contrato.texto_para(contrato.tarea_guardada(redis.hashes["tarea:t1"]), VECTOR["minero"])
+    assert texto == VECTOR["texto"]
+    assert contrato.hash_bloque(texto, VECTOR["nonce"]) == VECTOR["block_hash"]
 
 
 def test_sin_gpu_baja_el_prefijo_y_con_gpu_usa_el_base():
@@ -83,6 +90,7 @@ def test_repetir_la_tarea_deja_lo_mismo():
 
 @pytest.mark.parametrize("cambio", [
     {"previous_hash": "corto"}, {"timestamp": "ayer"}, {"transacciones": None}, {"tarea": ""},
+    {"altura": None}, {"altura": 0},
 ])
 def test_tarea_invalida_se_descarta(cambio):
     redis = RedisFalso()

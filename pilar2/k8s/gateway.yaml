@@ -40,8 +40,6 @@ spec:
             - { name: REDIS_SENTINELS, value: "redis:26379" }
             - { name: TASK_LEASE_SECONDS, value: "30" }
             - { name: REVISAR_PRESTAMOS_SEGUNDOS, value: "5" }
-            - name: MINER_TOKEN
-              valueFrom: { secretKeyRef: { name: blockchain-secretos, key: MINER_TOKEN } }
             - name: RABBIT_USUARIO
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
             - name: RABBIT_CLAVE

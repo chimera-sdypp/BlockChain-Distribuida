@@ -4,9 +4,15 @@ No está siempre prendido: es un Deployment de 0 o 1 pod que prende KEDA cuando 
 o transacciones, o mientras queden mineros CPU vivos (ver k8s/escalador/). Mientras corre, cada
 ciclo mira `nodo:*` y el trabajo apilado, decide cuántas VMs hacen falta y, si cambió, se lo pide
 a OpenTofu (`tofu apply -var cantidad=N`): el apply es declarativo, así que repetirlo no crea de más.
+
+Cada VM mina con su propia clave (BC-57): una VM no puede pedir el alta a mano, así que el escalador,
+que es un servicio de confianza, le genera el par, aprueba la pública en `cuentas` y le pasa la
+privada por metadata. Al borrar la VM, la da de baja.
 """
 
+import json
 import logging
+import os
 import signal
 import subprocess
 import threading
@@ -25,6 +31,41 @@ APLICADOS = Counter("blockchain_escalador_aplicados", "Cambios de cantidad de VM
 FALLIDOS = Counter("blockchain_escalador_fallidos", "Cambios de cantidad de VMs que fallaron (se reintentan)")
 
 SIMULADAS = "escalador:vms"  # la cantidad, cuando las VMs están apagadas por configuración
+CLAVES = "escalador:claves"  # nombre de la VM → su clave privada (el pod siguiente usa las mismas)
+
+
+class ClavesVMs:
+    """La clave de cada VM minero-cpu-<n>: se crea al pedirla, se aprueba como minero y se da de baja al borrarla."""
+
+    def __init__(self, redis, prefijo="minero-cpu-"):
+        self.redis, self.prefijo = redis, prefijo
+
+    def preparar(self, cantidad, ahora=None):
+        """{nombre: privada} de las VMs 0 a cantidad − 1, aprobadas en `cuentas` (las que faltan, nuevas)."""
+        guardadas = self.redis.hgetall(CLAVES)
+        claves = {f"{self.prefijo}{n}": guardadas.get(f"{self.prefijo}{n}") or contrato.nueva_clave()[0]
+                  for n in range(cantidad)}
+        nuevas = {nombre: privada for nombre, privada in claves.items() if guardadas.get(nombre) != privada}
+        if nuevas:
+            self.redis.hset(CLAVES, mapping=nuevas)
+        alta = int(time.time() if ahora is None else ahora)
+        for nombre, privada in claves.items():
+            datos = json.dumps({"tipo": "minero", "nombre": nombre, "alta": alta})
+            self.redis.hsetnx(contrato.CUENTAS, contrato.clave_publica(privada), datos)
+        for nombre in nuevas:
+            log.info("Clave nueva para %s: %s, aprobada como minero", nombre, contrato.clave_publica(claves[nombre]))
+        return claves
+
+    def retirar(self, cantidad):
+        """Da de baja las claves de las VMs desde `cantidad` en adelante (las que se borraron)."""
+        sobran = {nombre: privada for nombre, privada in self.redis.hgetall(CLAVES).items()
+                  if nombre.startswith(self.prefijo) and nombre[len(self.prefijo):].isdigit()
+                  and int(nombre[len(self.prefijo):]) >= cantidad}
+        for nombre, privada in sorted(sobran.items()):
+            self.redis.hdel(contrato.CUENTAS, contrato.clave_publica(privada))
+            self.redis.hdel(CLAVES, nombre)
+            log.info("%s se borró: su clave queda dada de baja", nombre)
+        return sorted(sobran)
 
 
 class Simulado:
@@ -42,20 +83,21 @@ class Simulado:
 
 
 class Tofu:
-    """Las VMs de verdad: el módulo de BC-35, con la variable y el output `cantidad`.
+    """Las VMs de verdad: el módulo de BC-35, con las variables `cantidad` y `claves`, y el output `cantidad`.
 
     El state y su lock están en el bucket (el backend lo define el módulo), así que un apply a
-    medias de un pod anterior no se pisa con éste.
+    medias de un pod anterior no se pisa con éste. Las claves van por entorno (TF_VAR_claves), no en
+    los argumentos: así no aparecen en la lista de procesos.
     """
 
-    def __init__(self, directorio, binario="tofu", ejecutar=subprocess.run, timeout=900):
-        self.directorio, self.binario = directorio, binario
+    def __init__(self, directorio, claves=None, binario="tofu", ejecutar=subprocess.run, timeout=900):
+        self.directorio, self.claves, self.binario = directorio, claves, binario
         self.ejecutar, self.timeout = ejecutar, timeout
         self._tofu("init", "-input=false")
 
-    def _tofu(self, *argumentos):
+    def _tofu(self, *argumentos, entorno=None):
         return self.ejecutar([self.binario, f"-chdir={self.directorio}", *argumentos], check=True,
-                             capture_output=True, text=True, timeout=self.timeout)
+                             capture_output=True, text=True, timeout=self.timeout, env=entorno)
 
     def actual(self):
         try:
@@ -66,8 +108,13 @@ class Tofu:
         return int(salida) if salida.isdigit() else 0
 
     def aplicar(self, cantidad):
-        salida = self._tofu("apply", "-auto-approve", "-input=false", "-var", f"cantidad={cantidad}")
+        """Primero las claves (una VM nueva arranca aprobada), después el apply y al final las bajas."""
+        claves = self.claves.preparar(cantidad) if self.claves else {}
+        entorno = {**os.environ, "TF_VAR_claves": json.dumps(claves)}
+        salida = self._tofu("apply", "-auto-approve", "-input=false", "-var", f"cantidad={cantidad}", entorno=entorno)
         log.info("tofu apply cantidad=%d: %s", cantidad, (salida.stdout.strip().splitlines() or [""])[-1])
+        if self.claves:
+            self.claves.retirar(cantidad)
 
 
 def cargar_ajustes():
@@ -127,7 +174,7 @@ def main():
     ajustes = cargar_ajustes()
     servicio.log.info("Ajustes: %s", ajustes)
     if config.entero("VMS_ACTIVAS", 0) == 1:
-        aplicador = Tofu(config.texto("TOFU_DIR", "/tofu"))
+        aplicador = Tofu(config.texto("TOFU_DIR", "/tofu"), claves=ClavesVMs(servicio.redis, ajustes.prefijo_vm))
     else:
         servicio.log.warning("VMS_ACTIVAS=0: las VMs se simulan en Redis (%s)", SIMULADAS)
         aplicador = Simulado(servicio.redis)

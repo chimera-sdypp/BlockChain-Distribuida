@@ -37,6 +37,7 @@ spec:
           env:
             - { name: RABBIT_HOST, value: rabbitmq }
             - { name: REDIS_SENTINELS, value: "redis:26379" }
+            - { name: ORGANIZADOR_CLAVE, value: "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117" }   # el mismo que el NCT: firma las cargas
             - name: RABBIT_USUARIO
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
             - name: RABBIT_CLAVE

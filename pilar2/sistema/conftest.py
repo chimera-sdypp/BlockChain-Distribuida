@@ -3,8 +3,10 @@
 Se saltean si no está SISTEMA_URL. Las corre k8s/probar_sistema.sh, que arma las variables:
   SISTEMA_URL   el Ingress (http://localhost en k3s)
   GATEWAY_URL   el gateway (su LoadBalancer: http://localhost:8081 en k3s)
-  MINER_TOKEN   el del Secret
-  NAMESPACE     donde está desplegado (blockchain), para las pruebas de falla con kubectl
+  NAMESPACE     donde está desplegado (blockchain), para aprobar cuentas y las pruebas de falla con kubectl
+
+Contrato v2: las transferencias van firmadas. alice, bob y carol son las cuentas de prueba del génesis
+(comun/tests/claves.py); las demás se generan acá y, si hace falta, se aprueban con k8s/aprobar.sh.
 """
 
 import json
@@ -15,16 +17,20 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 
 import pytest
 
+from comun import contrato
+from comun.tests.claves import CUENTA, PRIVADA
 from minero_cpu.minero import Gateway, Minero
 
 URL = os.environ.get("SISTEMA_URL", "").rstrip("/")
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
-TOKEN = os.environ.get("MINER_TOKEN", "")
 NAMESPACE = os.environ.get("NAMESPACE", "blockchain")
 CERRADOS = ("confirmada", "rechazada")
+APROBAR = Path(__file__).parents[1] / "k8s" / "aprobar.sh"
+DEL_GENESIS = ("alice", "bob", "carol")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -57,8 +63,49 @@ def api(metodo, ruta, cuerpo=None, intentos=30):
             time.sleep(1)
 
 
+# --- Cuentas y transferencias firmadas ---------------------------------------------------------
+PRIVADAS = {CUENTA[n]: PRIVADA[n] for n in DEL_GENESIS}  # cuenta → privada, de las que se pueden firmar acá
+_nonces, _lock = {}, threading.Lock()
+
+
+def cuenta(usuario):
+    """«alice», «bob» o «carol», o una cuenta en hex."""
+    return CUENTA[usuario] if usuario in DEL_GENESIS else usuario
+
+
+def aprobar(cuenta_, tipo="usuario", nombre=""):
+    """Lo que hace el organizador (BC-58): la cuenta entra en `cuentas` del Redis desplegado."""
+    resultado = subprocess.run([str(APROBAR), cuenta_, tipo, nombre], capture_output=True, text=True, timeout=60,
+                               env=dict(os.environ, NAMESPACE=NAMESPACE))
+    assert resultado.returncode == 0, resultado.stderr
+
+
+def nuevo_usuario(prefijo="u", aprobada=False, tipo="usuario"):
+    """Una cuenta nueva con su par de claves (la privada queda acá para poder firmar)."""
+    privada, publica = contrato.nueva_clave()
+    PRIVADAS[publica] = privada
+    if aprobada:
+        aprobar(publica, tipo, f"{prefijo}-{publica[:6]}")
+    return publica
+
+
+def siguiente_nonce(cuenta_):
+    """El nonce que le toca: el último que aceptó el sistema + 1, y de ahí en adelante se lleva acá."""
+    with _lock:
+        if cuenta_ not in _nonces:
+            _nonces[cuenta_] = api("GET", f"/api/cuentas/{cuenta_}")[1]["nonce"]
+        _nonces[cuenta_] += 1
+        return _nonces[cuenta_]
+
+
+def firmada(origen, destino, monto, nonce=None):
+    origen = cuenta(origen)
+    nonce = siguiente_nonce(origen) if nonce is None else nonce
+    return contrato.transaccion(PRIVADAS[origen], cuenta(destino), monto, nonce)
+
+
 def transferir(origen, destino, monto):
-    codigo, cuerpo = api("POST", "/api/transacciones", {"origen": origen, "destino": destino, "monto": monto})
+    codigo, cuerpo = api("POST", "/api/transacciones", firmada(origen, destino, monto))
     assert codigo == 202, cuerpo
     return cuerpo["id"]
 
@@ -78,15 +125,11 @@ def esperar(id_, limite=180):
 
 
 def saldo(usuario):
-    return api("GET", f"/api/saldos/{usuario}")[1]["saldo"]
+    return api("GET", f"/api/saldos/{cuenta(usuario)}")[1]["saldo"]
 
 
 def bloques(limite=100):
     return api("GET", f"/api/bloques?limite={limite}")[1]
-
-
-def nuevo_usuario(prefijo="u"):
-    return f"{prefijo}-{uuid.uuid4().hex[:10]}"
 
 
 # --- kubectl, para las pruebas de falla -------------------------------------------------------
@@ -103,16 +146,24 @@ def pods(app):
 
 
 # --- Un minero CPU de prueba ------------------------------------------------------------------
-class MineroDePrueba:
-    """El minero CPU corriendo en este proceso; se puede parar y volver a arrancar."""
+def minero_aprobado(alias):
+    """(privada, cuenta) de un minero nuevo, ya aprobado por el «organizador»."""
+    privada, publica = contrato.nueva_clave()
+    aprobar(publica, "minero", alias)
+    return privada, publica
 
-    def __init__(self, minero_id):
-        self.id = minero_id
+
+class MineroDePrueba:
+    """El minero CPU corriendo en este proceso, con su clave aprobada; se puede parar y volver a arrancar."""
+
+    def __init__(self, alias):
+        self.alias = alias
+        self.privada, self.cuenta = minero_aprobado(alias)
         self.minero = None
 
     def arrancar(self):
         if self.minero is None:
-            self.minero = Minero(Gateway(GATEWAY_URL, TOKEN), self.id, procesos=2, espera=0.5, latido=5)
+            self.minero = Minero(Gateway(GATEWAY_URL, self.privada), self.alias, procesos=2, espera=0.5, latido=5)
             self.minero.presentarse()
             threading.Thread(target=self.minero.trabajar, daemon=True).start()
 
@@ -124,7 +175,7 @@ class MineroDePrueba:
 
 @pytest.fixture(scope="session")
 def minero():
-    m = MineroDePrueba(nuevo_usuario("prueba"))
+    m = MineroDePrueba(f"prueba-{uuid.uuid4().hex[:6]}")
     m.arrancar()
     yield m
     m.parar()

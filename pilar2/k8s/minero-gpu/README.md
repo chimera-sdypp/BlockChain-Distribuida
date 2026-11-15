@@ -4,8 +4,8 @@ El [minero GPU](../../minero_gpu/) corre en el k3s de la PC de un integrante (RT
 
 | Archivo | Qué hace |
 |---|---|
-| `minero-gpu.yaml` | El Deployment: una GPU (`nvidia.com/gpu: 1`) por pod, con `runtimeClassName: nvidia`; el id de cada minero es el nombre del pod |
-| `desplegar.sh` | Crea el namespace y el Secret con el `MINER_TOKEN`, aplica el Deployment con la URL del gateway y la cantidad de réplicas, y espera a que estén listos |
+| `minero-gpu.yaml` | El StatefulSet: una GPU (`nvidia.com/gpu: 1`) por pod, con `runtimeClassName: nvidia`. El alias de cada minero es el nombre del pod (`minero-gpu-0`, `-1`…) y su clave sale de ese nombre y de la semilla del Secret: un pod que se reinicia vuelve con la misma cuenta |
+| `desplegar.sh` | Crea el namespace y el Secret con la semilla (sólo la primera vez), aplica el StatefulSet con la URL del gateway y la cantidad de réplicas, espera a que estén listos y muestra la cuenta de cada pod para aprobarla |
 | `verificar.sh` | Lista los mineros que ve el gateway (`/api/mineros` del backend) y comprueba cuántos GPU están vivos |
 
 ## 1. Preparar el k3s (una vez)
@@ -26,18 +26,21 @@ El device plugin es el que le dice a Kubernetes que el nodo tiene una GPU (`nvid
 
 ```bash
 export KUBECONFIG=~/.kube/config
-export GATEWAY_URL=http://<IP pública del gateway>:8081 GCP_PROYECTO=<id del proyecto>
+export GATEWAY_URL=http://<IP pública del gateway>:8081
 pilar2/k8s/minero-gpu/desplegar.sh 1
+# con el KUBECONFIG del cluster del sistema, aprobar la cuenta que mostró:
+pilar2/k8s/aprobar.sh <cuenta> minero minero-gpu-0
 ```
 
-- El token sale de Secret Manager con `gcloud` (o de `MINER_TOKEN`, si está) y va al Secret sin imprimirse. Si cambia, hay que volver a correr `desplegar.sh` y `kubectl -n mineros-gpu rollout restart deployment/minero-gpu`.
+- La semilla se genera al azar la primera vez y no se imprime nunca; si el Secret ya existe, no se toca (las cuentas aprobadas siguen siendo las mismas). Hasta que el organizador apruebe la cuenta, el minero avisa en el log y reintenta cada 30 s.
+- Si quedó el Deployment de antes (con `MINER_TOKEN`), `desplegar.sh` lo borra.
 - `IMAGEN=ghcr.io/chimera-sdypp/minero-gpu:<tag>` elige la imagen (por defecto `:main`). Es pública: no hace falta `imagePullSecret`.
-- `NAMESPACE` cambia el namespace (por defecto `mineros-gpu`). `DRY_RUN=1` muestra los manifiestos (con el token tapado) sin tocar el cluster.
+- `NAMESPACE` cambia el namespace (por defecto `mineros-gpu`). `DRY_RUN=1` muestra los manifiestos (con la semilla tapada) sin tocar el cluster.
 
 ## 3. Ver que minan
 
 ```bash
-kubectl -n mineros-gpu logs deploy/minero-gpu --tail=20         # bench, rangos tomados, bloques resueltos
+kubectl -n mineros-gpu logs minero-gpu-0 --tail=20              # su cuenta, bench, rangos tomados y shares
 BACKEND_URL=http://<IP de Traefik> pilar2/k8s/minero-gpu/verificar.sh
 ```
 
@@ -48,9 +51,9 @@ Cada pod tiene que aparecer como `gpu`, vivo y con su bench. `verificar.sh` term
 Que entre o salga una GPU es cambiar las réplicas:
 
 ```bash
-kubectl -n mineros-gpu scale deployment minero-gpu --replicas=0    # sale la GPU
+kubectl -n mineros-gpu scale statefulset minero-gpu --replicas=0   # sale la GPU
 BACKEND_URL=... pilar2/k8s/minero-gpu/verificar.sh 0                # código 0 cuando ya no queda ninguna viva
-kubectl -n mineros-gpu scale deployment minero-gpu --replicas=1    # vuelve
+kubectl -n mineros-gpu scale statefulset minero-gpu --replicas=1   # vuelve, con la misma cuenta
 ```
 
 Al bajar a 0, el keep-alive vence a los 15 s y el gateway deja de contarlo. Se ve en `nodo:*`, en la alerta SinMinerosGPU y en el prefijo que elige el TrP. Si hay trabajo apilado, KEDA prende el escalador en GKE y aparece una VM CPU (BC-29).
@@ -62,7 +65,8 @@ Al bajar a 0, el keep-alive vence a los 15 s y el gateway deja de contarlo. Se v
 | `desplegar.sh` dice que ningún nodo ofrece `nvidia.com/gpu` | Falta el toolkit, reiniciar k3s después de instalarlo, o el device plugin (paso 1) |
 | Pod `Pending` | `kubectl describe pod`: la GPU ya la tiene otro pod. Con una sola GPU, una réplica |
 | `ImagePullBackOff` | El tag no existe en GHCR. Usar `IMAGEN=...:dev` o un `:<sha>` publicado |
-| `el gateway rechazó el MINER_TOKEN` en los logs | El Secret no coincide con el token del gateway: volver a desplegar y hacer `rollout restart` |
+| `no está aprobada como minero` en los logs | Falta aprobar su cuenta: `pilar2/k8s/aprobar.sh <cuenta> minero minero-gpu-<n>` en el cluster del sistema |
+| `el gateway rechazó la firma` en los logs | El reloj de la PC está corrido más de 30 s: sincronizarlo (NTP) |
 | No aparece en `verificar.sh` | El pod no llega al gateway: `kubectl run -it --rm prueba --image=curlimages/curl -- curl -s $GATEWAY_URL/health` |
 
 ## Quitarlo

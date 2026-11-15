@@ -42,8 +42,13 @@
   th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--borde); }
   th { color: var(--suave); font-weight: 500; }
   td.num, th.num { text-align: right; }
-  form { display: grid; grid-template-columns: 1fr 1fr 8rem auto; gap: 8px; align-items: end; }
-  @media (max-width: 560px) { form { grid-template-columns: 1fr 1fr; } }
+  form { display: grid; grid-template-columns: 1fr 8rem auto; gap: 8px; align-items: end; }
+  form#form-clave { grid-template-columns: 1fr auto; }
+  @media (max-width: 560px) { form, form#form-clave { grid-template-columns: 1fr; } }
+  textarea { font: .8rem/1.4 var(--mono); color: var(--texto); background: var(--fondo); border: 1px solid var(--borde);
+             border-radius: 6px; padding: 6px 8px; width: 100%; min-height: 3.2rem; resize: vertical; }
+  .cuenta { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0 0 12px; }
+  .chip.recompensa, .chip.emision { color: var(--acento); }
   label { display: grid; gap: 4px; font-size: .85rem; color: var(--suave); }
   input { font: inherit; color: var(--texto); background: var(--fondo); border: 1px solid var(--borde);
           border-radius: 6px; padding: 6px 8px; width: 100%; min-width: 0; }
@@ -70,11 +75,18 @@
 
   <section aria-labelledby="t-transferir">
     <h2 id="t-transferir">Transferir</h2>
-    <form id="formulario" autocomplete="off">
-      <label>Origen <input name="origen" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label>
-      <label>Destino <input name="destino" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label>
+    <!-- La clave privada no sale nunca del navegador: se importa como CryptoKey no exportable y se firma acá. -->
+    <form id="form-clave" autocomplete="off">
+      <label>Tu clave privada (el JWK de <span class="mono">python -m claves exportar</span>)
+        <textarea name="jwk" required spellcheck="false" placeholder='{"kty":"OKP","crv":"Ed25519","d":"…","x":"…"}'></textarea></label>
+      <button type="submit">Usar esta clave</button>
+    </form>
+    <div id="mi-cuenta" class="cuenta" hidden></div>
+    <form id="formulario" autocomplete="off" hidden>
+      <label>Destino (su cuenta) <input name="destino" required minlength="64" maxlength="64" pattern="[0-9a-f]{64}"
+             spellcheck="false" class="mono"></label>
       <label>Monto <input name="monto" required type="number" min="1" step="1"></label>
-      <button type="submit">Enviar</button>
+      <button type="submit">Firmar y enviar</button>
     </form>
     <p id="mensaje" class="mensaje" hidden></p>
     <h2 style="margin-top:16px">Mis transferencias</h2>
@@ -104,6 +116,10 @@ const BLOQUES_VISIBLES = 20;
 
 const $ = (id) => document.getElementById(id);
 const corto = (hash) => hash ? `${hash.slice(0, 10)}…` : "—";
+const cuentaCorta = (cuenta) => cuenta === "emision" ? "emisión" : corto(cuenta);
+// Las transacciones de emisión (origen «emision») crean plata: génesis, coinbase, carga y participación.
+const TIPOS_EMISION = [["genesis-", "génesis"], ["cb-", "recompensa"], ["carga-", "carga"], ["part-", "participación"]];
+const tipoDe = (tx) => tx.origen !== "emision" ? "" : (TIPOS_EMISION.find(([p]) => tx.id.startsWith(p)) || ["", "emisión"])[1];
 const hora = (segundos) => new Date(segundos * 1000).toLocaleString();
 
 function el(etiqueta, atributos = {}, ...hijos) {
@@ -127,20 +143,22 @@ let bloques = [];  // del más nuevo al más viejo
 
 function vistaBloque(bloque, nuevo = false) {
   const filas = bloque.transactions.map((tx) => el("tr", {},
-    el("td", { clase: "mono" }, tx.origen), el("td", { clase: "mono" }, tx.destino),
+    el("td", { clase: "mono", title: tx.origen }, tipoDe(tx) ? el("span", { clase: "chip recompensa" }, tipoDe(tx)) : cuentaCorta(tx.origen)),
+    el("td", { clase: "mono", title: tx.destino }, cuentaCorta(tx.destino)),
     el("td", { clase: "num" }, String(tx.monto))));
   return el("li", {}, el("details", nuevo ? { clase: "nuevo" } : {},
     el("summary", {},
       el("span", { clase: "altura" }, `#${bloque.altura}`),
       el("span", { clase: "mono" }, corto(bloque.block_hash)),
       el("span", { clase: "suave" }, `${bloque.transactions.length} tx`),
-      el("span", { clase: "suave" }, bloque.minero ? `minó ${bloque.minero}` : "génesis")),
+      el("span", { clase: "suave" }, bloque.minero ? `minó ${cuentaCorta(bloque.minero)}` : "génesis")),
     el("dl", {},
       el("dt", {}, "hash"), el("dd", { clase: "mono" }, bloque.block_hash),
       el("dt", {}, "anterior"), el("dd", { clase: "mono" }, bloque.previous_hash),
       el("dt", {}, "nonce"), el("dd", { clase: "mono" }, String(bloque.nonce)),
       el("dt", {}, "prefijo"), el("dd", { clase: "mono" }, bloque.prefijo || "—"),
-      el("dt", {}, "recompensa"), el("dd", {}, String(bloque.recompensa)),
+      el("dt", {}, "minero"), el("dd", { clase: "mono" }, bloque.minero || "—"),
+      el("dt", {}, "recompensa"), el("dd", {}, `${bloque.recompensa} (la coinbase, adentro del hash)`),
       el("dt", {}, "hora"), el("dd", {}, hora(bloque.timestamp))),
     el("table", {},
       el("thead", {}, el("tr", {}, el("th", {}, "origen"), el("th", {}, "destino"), el("th", { clase: "num" }, "monto"))),
@@ -186,7 +204,7 @@ const cerrada = (tx) => tx.estado === "confirmada" || tx.estado === "rechazada";
 function pintarMias() {
   $("mias").replaceChildren(...(mias.length ? mias.map((tx) => el("li", { clase: "tx" },
     el("span", { clase: `chip ${tx.estado}` }, tx.estado),
-    el("span", {}, `${tx.origen} → ${tx.destino}: ${tx.monto}`),
+    el("span", { clase: "mono" }, `${cuentaCorta(tx.origen)} → ${cuentaCorta(tx.destino)}: ${tx.monto}`),
     el("span", { clase: "mono suave" }, corto(tx.id)),
     tx.motivo ? el("span", { clase: "suave" }, tx.motivo) : "",
     tx.bloque ? el("span", { clase: "suave" }, `en el bloque ${corto(tx.bloque)}`) : ""))
@@ -243,26 +261,75 @@ function mostrarMensaje(texto, error = false) {
   p.hidden = !texto;
 }
 
+// ── Firmar en el navegador (BC-56): WebCrypto Ed25519, la privada no sale de acá ──
+
+let firmante = null;  // {clave: CryptoKey sólo para firmar, cuenta: hex, ultimoNonce}
+
+const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+const deBase64url = (texto) => Uint8Array.from(atob(texto.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
+async function cargarCuenta() {
+  if (!firmante) return;
+  const { ok, cuerpo } = await api(`/api/cuentas/${firmante.cuenta}`);
+  const caja = $("mi-cuenta");
+  caja.hidden = false;
+  if (!ok) { caja.replaceChildren(el("span", { clase: "suave" }, "No se pudo leer tu cuenta.")); return; }
+  firmante.ultimoNonce = Math.max(firmante.ultimoNonce, cuerpo.nonce);
+  caja.replaceChildren(
+    el("span", {}, "Tu cuenta"), el("span", { clase: "mono" }, firmante.cuenta),
+    el("span", {}, `saldo ${cuerpo.saldo - cuerpo.comprometido} disponible (${cuerpo.saldo} confirmado)`),
+    el("span", { clase: "suave" }, `próximo nonce ${firmante.ultimoNonce + 1}`),
+    cuerpo.aprobada ? "" : el("span", { clase: "chip rechazada" }, "sin aprobar: el organizador la tiene que aprobar"));
+}
+
+$("form-clave").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  try {
+    const jwk = JSON.parse(new FormData(evento.target).get("jwk"));
+    if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || !jwk.d || !jwk.x) throw new Error("no es una clave Ed25519");
+    const clave = await crypto.subtle.importKey("jwk", jwk, { name: "Ed25519" }, false, ["sign"]);
+    firmante = { clave, cuenta: hex(deBase64url(jwk.x)), ultimoNonce: 0 };
+    evento.target.reset();
+    evento.target.hidden = true;
+    $("formulario").hidden = false;
+    mostrarMensaje("");
+    await cargarCuenta();
+  } catch (error) {
+    mostrarMensaje(`No se pudo usar la clave: ${error.message}. Este navegador necesita Ed25519 en WebCrypto ` +
+                   "(Chrome 137, Firefox 129 o Safari 17).", true);
+  }
+});
+
+async function firmada(destino, monto) {
+  const tx = { origen: firmante.cuenta, destino, monto, nonce: firmante.ultimoNonce + 1,
+               timestamp: Math.floor(Date.now() / 1000) };
+  const mensaje = `${tx.origen}:${tx.destino}:${tx.monto}:${tx.nonce}:${tx.timestamp}`;  // lo que firma el origen
+  const firma = await crypto.subtle.sign({ name: "Ed25519" }, firmante.clave, new TextEncoder().encode(mensaje));
+  return { ...tx, firma: hex(new Uint8Array(firma)) };
+}
+
 $("formulario").addEventListener("submit", async (evento) => {
   evento.preventDefault();
   const formulario = evento.target;
   const datos = Object.fromEntries(new FormData(formulario));
-  const tx = { origen: datos.origen.trim(), destino: datos.destino.trim(), monto: Number(datos.monto) };
   const boton = formulario.querySelector("button");
   boton.disabled = true;
   try {
+    const tx = await firmada(datos.destino.trim(), Number(datos.monto));
     const { ok, status, cuerpo } = await api("/api/transacciones", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
     if (ok) {
+      firmante.ultimoNonce = tx.nonce;
       mias = [{ ...tx, id: cuerpo.id, estado: "recibida" }, ...mias].slice(0, MIAS_MAXIMO);
       guardarIds();
       pintarMias();
       const adelantado = avisosSinDueño.get(cuerpo.id);
       if (adelantado) { avisosSinDueño.delete(cuerpo.id); estadoDeTransaccion(adelantado); }
-      mostrarMensaje(`Recibida: ${cuerpo.id}`);
+      mostrarMensaje(`Firmada y recibida: ${cuerpo.id} (nonce ${tx.nonce})`);
       formulario.reset();
-    } else if (status === 400) {
-      mostrarMensaje([].concat(cuerpo.errores || "datos inválidos").join(" · "), true);
+      cargarCuenta();
+    } else if (status === 400 || status === 409) {
+      mostrarMensaje([].concat(cuerpo.errores || cuerpo.error || "datos inválidos").join(" · "), true);
     } else {
       mostrarMensaje("El sistema no pudo recibirla ahora; probá de nuevo en un momento.", true);
     }
@@ -286,7 +353,7 @@ async function cargarCajas() {
   const resto = cuerpo.total_pendientes - cuerpo.pendientes.length;
   $("pendientes").replaceChildren(...cuerpo.pendientes.map((tx) => el("li", { clase: "tx" },
     el("span", { clase: "chip pendiente" }, "pendiente"),
-    el("span", {}, `${tx.origen} → ${tx.destino}: ${tx.monto}`),
+    el("span", { clase: "mono" }, `${tipoDe(tx) || cuentaCorta(tx.origen)} → ${cuentaCorta(tx.destino)}: ${tx.monto}`),
     el("span", { clase: "mono suave" }, corto(tx.id)))),
     ...(resto > 0 ? [el("li", { clase: "suave" }, `y ${resto} más`)] : []));
 }
@@ -314,14 +381,14 @@ async function cargarMineros() {
     el("thead", {}, el("tr", {}, ...["minero", "tipo", "placa", "bench", "ahora", "saldo"]
       .map((t, i) => el("th", i >= 3 ? { clase: "num" } : {}, t)))),
     el("tbody", {}, ...vivos.map((m) => el("tr", {},
-      el("td", { clase: "mono" }, m.id), el("td", {}, m.tipo ?? "—"), el("td", {}, m.placa ?? "—"),
+      el("td", { clase: "mono", title: m.id }, m.alias || corto(m.id)), el("td", {}, m.tipo ?? "—"), el("td", {}, m.placa ?? "—"),
       el("td", { clase: "num" }, velocidad(m.bench)), el("td", { clase: "num" }, velocidad(m.hashes_por_segundo)),
       el("td", { clase: "num" }, String(m.saldo)))))), ...pie);
 }
 
 // ── Todo junto ──
 
-const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas, cargarMineros];
+const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas, cargarMineros, cargarCuenta];
 
 function recargarTodo() {
   return Promise.all([cargarCadena(), cargarMias(), cargarCajas(), cargarMineros()]);

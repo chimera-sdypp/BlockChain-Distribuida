@@ -8,17 +8,20 @@
 //     caracteres, 1 bloque de MD5 por nonce. En una RTX 4060: 2,03 GH/s contra 1,50 del Hit 7.
 // Sirve para textos de cualquier largo (el Hit 7 acepta hasta 120 bytes).
 // Igual que el Hit 7: un hilo por nonce y, de haber varios, gana el MENOR.
+// Además junta los shares (BC-63): hasta SHARES_MAX nonces cuyo hash cumple el prefijo menos un
+// carácter (con prefijo de 1, ninguno). Si hay solución, sólo los que no pasan de ella.
 //
 // Corre como servidor para no pagar el arranque de CUDA en cada rango. Por stdin, cada pedido:
 //   <prefijo_hex> <min> <max> <largo>\n<largo bytes del texto>
-// y por stdout una línea por pedido (como el Hit 7):
-//   OK nonce=<u64> hash=<32 hex> evaluados=<u64> segundos=<s> hps=<h/s>
-//   SIN_SOLUCION evaluados=<u64> segundos=<s> hps=<h/s>
+// y por stdout una línea por pedido (como el Hit 7, más los shares, de menor a mayor):
+//   OK nonce=<u64> hash=<32 hex> evaluados=<u64> segundos=<s> hps=<h/s> shares=<n1>,<n2>,...
+//   SIN_SOLUCION evaluados=<u64> segundos=<s> hps=<h/s> shares=<n1>,<n2>,...
 //   ERROR <motivo>
 // Al arrancar escribe "LISTO <nombre de la GPU>". Con EOF en stdin, termina.
 //
 //   nvcc -O3 -arch=sm_89 -o minar minar.cu      (RTX 4060; ver el Dockerfile para el resto)
 
+#include <algorithm>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -45,6 +48,7 @@
 
 #define SIN_GANADOR ULLONG_MAX
 #define PREFIJO_MAX 32
+#define SHARES_MAX 64  // el mismo tope que contrato.SHARES_POR_RANGO
 #define LARGO_MAXIMO (4u << 20)  // 4 MB de texto: de sobra para 100 transacciones
 
 static const uint32_t HILOS_POR_BLOQUE = 256;
@@ -57,6 +61,8 @@ __constant__ uint32_t d_cola_len;
 __constant__ uint64_t d_procesados;  // bytes ya pasados por MD5 (múltiplo de 64)
 __constant__ uint8_t d_prefijo_nib[PREFIJO_MAX];
 __constant__ uint32_t d_prefijo_len;
+__device__ unsigned int d_cantidad_shares;            // cuántos encontró (puede pasar de SHARES_MAX)
+__device__ unsigned long long d_shares[SHARES_MAX];   // sus offsets, en el orden en que llegaron
 
 __device__ inline int uint64_a_str(uint64_t val, uint8_t *dest) {
     uint8_t temp[20];
@@ -69,12 +75,14 @@ __device__ inline int uint64_a_str(uint64_t val, uint8_t *dest) {
     return len;
 }
 
-__device__ inline bool coincide_prefijo(const uint8_t hash[16]) {
-    for (uint32_t i = 0; i < d_prefijo_len; i++) {
+// Cuántos caracteres del prefijo coinciden, desde el principio (d_prefijo_len si cumple entero).
+__device__ inline uint32_t caracteres_iguales(const uint8_t hash[16]) {
+    uint32_t i = 0;
+    for (; i < d_prefijo_len; i++) {
         uint8_t nib = (i % 2 == 0) ? (hash[i / 2] >> 4) : (hash[i / 2] & 0x0F);
-        if (nib != d_prefijo_nib[i]) return false;
+        if (nib != d_prefijo_nib[i]) break;
     }
-    return true;
+    return i;
 }
 
 __global__ void minar_kernel(uint64_t min, uint64_t base_off, uint32_t cantidad,
@@ -101,7 +109,12 @@ __global__ void minar_kernel(uint64_t min, uint64_t base_off, uint32_t cantidad,
     uint8_t hash[16];
     for (int j = 0; j < 16; j++) hash[j] = (uint8_t)(e[j / 4] >> (8 * (j % 4)));
 
-    if (coincide_prefijo(hash)) atomicMin(g_mejor_off, (unsigned long long)off);
+    uint32_t iguales = caracteres_iguales(hash);
+    if (d_prefijo_len >= 2 && iguales + 1 >= d_prefijo_len) {  // un share: el prefijo menos un carácter
+        unsigned int k = atomicAdd(&d_cantidad_shares, 1u);
+        if (k < SHARES_MAX) d_shares[k] = (unsigned long long)off;
+    }
+    if (iguales == d_prefijo_len) atomicMin(g_mejor_off, (unsigned long long)off);
 }
 
 static bool parsear_u64(const char *s, uint64_t *out) {
@@ -123,6 +136,37 @@ static void responder(const char *formato, ...) {
     vprintf(formato, args);
     va_end(args);
     fflush(stdout);
+}
+
+// MD5 en hex de texto + nonce (en decimal), en el host.
+static void hash_de(const std::vector<uint8_t> &texto, uint64_t nonce, char hex[33]) {
+    std::string completo(texto.begin(), texto.end());
+    completo += std::to_string(nonce);
+    md5_hex(completo.data(), completo.size(), hex);
+}
+
+// Los shares que juntó la GPU, como nonces separados por coma y de menor a mayor. Si hubo solución,
+// sólo los que no pasan de ella (hasta ahí recorrió el rango). Cada uno se vuelve a hashear en el
+// host: si la GPU se equivocara, ese share no se manda.
+static std::string shares_verificados(const char *prefijo, uint32_t prefijo_len, uint64_t min,
+                                      unsigned long long mejor, const std::vector<uint8_t> &texto) {
+    if (prefijo_len < 2) return "";
+    unsigned int cantidad = 0;
+    VERIFICAR_CUDA(cudaMemcpyFromSymbol(&cantidad, d_cantidad_shares, sizeof(cantidad)));
+    cantidad = std::min(cantidad, (unsigned int)SHARES_MAX);
+    std::vector<unsigned long long> offsets(cantidad);
+    if (cantidad) VERIFICAR_CUDA(cudaMemcpyFromSymbol(offsets.data(), d_shares, cantidad * sizeof(unsigned long long)));
+    std::sort(offsets.begin(), offsets.end());
+    std::string lista;
+    char hex[33];
+    for (unsigned long long off : offsets) {
+        if (off > mejor) break;
+        hash_de(texto, min + off, hex);
+        if (strncmp(hex, prefijo, prefijo_len - 1) != 0) continue;
+        if (!lista.empty()) lista += ',';
+        lista += std::to_string(min + off);
+    }
+    return lista;
 }
 
 // Atiende un pedido ya leído. El texto está en `texto` (largo `largo`).
@@ -148,6 +192,8 @@ static void minar(const char *prefijo, uint64_t min, uint64_t max, const std::ve
     VERIFICAR_CUDA(cudaMemcpyToSymbol(d_prefijo_len, &prefijo_len, sizeof(prefijo_len)));
     unsigned long long mejor = SIN_GANADOR;
     VERIFICAR_CUDA(cudaMemcpy(d_mejor_off, &mejor, sizeof(mejor), cudaMemcpyHostToDevice));
+    unsigned int cero = 0;
+    VERIFICAR_CUDA(cudaMemcpyToSymbol(d_cantidad_shares, &cero, sizeof(cero)));
 
     const uint64_t total = max - min;  // cantidad - 1
     auto inicio = std::chrono::steady_clock::now();
@@ -163,26 +209,25 @@ static void minar(const char *prefijo, uint64_t min, uint64_t max, const std::ve
         base_off += BATCH;
     }
     double segundos = std::chrono::duration<double>(std::chrono::steady_clock::now() - inicio).count();
+    std::string shares = shares_verificados(prefijo, prefijo_len, min, mejor, texto);
 
     if (mejor == SIN_GANADOR) {
         double evaluados = (double)total + 1.0;
-        responder("SIN_SOLUCION evaluados=%llu segundos=%.6f hps=%.0f\n", (unsigned long long)(total + 1),
-                  segundos, segundos > 0 ? evaluados / segundos : 0.0);
+        responder("SIN_SOLUCION evaluados=%llu segundos=%.6f hps=%.0f shares=%s\n", (unsigned long long)(total + 1),
+                  segundos, segundos > 0 ? evaluados / segundos : 0.0, shares.c_str());
         return;
     }
     // El hash del ganador se recalcula en el host con el texto completo: además verifica a la GPU.
     uint64_t nonce = min + mejor;
-    std::string completo(texto.begin(), texto.end());
-    completo += std::to_string(nonce);
     char hex[33];
-    md5_hex(completo.data(), completo.size(), hex);
+    hash_de(texto, nonce, hex);
     if (strncmp(hex, prefijo, prefijo_len) != 0) {
         responder("ERROR la GPU dio el nonce %llu pero su hash %s no cumple\n", (unsigned long long)nonce, hex);
         return;
     }
     double evaluados = (double)mejor + 1.0;
-    responder("OK nonce=%llu hash=%s evaluados=%llu segundos=%.6f hps=%.0f\n", (unsigned long long)nonce, hex,
-              (unsigned long long)(mejor + 1), segundos, segundos > 0 ? evaluados / segundos : 0.0);
+    responder("OK nonce=%llu hash=%s evaluados=%llu segundos=%.6f hps=%.0f shares=%s\n", (unsigned long long)nonce,
+              hex, (unsigned long long)(mejor + 1), segundos, segundos > 0 ? evaluados / segundos : 0.0, shares.c_str());
 }
 
 int main() {

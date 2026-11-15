@@ -12,7 +12,8 @@ La página del sistema: hacer transferencias y ver la cadena en vivo. El servici
 
 - Cada pod se suscribe a `bloque.confirmado` y `transaccion.estado` con su propia cola exclusiva (`Rabbit.suscribir`). Así cada navegador recibe todos los avisos, esté conectado al pod que esté.
 - La página tiene cuatro paneles:
-  1. **Transferir y «mis transferencias»:** las últimas 20 de este navegador, en `localStorage`.
+  1. **Transferir y «mis transferencias»:** se importa la clave privada (el JWK de `python -m claves exportar`) como `CryptoKey` no exportable, y cada transferencia se firma en el navegador con WebCrypto Ed25519 (Chrome 137, Firefox 129, Safari 17): la privada no sale nunca del navegador ni se guarda. El nonce sale de `/api/cuentas/<cuenta>`. Las últimas 20 transferencias de este navegador quedan en `localStorage` (sólo los ids).
+  - La cadena muestra la coinbase, las cargas y los pagos de participación como transacciones de emisión.
   2. **Esperando bloque:** `/api/cajas`.
   3. **Mineros vivos:** `/api/mineros`.
   4. **Cadena:** `/api/bloques`.

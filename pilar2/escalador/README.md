@@ -26,7 +26,8 @@ El tercero existe para que el escalador siga vivo hasta borrar sus VMs (sus mine
 - Se descuenta lo que aportan los otros mineros CPU vivos, y se divide por el bench de las VMs vivas (si no hay ninguna, `HPS_POR_VM`). Tope: `VMS_MAXIMO`.
 - Con una GPU viva o sin trabajo (`tx:pendientes` y `cajas` vacías): 0.
 - **Sin oscilar:** sube recién tras `ESPERA_SUBIR_SEGUNDOS` seguidos sin GPU, y baja recién cuando el número menor se sostuvo `ESPERA_BAJAR_SEGUNDOS`.
-- Nuestras VMs se reconocen por el `MINERO_ID`, que es su hostname: `minero-cpu-<n>`.
+- **Cada VM con su clave (BC-57):** una VM no puede pedir el alta a mano. Antes del apply, el escalador genera el par de cada VM `minero-cpu-<n>` que falte, lo guarda en `escalador:claves` (así el pod siguiente usa las mismas), aprueba la pública en `cuentas` como minero con ese nombre y le pasa la privada a OpenTofu por entorno (`TF_VAR_claves`, no en los argumentos). La VM la lee de su metadata (`clave-minero`). Después de borrar VMs, da de baja sus cuentas. No hay token compartido.
+- Nuestras VMs se reconocen por el alias de `nodo:<cuenta>`, que el gateway saca de `cuentas` (lo escribió el escalador): `minero-cpu-<n>`. Un minero cualquiera no puede hacerse pasar por una VM.
 
 | Variable | Por defecto | Qué es |
 |---|---|---|
@@ -55,7 +56,7 @@ docker build -f escalador/Dockerfile -t escalador:dev .   # e importarla en k3s
 kubectl apply -k k8s/escalador
 ```
 
-Probado el 09/11 con `VMS_ACTIVAS=0` y el minero CPU local haciendo de VM (`MINERO_ID=minero-cpu-0`):
+Probado el 09/11 (contrato v1) con `VMS_ACTIVAS=0` y el minero CPU local haciendo de VM (`MINERO_ID=minero-cpu-0`):
 
 | t | Qué pasó |
 |---|---|

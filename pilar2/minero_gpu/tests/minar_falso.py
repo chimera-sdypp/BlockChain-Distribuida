@@ -13,13 +13,18 @@ while linea := entrada.readline():
     if prefijo == b"muere":
         sys.exit(1)
     desde, hasta, prefijo = int(desde), int(hasta), prefijo.decode()
+    corto, shares = (prefijo[:-1] if len(prefijo) >= 2 else None), []  # como minar.cu: hasta 64 por pedido
     base = hashlib.md5(texto)
     for nonce in range(desde, hasta + 1):
         h = base.copy()
         h.update(str(nonce).encode())
-        if h.hexdigest().startswith(prefijo):
-            salida.write(f"OK nonce={nonce} hash={h.hexdigest()} evaluados={nonce - desde + 1} segundos=0.1 hps=1\n")
+        digest = h.hexdigest()
+        if corto and digest.startswith(corto) and len(shares) < 64:
+            shares.append(nonce)
+        if digest.startswith(prefijo):
+            salida.write(f"OK nonce={nonce} hash={digest} evaluados={nonce - desde + 1} segundos=0.1 hps=1 "
+                         f"shares={','.join(map(str, shares))}\n")
             break
     else:
-        salida.write(f"SIN_SOLUCION evaluados={hasta - desde + 1} segundos=0.1 hps=1\n")
+        salida.write(f"SIN_SOLUCION evaluados={hasta - desde + 1} segundos=0.1 hps=1 shares={','.join(map(str, shares))}\n")
     salida.flush()

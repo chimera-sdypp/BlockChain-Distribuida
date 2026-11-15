@@ -3,8 +3,8 @@
 import json
 
 from comun import contrato
-from nct.tests.escenario import minar, tarea_en_curso
-from nct.tests.test_validar import recibida
+from comun.tests.claves import CUENTA
+from nct.tests.escenario import datos, minar, recibida, saldo, tarea_en_curso
 
 
 def rearmada(redis, publicador, vieja):
@@ -47,15 +47,14 @@ def test_un_hash_trucho_se_rechaza_y_se_rearma(armar, redis, publicador):
 
 def test_un_nonce_que_no_cumple_el_prefijo_se_rechaza(armar, redis, publicador):
     def otro_nonce(solucion):
-        tarea = redis.hgetall(f"tarea:{solucion['tarea']}")
-        texto = contrato.texto_bloque(tarea["previous_hash"], int(tarea["timestamp"]), json.loads(tarea["transacciones"]))
+        texto = contrato.texto_para(datos(redis, solucion["tarea"]), solucion["minero"])
         nonce = next(n for n in range(10**6) if not contrato.hash_bloque(texto, n).startswith("00"))
         return {**solucion, "nonce": nonce, "hash": contrato.hash_bloque(texto, nonce)}  # el hash es el real
     verificacion_fallida(armar, redis, publicador, otro_nonce)
 
 
-def test_un_minero_que_no_es_un_usuario_valido_se_rechaza(armar, redis, publicador):
-    verificacion_fallida(armar, redis, publicador, lambda s: {**s, "minero": "gpu:1"})
+def test_un_minero_que_no_es_una_cuenta_se_rechaza(armar, redis, publicador):
+    verificacion_fallida(armar, redis, publicador, lambda s: {**s, "minero": "gpu-1"})
 
 
 def test_si_cambio_la_punta_el_bloque_no_entra_y_la_caja_se_vuelve_a_armar(armar, redis, publicador):
@@ -68,7 +67,7 @@ def test_si_cambio_la_punta_el_bloque_no_entra_y_la_caja_se_vuelve_a_armar(armar
 
     assert redis.lrange("cadena", 1, -1) == ["otro-bloque"]
     assert redis.hget(f"tarea:{vieja}", "estado") == "descartada"
-    assert redis.hget("saldos", "gpu-1") is None
+    assert saldo(redis, "minero") == 0
     nueva = rearmada(redis, publicador, vieja)
     assert nueva["previous_hash"] == "otro-bloque"
     assert redis.hget(f"tarea:{nueva['tarea']}", "caja") == redis.lindex("cajas", 0)
@@ -169,8 +168,8 @@ def test_una_caja_que_ya_esta_en_la_cadena_sale_de_la_fila_sin_publicar_nada(arm
 
 def test_de_una_caja_sale_solo_lo_que_no_esta_en_la_cadena(armar, redis, publicador):
     nct, _, caja = confirmada_y_otra_vez_en_la_fila(armar, redis)
+    redis.hset("saldos", CUENTA["carol"], 5)
     nueva = recibida(redis, "carol", "alice", 5)
-    redis.hset("saldos", "carol", 5)
     nct.validar(nueva)
     redis.delete("cajas", "tx:pendientes")
     redis.rpush("cajas", json.dumps([*json.loads(caja), nueva["id"]]))
@@ -188,7 +187,7 @@ def test_si_al_rearmar_la_caja_ya_esta_en_la_cadena_se_sigue_con_la_proxima(arma
     assert vieja is None
     # una tarea vieja de esa caja, todavía en curso, vuelve sin solución
     redis.rpush("cajas", caja)
-    redis.hset("tarea:vieja", mapping={"caja": caja, "estado": "en_curso", "timestamp": 1793836800,
+    redis.hset("tarea:vieja", mapping={"caja": caja, "estado": "en_curso", "timestamp": 1793836800, "altura": 2,
                                        "previous_hash": redis.lindex("cadena", -1), "publicada": 0})
     redis.set("tarea:actual", "vieja")
 

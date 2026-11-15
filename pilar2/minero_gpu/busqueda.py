@@ -4,11 +4,14 @@ El binario queda abierto (arrancar CUDA cuesta) y atiende un pedido por vez por 
 Los trozos son de TROZO nonces (~1 s en una RTX 4060): entre uno y otro se mira si hay que
 cortar, así un «cortá» del gateway no espera a que termine un rango de 400 millones.
 Tiene la misma interfaz que el Buscador del minero CPU, así que el resto es el mismo minero.
+El binario devuelve también los shares de cada trozo (BC-63): se juntan en `self.shares`.
 """
 
 import subprocess
 import threading
 import time
+
+from minero_cpu.busqueda import Shares
 
 TROZO = 2**30
 
@@ -30,6 +33,7 @@ class BuscadorGPU:
         self._lock = threading.Lock()  # un pedido por vez al binario
         self.probados = 0
         self.inicio = time.monotonic()
+        self.shares = Shares()
 
     def hashes_por_segundo(self):
         segundos = time.monotonic() - self.inicio
@@ -48,9 +52,10 @@ class BuscadorGPU:
         return palabra, dict(campo.split("=", 1) for campo in (campos[0].split() if campos else []))
 
     def buscar(self, bloque, desde, hasta, prefijo):
-        """Recorre [desde, hasta] en orden. Devuelve (menor nonce o None, cortado)."""
+        """Recorre [desde, hasta] en orden. Devuelve (menor nonce o None, cortado); los shares van a `self.shares`."""
         self.parar.clear()
         self.probados, self.inicio = 0, time.monotonic()
+        self.shares.empezar()
         datos = bloque.encode()
         siguiente = desde
         while siguiente <= hasta:
@@ -59,6 +64,7 @@ class BuscadorGPU:
             fin = min(siguiente + self.trozo - 1, hasta)
             palabra, campos = self._pedir(datos, prefijo, siguiente, fin)
             self.probados += int(campos["evaluados"])
+            self.shares.agregar(int(n) for n in campos.get("shares", "").split(",") if n)
             if palabra == "OK":
                 return int(campos["nonce"]), False
             siguiente = fin + 1

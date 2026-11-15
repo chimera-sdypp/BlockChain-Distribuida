@@ -55,7 +55,7 @@ def cargar_ajustes():
 
 
 def errores_tarea(tarea):
-    """Lo mínimo para poder armar el texto: si falta algo, la tarea no se puede minar."""
+    """Lo mínimo para que el gateway pueda armar el texto de cada minero: si falta algo, no se puede minar."""
     if not isinstance(tarea, dict):
         return ["no es un objeto"]
     errores = []
@@ -65,6 +65,8 @@ def errores_tarea(tarea):
         errores.append("previous_hash")
     if not isinstance(tarea.get("timestamp"), int):
         errores.append("timestamp")
+    if not isinstance(tarea.get("altura"), int) or isinstance(tarea.get("altura"), bool) or tarea["altura"] < 1:
+        errores.append("altura")
     if not isinstance(tarea.get("transacciones"), list) or not all(isinstance(tx, dict) for tx in tarea["transacciones"]):
         errores.append("transacciones")
     return errores
@@ -81,6 +83,10 @@ def elegir_prefijo(redis, ajustes, ahora):
 def particionar(tarea, redis, publicar, ajustes, ahora=None):
     """NCT.2: elige el prefijo, registra la tarea y publica un mensaje por rango.
 
+    Los rangos no llevan el texto: cada minero mina el suyo, con su coinbase adentro, y se lo arma
+    el gateway al prestarle el rango (BC-62). Acá sólo se anota el prefijo en tarea:<id>, junto a lo
+    que escribió el NCT.
+
     El ack de la tarea lo hace comun/rabbit.py cuando esto termina, es decir, después de publicar
     todos los rangos. Si el pod muere a mitad, la tarea vuelve y se repite entera: tarea:<id> queda
     igual y los rangos repetidos no molestan, porque el TrP los anota en un conjunto (BC-22).
@@ -90,13 +96,11 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
         log.error("Tarea inválida, se descarta (%s): %r", ", ".join(errores), tarea)
         return
     prefijo = elegir_prefijo(redis, ajustes, time.time() if ahora is None else ahora)
-    texto = contrato.texto_bloque(tarea["previous_hash"], tarea["timestamp"], tarea["transacciones"])
     rangos = partir(ajustes.espacio, ajustes.porcentaje)
-    redis.hset(contrato.TAREA.format(tarea["tarea"]),
-               mapping={"bloque": texto, "prefijo": prefijo, "rangos": len(rangos)})
+    redis.hset(contrato.TAREA.format(tarea["tarea"]), mapping={"prefijo": prefijo, "rangos": len(rangos)})
     for numero, (desde, hasta) in enumerate(rangos):
-        publicar(RANGOS, {"tarea": tarea["tarea"], "rango": numero, "bloque": texto,
-                          "desde": desde, "hasta": hasta, "prefijo": prefijo})
+        publicar(RANGOS, {"tarea": tarea["tarea"], "rango": numero, "desde": desde, "hasta": hasta,
+                          "prefijo": prefijo})
     RANGOS_PUBLICADOS.inc(len(rangos))
     PREFIJO.set(len(prefijo))
     log.info("Tarea %s: %d transacciones, prefijo %s, %d rangos del %d %%",

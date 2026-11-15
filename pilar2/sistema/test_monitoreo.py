@@ -17,7 +17,7 @@ import pytest
 
 from minero_cpu.minero import Gateway, Minero
 
-from .conftest import GATEWAY_URL, TOKEN, esperar, kubectl, nuevo_usuario, pods, transferir
+from .conftest import GATEWAY_URL, esperar, kubectl, minero_aprobado, nuevo_usuario, pods, transferir
 
 PROMETHEUS = os.environ.get("PROMETHEUS_URL", "").rstrip("/")
 LOKI = os.environ.get("LOKI_URL", "").rstrip("/")
@@ -100,8 +100,8 @@ def test_sin_mineros_gpu_se_dispara_y_se_resuelve_con_un_minero_gpu_falso():
     hasta_que(lambda: estado("SinMinerosGPU") == "firing", 120,
               lambda: f"SinMinerosGPU quedó {estado('SinMinerosGPU')}: ¿hay un minero GPU vivo?")
 
-    falso = Minero(Gateway(GATEWAY_URL, TOKEN), nuevo_usuario("gpu-falso"), procesos=1, latido=5, tipo="gpu",
-                   placa="GPU de prueba")
+    privada, _ = minero_aprobado("gpu-falso")
+    falso = Minero(Gateway(GATEWAY_URL, privada), "gpu-falso", procesos=1, latido=5, tipo="gpu", placa="GPU de prueba")
     falso.presentarse()
     threading.Thread(target=falso._latir, daemon=True).start()  # vivo, pero sin tomar rangos
     try:

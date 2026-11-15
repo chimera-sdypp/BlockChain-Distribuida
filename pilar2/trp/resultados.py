@@ -31,7 +31,7 @@ def errores_resultado(r):
         errores.append("tarea")
     if not isinstance(r.get("rango"), int) or isinstance(r.get("rango"), bool) or r["rango"] < 0:
         errores.append("rango")
-    if not contrato.usuario_valido(r.get("minero")):
+    if not contrato.cuenta_valida(r.get("minero")):
         errores.append("minero")
     if r.get(SIN_SOLUCION) is not True:
         if not isinstance(r.get("nonce"), int) or isinstance(r.get("nonce"), bool) or r["nonce"] < 0:
@@ -60,7 +60,7 @@ def recibir(resultado, redis, publicar):
         return
     id_, clave = resultado["tarea"], contrato.TAREA.format(resultado["tarea"])
     tarea = redis.hgetall(clave)
-    if "bloque" not in tarea:
+    if "prefijo" not in tarea or "transacciones" not in tarea:
         return _descartar("tarea_desconocida", "Resultado de una tarea que no partió el TrP (%s); se descarta", id_)
 
     if resultado.get(SIN_SOLUCION):
@@ -71,8 +71,9 @@ def recibir(resultado, redis, publicar):
             return
         ganador = SIN_SOLUCION
     else:
-        # El minero puede mentir: se verifica el hash con el texto y el prefijo de la tarea.
-        hash_ = contrato.hash_bloque(tarea["bloque"], resultado["nonce"])
+        # El minero puede mentir: se verifica el hash con su texto (el de su coinbase) y el prefijo de la tarea.
+        hash_ = contrato.hash_bloque(contrato.texto_para(contrato.tarea_guardada(tarea), resultado["minero"]),
+                                    resultado["nonce"])
         if hash_ != resultado["hash"] or not contrato.cumple(hash_, tarea["prefijo"]):
             return _descartar("hash_incorrecto", "El nonce %d de %s para la tarea %s no da el hash; se descarta",
                               resultado["nonce"], resultado["minero"], id_)

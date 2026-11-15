@@ -2,13 +2,14 @@
 
 Qué datos viajan entre los servicios. El código está en [`comun/contrato.py`](comun/contrato.py).
 
-**Versión 2** (BC-53, el contrato del 13/11): cuentas con clave Ed25519, transacciones firmadas con nonce por cuenta, emisión y coinbase adentro de la raíz. Cambia el formato de la cadena: con la v2 se arranca de un génesis nuevo, en k3s y en GKE. Cada servicio se pasa en su tarjeta; hasta entonces sigue usando lo que está en [Versión 1](#versión-1-lo-que-se-va).
+**Versión 2** (BC-53, el contrato del 13/11): cuentas con clave Ed25519, transacciones firmadas con nonce por cuenta, emisión, coinbase adentro de la raíz y participación por shares. La usan todos los servicios desde BC-55 y BC-61. Cambió el formato de la cadena: con la v2 se arranca de un génesis nuevo, en k3s y en GKE.
 
 ## Cuenta
 
 - Una cuenta es una **clave pública Ed25519** (RFC 8032): 32 bytes en hex, 64 caracteres en minúscula (`cuenta_valida`). La privada es la semilla de 32 bytes, también en hex.
 - El nombre (alias) va aparte, en `cuentas`, y sirve sólo para mostrar.
 - `emision` está reservada: es el origen de la plata nueva.
+- **Sólo operan las cuentas aprobadas** (`cuentas`): un usuario sin aprobar no puede transferir y un minero sin aprobar no entra al gateway. Las aprueba el organizador: con el panel (BC-58) o, hasta que esté, con `python -m claves aprobar` (Redis directo) o `k8s/aprobar.sh` (en el cluster). Las cuentas del génesis entran aprobadas.
 - Python: [`cryptography`](https://cryptography.io). Navegador: WebCrypto, con `Ed25519` en Chrome 137, Firefox 129 y Safari 17 o más nuevos; la privada se importa como JWK (RFC 8037: `{kty: "OKP", crv: "Ed25519", d, x}`, en base64url).
 
 ## Transacción
@@ -23,9 +24,10 @@ Qué datos viajan entre los servicios. El código está en [`comun/contrato.py`]
 | `firma` | Ed25519 del origen sobre `origen:destino:monto:nonce:timestamp`, 128 caracteres en hex | cliente |
 
 - **Formato y firma** (backend, `validar_transaccion_firmada`): campos completos, origen ≠ destino, la firma es del origen y, si viene `id`, es el hash. Si no, 400 con los errores. La misma transacción reenviada da el mismo id: 409 (BC-56).
-- **Nonce** (NCT): vale si es `nonces[origen] + 1`, y al aceptarla el NCT lo sube. Una rechazada no gasta el nonce. Así una transacción firmada no se puede mandar dos veces.
+- **Nonce** (NCT): vale si es `nonces[origen] + 1`, y al aceptarla el NCT lo sube. Una rechazada no gasta el nonce. Así una transacción firmada no se puede mandar dos veces. Uno menor o igual es `nonce repetido`. Uno mayor llegó antes que el anterior (las dos réplicas del NCT consumen en paralelo, y los lotes de un bulk pueden llegar desordenados): espera en `espera:<cuenta>` hasta que entra el que falta, y si no llega en `ESPERA_NONCE_SEGUNDOS` (60) queda `nonce salteado`.
+- **Cuenta** (NCT): el origen tiene que estar en `cuentas`; si no, `cuenta no aprobada`. El NCT vuelve a verificar la firma (`firma inválida`).
 - **Saldo** (NCT): al origen le alcanza descontando sus transacciones pendientes; si no, queda `rechazada`.
-- **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` (con el motivo).
+- **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` con el motivo: `firma inválida`, `cuenta no aprobada`, `nonce repetido`, `nonce salteado` o `saldo insuficiente`.
 - El destino puede no existir: se lo crea con saldo 0.
 - El monto es entero para que el texto del bloque salga igual en Python y en C++. El tope es para que los saldos no desborden el entero de 64 bits de Redis (`HINCRBY`).
 - `transaccion(privada, destino, monto, nonce)` arma y firma una: es lo que hace la herramienta de claves (BC-55).
@@ -43,7 +45,7 @@ Las transacciones con origen `emision` crean plata. Cada una tiene un id fijo, q
 
 ## Bloque
 
-Campos: `previous_hash`, `nonce`, `timestamp`, `transactions` y `block_hash`, más `prefijo`, `minero` (su cuenta) y `altura` (posición en `cadena`; el génesis es 0).
+Campos de `bloque:<hash>`: `previous_hash`, `nonce`, `timestamp`, `transactions` y `block_hash`, más `prefijo` y `altura` (posición en `cadena`; el génesis es 0). El minero y la recompensa no se guardan aparte: salen de la coinbase, que está adentro del hash (la API los agrega como `minero` y `recompensa`).
 
 Cómo se calcula el hash:
 
@@ -63,7 +65,11 @@ block_hash     = MD5(texto + nonce)             (nonce en decimal, entero de 64 
 ## Recompensa
 
 - **Coinbase:** la cobra el minero que encontró el nonce, `R = 10 × largo del prefijo`, y está adentro del bloque. El NCT acredita desde la coinbase (BC-62).
-- **Participación por shares** (BC-63): un **share** es un hash con el prefijo menos un carácter (`prefijo_share`), sobre el texto de ese minero y en un rango que tiene prestado. Con prefijo de 1 no hay shares. Van en `/results` (`shares`, la lista de nonces); el gateway verifica cada uno (un MD5), descarta los repetidos y los suma en `shares:<época>`. La época es `altura // BLOQUES_POR_EPOCA` (10). Al cerrar una época, el NCT reparte un fondo fijo según los shares y la racha, con las transacciones `part-<época>-<minero>`.
+- **Participación por shares** (BC-63): un **share** es un hash con el prefijo menos un carácter (`prefijo_share`), sobre el texto de ese minero y en un rango que tiene prestado. Con prefijo de 1 no hay shares.
+  - El minero junta hasta `SHARES_POR_RANGO` (64) por rango y los manda en `/keepalive` (los que juntó desde el aviso anterior) y en `/results` (los que quedan). Así un minero lento al que le cortan el rango no pierde lo que trabajó.
+  - El gateway verifica cada uno (un MD5 y que esté en el rango), descarta los repetidos y los suma en `shares:<época>` y en `historial:<minero>`, sólo mientras la tarea sigue en curso y hasta 64 por préstamo.
+  - La época es `altura // BLOQUES_POR_EPOCA` (10). En el primer bloque de cada época (10, 20…) el NCT paga la anterior: reparte `FONDO_EPOCA` (100) en proporción a shares × (1 + 10 % por época seguida con shares, hasta +50 %), con montos enteros (`repartir`). Van como `part-<época>-<minero>`, con el timestamp del último bloque de la época, y el detalle queda en `epoca:<n>`.
+- Un keep-alive no paga nada: sin shares no hay participación.
 
 ## Pedidos firmados de los mineros
 
@@ -90,7 +96,7 @@ Iguales para todos: `bloque = "bench;"`, rango `[0, 2^24 − 1]` y prefijo `f` �
 | `transacciones` | `{id, origen, destino, monto, nonce, timestamp, firma}` (también las cargas) |
 | `tareas` | `{tarea, previous_hash, transacciones, timestamp, altura}` (el prefijo lo elige el TrP) |
 | `rangos` | `{tarea, rango, desde, hasta, prefijo}` (rango cerrado). Sin `bloque`: el gateway le agrega a cada minero su texto al prestarlo |
-| `resultados` | `{tarea, rango, minero, nonce, hash, shares}` o `{tarea, rango, minero, sin_solucion: true, shares}`. `shares`: lista de nonces |
+| `resultados` | `{tarea, rango, minero, nonce, hash}` o `{tarea, rango, minero, sin_solucion: true}`. Los shares se quedan en el gateway |
 | `soluciones` | `{tarea, nonce, hash, prefijo, minero}` o `{tarea, sin_solucion: true}` |
 | exchange `eventos` (topic), `bloque.confirmado` | `{tarea, block_hash, altura}` |
 | exchange `eventos` (topic), `transaccion.estado` | `{id, estado: "pendiente" \| "rechazada", motivo?}` |
@@ -114,8 +120,8 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `POST /hello` | `{minero, tipo: gpu \| cpu, placa}` | 200 `{registrado: true}`; si es nuevo, 200 con la tarea modelo |
 | `POST /bench` | `{minero, segundos, hashes_por_segundo}` | 204 |
 | `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo |
-| `POST /results` | lo mismo que `resultados` | 202 |
-| `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null}` (cada 5 s) | 200 `{cortar: true \| false}` |
+| `POST /results` | lo mismo que `resultados`, más `shares` (lista de nonces) | 202 `{shares: los que sumó}` |
+| `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` (cada 5 s) | 200 `{cortar: true \| false, shares?}` |
 
 ## Claves de Redis
 
@@ -128,6 +134,8 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `cuentas` | hash | cuenta → JSON `{tipo: usuario \| minero \| organizador, nombre, alta}` (`alta` en segundos Unix). Sólo operan las que están acá (BC-58) |
 | `altas:pendientes` | hash | cuenta → JSON `{tipo, nombre, pedida}`: los pedidos de alta que el organizador todavía no aprobó |
 | `nonces` | hash | cuenta → último nonce aceptado (pendiente o confirmado). `emision` → la última carga |
+| `espera:<cuenta>` | sorted set | Las transacciones de la cuenta que llegaron antes que un nonce anterior (score = nonce). Las destraba el NCT al aceptar el que falta |
+| `tx:en_espera` | sorted set | id → cuándo entró en espera; el ticker rechaza las que esperan de más (`nonce salteado`) |
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
 | `comprometido` | hash | cuenta → suma de sus transacciones validadas que todavía no entraron en un bloque. Lo suma el NCT al validar y lo resta al confirmar: lo disponible es `saldos − comprometido` |
 | `cajas` | lista | Cada elemento, una caja: una lista JSON de ids (`["a1…", "b2…"]`), de como mucho `TX_POR_CAJA`. La primera es la que se está minando o la próxima: el NCT la saca recién al confirmar su bloque |
@@ -139,9 +147,10 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `historial:<minero>` | hash, permanente | `alta`, `bloques`, `recompensas`, `shares`, `rangos`, `segundos_conectado`, `ultimo_aviso` y `hashes_por_segundo` (gateway y NCT, BC-54) |
 | `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Si el NCT muere, vence y se vuelve a armar la misma caja |
 | `tarea:ultima` | string | El id de la última tarea publicada. Al publicar otra, si ésta sigue `en_curso` pasa a `vencida`: el gateway deja de prestar sus rangos y les dice «cortá» a los mineros |
-| `nodo:<id>` | hash, permanente | `tipo` (`gpu` o `cpu`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix). El `<id>` es la cuenta del minero |
+| `nodo:<cuenta>` | hash, permanente | `tipo` (`gpu` o `cpu`), `alias` (el `nombre` de `cuentas`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix) |
 | `prestamos` | sorted set | `<tarea>:<rango>` → cuándo vence (segundos Unix). Lo maneja el gateway |
-| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, para volver a publicarlo si vence) y `minero` (el dueño: sólo él lo renueva) |
+| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva) y `shares` (cuántos le sumó) |
+| `escalador:claves` | hash | nombre de cada VM minero-cpu → su clave privada: el escalador se la genera, la aprueba y se la pasa por metadata (BC-57) |
 | `escalador:vms` | string | Las VMs pedidas cuando el escalador corre con `VMS_ACTIVAS=0` (simuladas); con VMs de verdad, la cantidad está en el state de OpenTofu |
 
 ## Vector de prueba
@@ -155,19 +164,7 @@ T=$(python3 -c "import json; v = json.load(open('pilar2/comun/vector_prueba.json
 pilar1/hit4/md5 "$T"    # 0000838af561f709b423629230de3bab
 ```
 
-## Versión 1: lo que se va
+## Herramientas
 
-Lo que los servicios todavía usan, y la tarjeta que lo cambia. Cuando nadie lo llame, se borra de `contrato.py`.
-
-| De la versión 1 | Lo usa | Se va con |
-|---|---|---|
-| `usuario_valido`: usuarios e ids de minero con nombre (1 a 32 letras, números, `_` o `-`) | gateway, NCT, TrP y mineros | BC-56 y BC-57 |
-| `validar_transaccion`: `{origen, destino, monto}` sin firma; el backend pone `id` (uuid4) y `timestamp` | backend | BC-56 |
-| `texto_bloque`: sin coinbase e igual para todos los mineros; `tx serializada = id:origen:destino:monto:timestamp` | NCT, TrP y tests de sistema | BC-62 |
-| `bloque` (el texto común) en `rangos` y en `tarea:<id>`, que arma el TrP; `tareas` sin `altura` | NCT, TrP y gateway | BC-62 |
-| `vector_prueba_v1.json` | tests del TrP y de los mineros | BC-62 |
-| `GET /tasks/next?minero=<id>` | gateway y mineros | BC-57 |
-| `recompensa` como campo del bloque, sumada aparte a `saldos[minero]` | NCT | BC-62 |
-| `Authorization: Bearer MINER_TOKEN` | gateway, mineros y VMs | BC-57 |
-
-El génesis ya sale con el formato de la v2 (`genesis-<cuenta>` desde `emision`): nadie recalcula su hash, y una cadena que ya existe no se toca.
+- **Claves** ([`claves/`](claves/)): `python -m claves generar | publica | exportar | firmar | cargar | aprobar | rafaga`. Es el «servicio que genera las claves» (BC-55).
+- **Auditoría** ([`herramientas/auditar.py`](herramientas/auditar.py)): `python -m herramientas.auditar` recorre la cadena desde el génesis, verifica cada hash, raíz, firma, nonce y transacción de emisión, recalcula los saldos y los compara con Redis (BC-61).

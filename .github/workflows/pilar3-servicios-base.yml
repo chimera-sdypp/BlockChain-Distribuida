@@ -88,7 +88,7 @@ jobs:
     needs: [validar]
     if: vars.GCP_PROYECTO != '' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
-    environment: produccion   # las credenciales de RabbitMQ, Redis y los mineros son secretos de este ambiente
+    environment: produccion   # las credenciales de RabbitMQ y Redis son secretos de este ambiente
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
@@ -116,13 +116,12 @@ jobs:
           RABBIT_CLAVE: ${{ secrets.RABBIT_CLAVE }}
           RABBIT_COOKIE: ${{ secrets.RABBIT_COOKIE }}
           REDIS_CLAVE: ${{ secrets.REDIS_CLAVE }}
-          MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
         run: |
           kubectl create namespace blockchain --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n blockchain create secret generic blockchain-secretos \
             --from-literal=RABBIT_USUARIO="$RABBIT_USUARIO" --from-literal=RABBIT_CLAVE="$RABBIT_CLAVE" \
             --from-literal=RABBIT_COOKIE="$RABBIT_COOKIE" --from-literal=REDIS_CLAVE="$REDIS_CLAVE" \
-            --from-literal=MINER_TOKEN="$MINER_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: RabbitMQ y Redis
         run: |

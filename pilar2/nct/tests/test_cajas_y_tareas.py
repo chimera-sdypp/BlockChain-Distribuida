@@ -5,7 +5,7 @@ import threading
 
 from prometheus_client import REGISTRY
 
-from nct.tests.test_validar import recibida
+from nct.tests.escenario import recibida
 
 
 def pendientes(redis, nct, cuantas, monto=1):
@@ -74,12 +74,11 @@ def test_armar_publica_una_tarea_con_la_primera_caja_sobre_la_punta(armar, redis
 
     punta = redis.lindex("cadena", -1)
     [tarea] = publicador.tareas()
-    assert tarea["tarea"] == id_tarea and tarea["previous_hash"] == punta
-    assert tarea["transacciones"] == [{"id": tx["id"], "origen": "alice", "destino": "bob", "monto": 7,
-                                       "timestamp": 1793836800} for tx in txs]
+    assert tarea["tarea"] == id_tarea and tarea["previous_hash"] == punta and tarea["altura"] == 1
+    assert tarea["transacciones"] == txs  # completas y firmadas, como van en el bloque
     assert isinstance(tarea["timestamp"], int)
     guardada = redis.hgetall(f"tarea:{id_tarea}")
-    assert guardada["estado"] == "en_curso" and guardada["previous_hash"] == punta
+    assert guardada["estado"] == "en_curso" and guardada["previous_hash"] == punta and guardada["altura"] == "1"
     assert json.loads(guardada["caja"]) == [tx["id"] for tx in txs]
     assert json.loads(guardada["transacciones"]) == tarea["transacciones"]
     assert int(guardada["timestamp"]) == tarea["timestamp"] and "publicada" in guardada

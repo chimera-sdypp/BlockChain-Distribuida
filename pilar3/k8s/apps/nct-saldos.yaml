@@ -1,7 +1,12 @@
 # En GKE el génesis sale con saldos altos: las pruebas de carga (BC-38 a BC-41) mandan hasta 100.000
 # transacciones de monto 1, y el NCT sólo acepta las que cubre el saldo confirmado de cada origen.
-# El génesis se carga una sola vez, con la cadena vacía: para que tome estos saldos en una cadena que ya
-# existe hay que reiniciarla (pilar3/pruebas/preparar.sh reiniciar, o el workflow «Preparar prueba»).
+# Son las cuentas de prueba alice, bob y carol (pilar2/comun/tests/claves.py), que las pruebas firman
+# con sus privadas de prueba. El génesis se carga una sola vez, con la cadena vacía: para que tome estos
+# saldos en una cadena que ya existe hay que reiniciarla (pilar3/pruebas/preparar.sh reiniciar, o el
+# workflow «Preparar prueba»).
+#
+# El organizador de GKE no es el de prueba: su privada no está en el repo (la tiene Tomás). Es la cuenta
+# que firma las cargas de saldo (BC-58); el backend la usa para validarlas y el NCT para aceptarlas.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,4 +17,18 @@ spec:
       containers:
         - name: nct
           env:
-            - { name: SALDOS_INICIALES, value: '{"alice": 1000000000, "bob": 1000000000, "carol": 1000000000}' }
+            - name: SALDOS_INICIALES
+              value: '{"0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": {"saldo": 1000000000, "nombre": "alice"}, "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": {"saldo": 1000000000, "nombre": "bob"}, "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f": {"saldo": 1000000000, "nombre": "carol"}}'
+            - { name: ORGANIZADOR_CLAVE, value: "1f38cfb7ad5d7bda45b400742c57058e8179205b190cc3ae86d272611f5b1245" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          env:
+            - { name: ORGANIZADOR_CLAVE, value: "1f38cfb7ad5d7bda45b400742c57058e8179205b190cc3ae86d272611f5b1245" }

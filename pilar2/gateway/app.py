@@ -1,17 +1,22 @@
 """Gateway de los mineros (BC-43): la única puerta de los mineros al sistema.
 
 Los mineros están fuera del cluster y RabbitMQ y Redis no se publican: el gateway habla HTTP con
-ellos y por adentro con RabbitMQ y Redis. Sin estado en memoria: los préstamos de los rangos están
-en Redis, así que cualquier pod atiende a cualquier minero.
+ellos y por adentro con RabbitMQ y Redis. Sin estado propio: los préstamos de los rangos están en
+Redis, así que cualquier pod atiende a cualquier minero (los textos que guarda en memoria salen de
+Redis y no cambian).
+
+Contrato v2: cada pedido va firmado con la clave del minero (BC-57) y sólo atiende a los mineros
+aprobados en `cuentas`. A cada uno le arma su propio texto, con su coinbase en la raíz (BC-62), y le
+cuenta los shares que manda (BC-63).
 """
 
-import hmac
 import json
 import logging
 import threading
 import time
+from collections import OrderedDict
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 import redis as redislib
@@ -24,6 +29,9 @@ log = logging.getLogger("gateway")
 
 ENTREGADAS = Counter("blockchain_tareas_entregadas", "Rangos entregados a los mineros")
 VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola porque su minero dejó de avisar")
+SHARES = Counter("blockchain_shares", "Shares que mandaron los mineros", ["resultado"])  # aceptado o descartado
+RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma o no_aprobado
+TEXTOS_EN_MEMORIA, TAREAS_EN_MEMORIA = 512, 16
 
 TIPOS = ("gpu", "cpu")
 MINERO_VIVO = 15  # segundos: el keep-alive es cada 5 s; tres perdidos y se lo da por caído
@@ -41,6 +49,29 @@ redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
 return 1
 """
 
+# Suma los shares de un rango prestado (BC-63). Atómico: sólo si la tarea sigue en curso (cuando el
+# NCT paga la época, ya no entra ninguno) y si el préstamo es de este minero. Descarta los repetidos
+# y no pasa de `tope` por préstamo.
+# KEYS: tarea:<id>, tarea:<id>:shares, shares:<época>, historial:<minero>, prestamo:<tarea>:<rango>.
+# ARGV: minero, tope, nonce… Devuelve cuántos sumó.
+LUA_SHARES = """
+if redis.call('HGET', KEYS[1], 'estado') ~= 'en_curso' then return 0 end
+if redis.call('HGET', KEYS[5], 'minero') ~= ARGV[1] then return 0 end
+local libres = tonumber(ARGV[2]) - tonumber(redis.call('HGET', KEYS[5], 'shares') or '0')
+local nuevos = 0
+for i = 3, #ARGV do
+  if nuevos >= libres then break end
+  if redis.call('SADD', KEYS[2], ARGV[1] .. ':' .. ARGV[i]) == 1 then nuevos = nuevos + 1 end
+end
+if nuevos > 0 then
+  redis.call('EXPIRE', KEYS[2], 86400)
+  redis.call('HINCRBY', KEYS[5], 'shares', nuevos)
+  redis.call('ZINCRBY', KEYS[3], nuevos, ARGV[1])
+  redis.call('HINCRBY', KEYS[4], 'shares', nuevos)
+end
+return nuevos
+"""
+
 # Renueva un préstamo sólo si es de este minero: un minero lento no le estira el préstamo a otro.
 # KEYS: prestamos, prestamo:<miembro>. ARGV: miembro, minero, vencimiento nuevo.
 LUA_RENOVAR = """
@@ -53,9 +84,15 @@ def es_entero(valor, minimo=0):
     return isinstance(valor, int) and not isinstance(valor, bool) and valor >= minimo
 
 
+def shares_validos(valor):
+    return valor is None or (isinstance(valor, list) and len(valor) <= contrato.SHARES_POR_RANGO
+                             and all(es_entero(n) for n in valor))
+
+
 def resultado_valido(datos):
     if not isinstance(datos, dict) or not isinstance(datos.get("tarea"), str) or not datos["tarea"] \
-            or not es_entero(datos.get("rango")) or not contrato.usuario_valido(datos.get("minero")):
+            or not es_entero(datos.get("rango")) or not contrato.cuenta_valida(datos.get("minero")) \
+            or not shares_validos(datos.get("shares")):
         return False
     if datos.get("sin_solucion") is True:
         return True
@@ -67,52 +104,103 @@ def es_numero(valor, minimo=0):
 
 
 class Gateway:
-    def __init__(self, redis, rabbit, token, cola_rangos="rangos", cola_resultados="resultados",
+    def __init__(self, redis, rabbit, cola_rangos="rangos", cola_resultados="resultados",
                  lease=30, minero_vivo=MINERO_VIVO):
-        self.redis, self.rabbit, self.token = redis, rabbit, token
+        self.redis, self.rabbit = redis, rabbit
         self.cola_rangos, self.cola_resultados = cola_rangos, cola_resultados
         self.lease, self.minero_vivo = lease, minero_vivo
         self._renovar = redis.register_script(LUA_RENOVAR)
         self._reclamar = redis.register_script(LUA_RECLAMAR)
+        self._sumar_shares = redis.register_script(LUA_SHARES)
+        self._lock = threading.Lock()
+        self._tareas, self._textos = OrderedDict(), OrderedDict()
         COLECTOR.gateway = self
 
-    def autorizado(self, encabezado):
-        esperado = f"Bearer {self.token}"
-        return bool(self.token) and hmac.compare_digest((encabezado or "").encode(), esperado.encode())
+    # ── Quién pide: la firma y la aprobación (BC-57) ──
+
+    def autenticar(self, encabezados, metodo, ruta, cuerpo, ahora=None):
+        """(minero, None) si el pedido está firmado y en hora por un minero aprobado; si no, (None, (código, motivo))."""
+        minero, motivo = contrato.verificar_pedido(encabezados, metodo, ruta, cuerpo, ahora=ahora)
+        if motivo:
+            RECHAZOS.labels("firma").inc()
+            log.warning("Pedido %s %s rechazado: %s", metodo, ruta, motivo)
+            return None, (401, motivo)
+        datos = self.redis.hget(contrato.CUENTAS, minero)
+        if not datos or json.loads(datos).get("tipo") != "minero":
+            RECHAZOS.labels("no_aprobado").inc()
+            log.warning("Pedido %s %s de %s, que no es un minero aprobado", metodo, ruta, minero)
+            return None, (403, f"la cuenta {minero} no es un minero aprobado: el organizador la tiene que aprobar")
+        return minero, None
 
     # ── Registro ──
 
-    def hello(self, datos):
+    def hello(self, minero, datos):
         """Devuelve (código, cuerpo). Un minero sin bench recibe la tarea modelo."""
-        if not isinstance(datos, dict) or not contrato.usuario_valido(datos.get("minero")) \
+        if not isinstance(datos, dict) or datos.get("minero") != minero \
                 or datos.get("tipo") not in TIPOS or not isinstance(datos.get("placa"), str):
-            return 400, {"error": "hace falta {minero (formato de usuario), tipo: gpu | cpu, placa}"}
-        nodo = contrato.NODO.format(datos["minero"])
-        self.redis.hset(nodo, mapping={"tipo": datos["tipo"], "placa": datos["placa"][:100],
+            return 400, {"error": "hace falta {minero (el de X-Minero), tipo: gpu | cpu, placa}"}
+        nodo = contrato.NODO.format(minero)
+        alias = json.loads(self.redis.hget(contrato.CUENTAS, minero) or "{}").get("nombre") or minero[:12]
+        self.redis.hset(nodo, mapping={"tipo": datos["tipo"], "placa": datos["placa"][:100], "alias": alias,
                                        "ultimo_aviso": int(time.time())})
         if self.redis.hexists(nodo, "bench"):
             return 200, {"registrado": True}
-        log.info("Minero nuevo %s (%s, %s): le toca la tarea modelo", datos["minero"], datos["tipo"], datos["placa"])
+        log.info("Minero nuevo %s (%s, %s, %s): le toca la tarea modelo", alias, datos["tipo"], datos["placa"], minero)
         return 200, contrato.BENCH
 
-    def bench(self, datos):
-        if not isinstance(datos, dict) or not contrato.usuario_valido(datos.get("minero")) \
+    def bench(self, minero, datos):
+        if not isinstance(datos, dict) or datos.get("minero") != minero \
                 or not es_numero(datos.get("hashes_por_segundo"), minimo=1):
             return 400, {"error": "hace falta {minero, segundos, hashes_por_segundo > 0}"}
-        self.redis.hset(contrato.NODO.format(datos["minero"]), "bench", int(datos["hashes_por_segundo"]))
-        log.info("Bench de %s: %d hashes/s", datos["minero"], datos["hashes_por_segundo"])
+        self.redis.hset(contrato.NODO.format(minero), "bench", int(datos["hashes_por_segundo"]))
+        log.info("Bench de %s: %d hashes/s", minero, datos["hashes_por_segundo"])
         return 204, None
+
+    # ── El texto de cada minero (BC-62) ──
+
+    def texto(self, tarea, minero):
+        """El texto que mina `minero` en `tarea`, con su coinbase en la raíz; None si la tarea no está completa.
+
+        Se guarda en memoria: la tarea no cambia (al rearmarla, el NCT le pone otro id), así que no hace
+        falta recalcular la raíz en cada rango ni en cada share.
+        """
+        with self._lock:
+            texto = self._textos.get((tarea, minero))
+        if texto is not None:
+            return texto
+        datos = self._tarea(tarea)
+        if datos is None:
+            return None
+        texto = contrato.texto_para(datos, minero)
+        with self._lock:
+            self._textos[(tarea, minero)] = texto
+            while len(self._textos) > TEXTOS_EN_MEMORIA:
+                self._textos.popitem(last=False)
+        return texto
+
+    def _tarea(self, tarea):
+        with self._lock:
+            datos = self._tareas.get(tarea)
+        if datos is not None:
+            return datos
+        try:
+            datos = contrato.tarea_guardada(self.redis.hgetall(contrato.TAREA.format(tarea)))
+        except (KeyError, ValueError):
+            return None  # el NCT o el TrP todavía no la terminaron de escribir
+        with self._lock:
+            self._tareas[tarea] = datos
+            while len(self._tareas) > TAREAS_EN_MEMORIA:
+                self._tareas.popitem(last=False)
+        return datos
 
     # ── Rangos: entregar y devolver ──
 
-    def siguiente(self, minero):
-        """GET /tasks/next: el próximo rango de una tarea en curso, prestado a `minero`.
+    def siguiente(self, minero, datos=None):
+        """GET /tasks/next: el próximo rango de una tarea en curso, prestado a `minero`, con su texto.
 
         Primero se anota el préstamo en Redis y recién después se hace el ack: un rango nunca
         queda sin dueño ni en la cola. Los de tareas cerradas se descartan (ack sin entregar).
         """
-        if not contrato.usuario_valido(minero):
-            return 400, {"error": "falta ?minero=<id> (formato de usuario)"}
         try:
             while True:
                 rango = self.rabbit.tomar(self.cola_rangos, lambda mensaje: self._prestar(mensaje, minero))
@@ -130,28 +218,70 @@ class Gateway:
         if not self.tarea_en_curso(mensaje["tarea"]):
             log.info("Descarto el rango %s de la tarea %s, que ya se cerró", mensaje["rango"], mensaje["tarea"])
             return False
+        texto = self.texto(mensaje["tarea"], minero)
+        if texto is None:
+            log.error("La tarea %s no tiene todo lo que hace falta para armar el texto: descarto el rango %s",
+                      mensaje["tarea"], mensaje["rango"])
+            return False
         miembro = f"{mensaje['tarea']}:{mensaje['rango']}"
         tuberia = self.redis.pipeline()
         tuberia.hset(PRESTAMO.format(miembro), mapping={"mensaje": json.dumps(mensaje), "minero": minero})
         tuberia.zadd(contrato.PRESTAMOS, {miembro: time.time() + self.lease})
         tuberia.execute()
         log.info("Rango %s prestado a %s", miembro, minero)
-        return mensaje
+        return {**mensaje, "bloque": texto}
+
+    # ── Shares (BC-63) ──
+
+    def aceptar_shares(self, minero, tarea, rango, nonces):
+        """Verifica y suma los shares de un rango que `minero` tiene prestado. Devuelve cuántos sumó.
+
+        Cada share es un MD5: un nonce del rango cuyo hash, sobre el texto de este minero, empieza con
+        el prefijo menos un carácter. Con prefijo de 1 no hay shares.
+        """
+        if not nonces:
+            return 0
+        miembro = f"{tarea}:{rango}"
+        prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+        if prestamo.get("minero") != minero:
+            SHARES.labels("descartado").inc(len(nonces))
+            return 0
+        mensaje = json.loads(prestamo["mensaje"])
+        corto, texto = contrato.prefijo_share(mensaje["prefijo"]), self.texto(tarea, minero)
+        if corto is None or texto is None:
+            SHARES.labels("descartado").inc(len(nonces))
+            return 0
+        validos = sorted({n for n in nonces if mensaje["desde"] <= n <= mensaje["hasta"]
+                          and contrato.cumple(contrato.hash_bloque(texto, n), corto)})
+        sumados = 0
+        if validos:
+            altura = self._tarea(tarea)["altura"]
+            sumados = self._sumar_shares(
+                keys=[contrato.TAREA.format(tarea), contrato.SHARES_TAREA.format(tarea),
+                      contrato.SHARES.format(contrato.epoca(altura)), contrato.HISTORIAL.format(minero),
+                      PRESTAMO.format(miembro)],
+                args=[minero, contrato.SHARES_POR_RANGO, *validos])
+        SHARES.labels("aceptado").inc(sumados)
+        SHARES.labels("descartado").inc(len(nonces) - sumados)
+        return sumados
 
     def tarea_en_curso(self, tarea):
         return self.redis.hget(contrato.TAREA.format(tarea), "estado") == "en_curso"
 
-    def resultado(self, datos):
-        """POST /results: lo publica en `resultados` y recién después libera el préstamo."""
-        if not resultado_valido(datos):
-            return 400, {"error": "hace falta {tarea, rango, minero} y {nonce, hash} o {sin_solucion: true}"}
+    def resultado(self, minero, datos):
+        """POST /results: suma los shares, lo publica en `resultados` y recién después libera el préstamo."""
+        if not resultado_valido(datos) or datos["minero"] != minero:
+            return 400, {"error": "hace falta {tarea, rango, minero (el de X-Minero)} y {nonce, hash} o "
+                                  "{sin_solucion: true}, con shares opcional (lista de nonces)"}
+        shares = self.aceptar_shares(minero, datos["tarea"], datos["rango"], datos.get("shares"))
+        mensaje = {k: v for k, v in datos.items() if k != "shares"}
         try:
-            self.rabbit.publicar(self.cola_resultados, datos)
+            self.rabbit.publicar(self.cola_resultados, mensaje)
         except Exception as error:
             log.error("No se pudo publicar el resultado de %s:%s: %r", datos["tarea"], datos["rango"], error)
             return 503, {"error": "RabbitMQ no disponible"}
         self._liberar(f"{datos['tarea']}:{datos['rango']}")
-        return 202, None
+        return 202, {"shares": shares}
 
     def _liberar(self, miembro):
         try:
@@ -164,28 +294,30 @@ class Gateway:
 
     # ── Keep-alive ──
 
-    def keepalive(self, datos):
-        """POST /keepalive: el minero sigue vivo; renueva su préstamo o le dice que corte."""
+    def keepalive(self, minero, datos):
+        """POST /keepalive: el minero sigue vivo; suma los shares que trae, renueva su préstamo o le dice que corte."""
         rango = datos.get("rango") if isinstance(datos, dict) else None
-        if not isinstance(datos, dict) or not contrato.usuario_valido(datos.get("minero")) \
-                or not es_numero(datos.get("hashes_por_segundo")) \
+        if not isinstance(datos, dict) or datos.get("minero") != minero \
+                or not es_numero(datos.get("hashes_por_segundo")) or not shares_validos(datos.get("shares")) \
                 or not (rango is None or (isinstance(rango, dict) and isinstance(rango.get("tarea"), str)
                                           and es_entero(rango.get("rango")))):
-            return 400, {"error": "hace falta {minero, hashes_por_segundo, rango: {tarea, rango} | null}"}
-        minero = datos["minero"]
+            return 400, {"error": "hace falta {minero, hashes_por_segundo, rango: {tarea, rango} | null, shares?}"}
         self.redis.hset(contrato.NODO.format(minero), mapping={
             "hashes_por_segundo": int(datos["hashes_por_segundo"]), "ultimo_aviso": int(time.time())})
         if rango is None:
             return 200, {"cortar": False}
+        respuesta = {}
+        if "shares" in datos:
+            respuesta["shares"] = self.aceptar_shares(minero, rango["tarea"], rango["rango"], datos["shares"])
         miembro = f"{rango['tarea']}:{rango['rango']}"
         if not self.tarea_en_curso(rango["tarea"]):
             # El minero deja el rango sin mandar resultado: el préstamo se borra acá.
             self._liberar(miembro)
             log.info("A %s: cortá el rango %s, su tarea ya se cerró", minero, miembro)
-            return 200, {"cortar": True}
+            return 200, {"cortar": True, **respuesta}
         self._renovar(keys=[contrato.PRESTAMOS, PRESTAMO.format(miembro)],
                       args=[miembro, minero, time.time() + self.lease])
-        return 200, {"cortar": False}
+        return 200, {"cortar": False, **respuesta}
 
     # ── Préstamos vencidos ──
 
@@ -264,25 +396,32 @@ def responder(codigo, cuerpo):
 
 
 def agregar_rutas(app, gateway):
-    def con_token(request: Request):
-        if not gateway.autorizado(request.headers.get("authorization")):
-            raise HTTPException(401, "MINER_TOKEN inválido")
+    def ruta(metodo_http, atender):
+        """Verifica la firma y la aprobación, lee el JSON y corre el método del gateway fuera del event
+        loop (Redis y pika bloquean). La ruta firmada lleva la query, como la manda el minero."""
+        async def pedido(request: Request):
+            cuerpo = await request.body()
+            firmada = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+            try:
+                minero, error = await run_in_threadpool(gateway.autenticar, request.headers, metodo_http,
+                                                        firmada, cuerpo)
+            except redislib.RedisError as falla:
+                log.error("Redis no respondió al verificar un minero: %r", falla)
+                return JSONResponse({"error": "Redis no disponible"}, status_code=503)
+            if error:
+                return JSONResponse({"error": error[1]}, status_code=error[0])
+            try:
+                datos = json.loads(cuerpo) if cuerpo else None
+            except ValueError:
+                datos = None
+            return responder(*await run_in_threadpool(atender, minero, datos))
+        return pedido
 
-    def ruta(metodo):
-        """Lee el JSON y corre el método del gateway (Redis y pika bloquean) fuera del event loop."""
-        async def atender(request: Request):
-            datos = await leer_json(request)
-            return responder(*await run_in_threadpool(metodo, datos))
-        return atender
-
-    app.post("/hello", dependencies=[Depends(con_token)])(ruta(gateway.hello))
-    app.post("/bench", dependencies=[Depends(con_token)])(ruta(gateway.bench))
-    app.post("/results", dependencies=[Depends(con_token)])(ruta(gateway.resultado))
-    app.post("/keepalive", dependencies=[Depends(con_token)])(ruta(gateway.keepalive))
-
-    @app.get("/tasks/next", dependencies=[Depends(con_token)])
-    def tasks_next(minero: str = ""):
-        return responder(*gateway.siguiente(minero))
+    app.post("/hello")(ruta("POST", gateway.hello))
+    app.post("/bench")(ruta("POST", gateway.bench))
+    app.post("/results")(ruta("POST", gateway.resultado))
+    app.post("/keepalive")(ruta("POST", gateway.keepalive))
+    app.get("/tasks/next")(ruta("GET", gateway.siguiente))
 
 
 def revisar_siempre(gateway, cada):
@@ -297,11 +436,8 @@ def revisar_siempre(gateway, cada):
 def main():
     servicio = Servicio("gateway")
     c = servicio.config
-    token = config.texto("MINER_TOKEN")
-    if not token:
-        raise SystemExit("Falta MINER_TOKEN")
     rabbit = Rabbit(c, [config.texto("COLA_RANGOS", "rangos"), config.texto("COLA_RESULTADOS", "resultados")])
-    gateway = Gateway(servicio.redis, rabbit, token,
+    gateway = Gateway(servicio.redis, rabbit,
                       cola_rangos=config.texto("COLA_RANGOS", "rangos"),
                       cola_resultados=config.texto("COLA_RESULTADOS", "resultados"),
                       lease=config.entero("TASK_LEASE_SECONDS", 30),

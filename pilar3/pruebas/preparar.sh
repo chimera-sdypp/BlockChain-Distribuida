@@ -72,7 +72,8 @@ reiniciar() {
     local saldos replicas_nct replicas_trp primario
     saldos=$(env_de nct SALDOS_INICIALES)
     echo "SALDOS_INICIALES del NCT: ${saldos:-(los de por defecto)}"
-    if ! python3 -c 'import json, sys; s = json.loads(sys.argv[1] or "{}"); sys.exit(0 if s and min(s.values()) >= int(sys.argv[2]) else 1)' \
+    # {cuenta: saldo} o {cuenta: {saldo, nombre}} (contrato v2)
+    if ! python3 -c 'import json, sys; s = json.loads(sys.argv[1] or "{}"); v = [d["saldo"] if isinstance(d, dict) else d for d in s.values()]; sys.exit(0 if v and min(v) >= int(sys.argv[2]) else 1)' \
         "$saldos" "$SALDO_MINIMO"; then
         echo "::error::El NCT no tiene saldos iniciales de al menos $SALDO_MINIMO: reiniciar no serviría. Falta desplegar pilar3/k8s/apps/nct-saldos.yaml."
         exit 1

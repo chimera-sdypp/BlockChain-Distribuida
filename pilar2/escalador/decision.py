@@ -13,7 +13,7 @@ class Ajustes:
     espera_subir: int        # segundos sin GPU y con trabajo antes de crear VMs
     espera_bajar: int        # segundos que un número menor se tiene que sostener antes de borrar VMs
     vivo_segundos: int       # un minero cuenta si avisó hace menos que esto
-    prefijo_vm: str          # el MINERO_ID de nuestras VMs empieza así (es su hostname)
+    prefijo_vm: str          # el alias de nuestras VMs empieza así (es su nombre, que el escalador pone en `cuentas`)
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,11 @@ class Foto:
 
 
 def sacar_foto(nodos, ahora, trabajo, ajustes):
-    """`nodos`: {id: hash nodo:<id> como lo devuelve Redis (todo texto)}."""
+    """`nodos`: {cuenta: hash nodo:<cuenta> como lo devuelve Redis (todo texto)}.
+
+    Las VMs propias se reconocen por el alias, que el gateway saca de `cuentas` (lo escribió el
+    escalador al aprobarlas): un minero cualquiera no puede hacerse pasar por una VM.
+    """
     gpus, ajena, benches = 0, 0.0, []
     for id_, nodo in nodos.items():
         try:
@@ -37,7 +41,7 @@ def sacar_foto(nodos, ahora, trabajo, ajustes):
             continue  # un nodo a medio escribir no cuenta
         if nodo.get("tipo") == "gpu":
             gpus += 1
-        elif id_.startswith(ajustes.prefijo_vm):
+        elif nodo.get("alias", id_).startswith(ajustes.prefijo_vm):
             if bench > 0:
                 benches.append(bench)
         else:

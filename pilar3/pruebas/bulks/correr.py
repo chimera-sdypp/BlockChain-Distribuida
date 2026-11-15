@@ -14,7 +14,11 @@ Para cada tamaño y repetición:
 Antes de empezar comprueba que los ORIGENES tengan saldo para el bulk más grande: el NCT valida
 contra el saldo confirmado menos lo comprometido, así que con los saldos por defecto (1000 cada uno)
 las transacciones de más se rechazarían. Ver README.md.
-Solo biblioteca estándar de Python, más k6 en el PATH.
+
+Contrato v2: las transacciones van firmadas por su origen y con el nonce de la cuenta. Las firma este
+script antes de correr k6 (con las cuentas de prueba del génesis, ../firmar.py) y k6 sólo manda los
+lotes. Los destinos son 100 cuentas nuevas por corrida: así se reconocen sus transacciones en la cadena.
+Necesita k6 en el PATH y el Python de pilar2 (pilar2/.venv/bin/python), por `cryptography`.
 """
 
 import argparse
@@ -34,6 +38,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
+sys.path.insert(0, str(AQUI.parent))
+from firmar import PRIVADA, contrato, cuenta  # noqa: E402
+
+DESTINOS = 100  # destinos distintos por corrida
 CAMPOS = ["corrida", "inicio", "tamano", "repeticion", "vus", "lote", "lotes",
           "mineros_gpu", "mineros_cpu", "prefijo", "altura_inicial",
           "p50_ms", "p95_ms", "p99_ms", "pedidos", "pedidos_por_s", "errores_http_pct",
@@ -83,14 +91,28 @@ def comprobar_saldos(api, origenes, mayor):
     """Cada origen manda ~mayor/len(origenes) transacciones de 1: tiene que tener ese saldo."""
     necesario = math.ceil(mayor / len(origenes))
     saldos = api.get("/api/saldos")
-    faltan = {o: saldos.get(o, 0) for o in origenes if saldos.get(o, 0) < necesario}
+    faltan = {o: saldos.get(cuenta(o), 0) for o in origenes if saldos.get(cuenta(o), 0) < necesario}
     return necesario, faltan
 
 
-def correr_k6(k6, opciones, cantidad, prefijo, resumen):
+def firmar_lotes(api, origenes, cantidad, lote, archivo):
+    """Las `cantidad` transacciones de la corrida, firmadas y partidas en lotes: en ronda entre los
+    orígenes, de monto 1, cada una con el nonce siguiente de su origen. Devuelve los destinos."""
+    nonces = {o: api.get(f"/api/cuentas/{cuenta(o)}")["nonce"] for o in origenes}
+    destinos = [contrato.nueva_clave()[1] for _ in range(DESTINOS)]
+    txs = []
+    for k in range(cantidad):
+        origen = origenes[k % len(origenes)]
+        nonces[origen] += 1
+        txs.append(contrato.transaccion(PRIVADA[origen], destinos[k % DESTINOS], 1, nonces[origen]))
+    lotes = [txs[i:i + lote] for i in range(0, cantidad, lote)]
+    Path(archivo).write_text(json.dumps(lotes), encoding="utf-8")
+    return set(destinos)
+
+
+def correr_k6(k6, opciones, cantidad, lotes, resumen):
     entorno = dict(os.environ, BASE_URL=opciones.url, CANTIDAD=str(cantidad), VUS=str(opciones.vus),
-                   LOTE=str(opciones.lote), ORIGENES=",".join(opciones.origenes),
-                   PREFIJO_DESTINO=prefijo, RESUMEN=str(resumen))
+                   LOTES_ARCHIVO=str(lotes), RESUMEN=str(resumen))
     proceso = subprocess.run([k6, "run", "--quiet", str(AQUI / "bulk.js")], env=entorno,
                              capture_output=True, text=True)
     if proceso.returncode not in (0, 99):  # 99: falló algún threshold/check, igual hay métricas
@@ -111,15 +133,14 @@ def timeout_para(tamano, opciones):
     return 120 + opciones.segundos_por_bloque * math.ceil(tamano / opciones.tx_por_bloque)
 
 
-def esperar_confirmacion(api, prefijo, aceptadas, altura_inicial, inicio, timeout, opciones):
-    """Sigue los bloques nuevos hasta ver `aceptadas` tx de la corrida. Devuelve el resumen."""
-    marca = prefijo + "-"
+def esperar_confirmacion(api, destinos, aceptadas, altura_inicial, inicio, timeout, opciones):
+    """Sigue los bloques nuevos hasta ver `aceptadas` tx de la corrida (las que van a `destinos`). Devuelve el resumen."""
     confirmadas, por_bloque, vista, ultima = 0, [], altura_inicial, None
     limite = time.time() + timeout
     while confirmadas < aceptadas and time.time() < limite:
         for bloque in api.bloques_desde(vista):
             vista = bloque["altura"]
-            propias = sum(1 for tx in bloque["transactions"] if str(tx.get("destino", "")).startswith(marca))
+            propias = sum(1 for tx in bloque["transactions"] if tx.get("destino") in destinos)
             if propias:
                 confirmadas += propias
                 por_bloque.append(propias)
@@ -147,7 +168,8 @@ def main():
     argumentos.add_argument("--repeticiones", type=int, default=3)
     argumentos.add_argument("--vus", type=int, default=10, help="usuarios virtuales de k6")
     argumentos.add_argument("--lote", type=int, default=1000, help="transacciones por pedido (máximo 1000)")
-    argumentos.add_argument("--origenes", type=lambda t: [o for o in t.split(",") if o], default=["alice", "bob", "carol"])
+    argumentos.add_argument("--origenes", type=lambda t: [o for o in t.split(",") if o], default=["alice", "bob", "carol"],
+                            help="cuentas de prueba del génesis que firman (ver ../firmar.py)")
     argumentos.add_argument("--timeout", type=int, default=0,
                             help="segundos máximos esperando la confirmación (0: según el tamaño, ver --segundos-por-bloque)")
     argumentos.add_argument("--segundos-por-bloque", type=float, default=15.0,
@@ -181,17 +203,18 @@ def main():
         for tamano in opciones.tamanos:
             for repeticion in range(1, opciones.repeticiones + 1):
                 corrida = uuid.uuid4().hex[:6]
-                prefijo = f"b38-{corrida}"
                 altura_inicial, punta = api.altura()
                 mineros = api.mineros_vivos()
                 print(f"\n== {tamano} tx · repetición {repeticion} · corrida {corrida} · "
                       f"mineros gpu={mineros['gpu']} cpu={mineros['cpu']}", flush=True)
+                lotes = Path(temporal) / f"{corrida}-lotes.json"
+                destinos = firmar_lotes(api, opciones.origenes, tamano, opciones.lote, lotes)  # antes de medir
                 inicio = time.time()
-                metricas = correr_k6(k6, opciones, tamano, prefijo, Path(temporal) / f"{corrida}.json")
+                metricas = correr_k6(k6, opciones, tamano, lotes, Path(temporal) / f"{corrida}.json")
                 envio = time.time() - inicio
                 aceptadas = int(metrica(metricas, "tx_aceptadas", "count"))
                 timeout = timeout_para(tamano, opciones)
-                sistema = esperar_confirmacion(api, prefijo, aceptadas, altura_inicial, inicio, timeout, opciones)
+                sistema = esperar_confirmacion(api, destinos, aceptadas, altura_inicial, inicio, timeout, opciones)
                 fila = {
                     "corrida": corrida, "inicio": datetime.fromtimestamp(inicio, timezone.utc).isoformat(timespec="seconds"),
                     "tamano": tamano, "repeticion": repeticion, "vus": opciones.vus, "lote": opciones.lote,

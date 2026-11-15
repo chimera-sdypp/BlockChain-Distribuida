@@ -1,11 +1,11 @@
 """Contrato entre los servicios: cuentas, transacciones firmadas, bloque, recompensas y nombres de colas y claves.
 
-La especificación completa está en pilar2/CONTRATO.md. La versión 2 (cuentas con clave Ed25519,
-transacciones firmadas y coinbase en la raíz) convive con lo de la versión 1 que los servicios todavía
-usan (`usuario_valido`, `validar_transaccion` y `texto_bloque`): cada uno lo cambia en su tarjeta.
+La especificación completa está en pilar2/CONTRATO.md: es la versión 2 (cuentas con clave Ed25519,
+transacciones firmadas con nonce por cuenta, emisión, coinbase en la raíz y participación por shares).
 """
 
 import hashlib
+import json
 import re
 import time
 
@@ -32,6 +32,8 @@ ESTADOS_TX = ("recibida", "pendiente", "confirmada", "rechazada")
 CUENTAS = "cuentas"                  # cuenta → JSON {tipo, nombre, alta}
 ALTAS_PENDIENTES = "altas:pendientes"  # cuenta → JSON {tipo, nombre, pedida}
 NONCES = "nonces"                    # cuenta → último nonce aceptado (pendiente o confirmado); «emision» → última carga
+ESPERA = "espera:{}"                 # sorted set por cuenta: las que llegaron antes que un nonce anterior (score = nonce)
+EN_ESPERA = "tx:en_espera"           # sorted set: id → cuándo entró en espera (para rechazar las que no se destraban)
 SHARES = "shares:{}"                 # sorted set de la época: minero → shares aceptados (ZINCRBY)
 SHARES_TAREA = "tarea:{}:shares"     # conjunto «minero:nonce» de la tarea, para descartar los repetidos
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"
@@ -72,9 +74,17 @@ CUENTA = re.compile(r"^[0-9a-f]{64}$")  # clave pública Ed25519 en hex, en min�
 FIRMA = re.compile(r"^[0-9a-f]{128}$")
 
 
+NOMBRE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")  # el alias de una cuenta, sólo para mostrar
+
+
 def cuenta_valida(valor):
     """Una cuenta es una clave pública Ed25519 (32 bytes) en hex. El nombre va aparte, en `cuentas`."""
     return isinstance(valor, str) and bool(CUENTA.match(valor))
+
+
+def nombre_valido(valor):
+    """El alias de una cuenta o de un minero (el MINERO_ID): de 1 a 32 letras, números, «_», «.» o «-»."""
+    return isinstance(valor, str) and bool(NOMBRE.match(valor))
 
 
 def nueva_clave():
@@ -209,6 +219,17 @@ def es_emision(tx):
     return tx.get("origen") == EMISION
 
 
+def es_coinbase(tx):
+    return es_emision(tx) and str(tx.get("id", "")).startswith("cb-")
+
+
+def transaccion_guardada(id_, campos):
+    """tx:<id> como lo devuelve Redis (todo texto) → la transacción con sus tipos, como va en el bloque."""
+    return {"id": id_, "origen": campos["origen"], "destino": campos["destino"], "monto": int(campos["monto"]),
+            "nonce": int(campos.get("nonce", 0)), "timestamp": int(campos["timestamp"]),
+            "firma": campos.get("firma", "")}
+
+
 # ── Bloque (v2) ──
 
 def serializar_transaccion(tx):
@@ -241,6 +262,13 @@ def texto_para(tarea, minero):
     return _texto(tarea["previous_hash"], tarea["timestamp"], transacciones_del_bloque(tarea, minero))
 
 
+def tarea_guardada(campos):
+    """tarea:<id> como lo devuelve Redis (todo texto) → lo que necesita `texto_para`."""
+    return {"previous_hash": campos["previous_hash"], "timestamp": int(campos["timestamp"]),
+            "altura": int(campos["altura"]), "prefijo": campos["prefijo"],
+            "transacciones": json.loads(campos["transacciones"])}
+
+
 def bloque_genesis(saldos, timestamp):
     """Bloque 0: sin minar (nonce 0, sin prefijo ni coinbase); reparte los saldos iniciales desde «emision»."""
     transacciones = [_emision(f"genesis-{cuenta}", cuenta, monto, 0, timestamp)
@@ -268,6 +296,29 @@ def es_share(hash_hex, prefijo):
 def epoca(altura):
     """Época de un bloque: del 0 al 9 son la 0, del 10 al 19 la 1…"""
     return altura // BLOQUES_POR_EPOCA
+
+
+FONDO_EPOCA = 100      # lo que se reparte por época entre los que mandaron shares
+RACHA_MAXIMA = 6       # épocas seguidas con shares que cuentan: +10 % cada una después de la primera, hasta +50 %
+SHARES_POR_RANGO = 64  # tope de shares que el minero junta por rango (y que el gateway acepta por pedido)
+
+
+def peso_participacion(shares, racha):
+    """shares × (1 + bonus), en décimos para que sea entero. La racha 1 no suma; la 6 o más, +50 %."""
+    return shares * (10 + min(max(racha, 1), RACHA_MAXIMA) - 1)
+
+
+def repartir(fondo, shares, rachas):
+    """{minero: monto} del fondo de una época, en proporción a shares × racha. Enteros: el resto se pierde."""
+    pesos = {minero: peso_participacion(n, rachas.get(minero, 1)) for minero, n in shares.items() if n > 0}
+    total = sum(pesos.values())
+    montos = {minero: fondo * peso // total for minero, peso in pesos.items()} if total else {}
+    return {minero: monto for minero, monto in sorted(montos.items()) if monto > 0}
+
+
+def es_primer_bloque_de_epoca(altura):
+    """En el primer bloque de cada época (10, 20…) entra el pago de la anterior."""
+    return altura > 0 and altura % BLOQUES_POR_EPOCA == 0
 
 
 # ── Pedidos firmados de los mineros al gateway (v2) ──
@@ -306,39 +357,3 @@ def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None):
     if not verificar_firma(minero, mensaje_pedido(metodo, ruta, tiempo, cuerpo), firma):
         return None, "X-Firma: no es la del minero sobre el pedido"
     return minero, None
-
-
-# ── Versión 1: lo que los servicios usan hasta pasarse a la 2 (se borra cuando nadie lo llame) ──
-
-ORIGEN_GENESIS = "genesis"
-USUARIO = re.compile(r"^[A-Za-z0-9_-]{1,32}$")  # sin ":" ni "|", que separan campos al serializar
-
-
-def usuario_valido(valor):
-    """v1 (hasta BC-57): usuarios e ids de minero con nombre. En la 2 son cuentas (`cuenta_valida`)."""
-    return isinstance(valor, str) and bool(USUARIO.match(valor))
-
-
-def validar_transaccion(datos):
-    """v1 (hasta BC-56): transferencia sin firma entre usuarios con nombre. Lista de errores; vacía si es válida."""
-    if not isinstance(datos, dict):
-        return ["el cuerpo tiene que ser un objeto JSON"]
-    errores = []
-    for campo in ("origen", "destino"):
-        valor = datos.get(campo)
-        if not usuario_valido(valor):
-            errores.append(f"{campo}: de 1 a 32 letras, números, «_» o «-»")
-    if not _entero(datos.get("monto"), 1, MONTO_MAXIMO):
-        errores.append(f"monto: entero entre 1 y {MONTO_MAXIMO}")
-    if not errores and datos["origen"] == datos["destino"]:
-        errores.append("origen y destino tienen que ser distintos")
-    for campo in ("origen", "destino"):
-        if datos.get(campo) in (ORIGEN_GENESIS, EMISION):
-            errores.append(f"{campo}: «{datos[campo]}» está reservado")
-    return errores
-
-
-def texto_bloque(previous_hash, timestamp, transacciones):
-    """v1 (hasta BC-62): el texto sin coinbase, igual para todos los mineros. En la 2 es `texto_para`."""
-    serializadas = (f"{tx['id']}:{tx['origen']}:{tx['destino']}:{tx['monto']}:{tx['timestamp']}" for tx in transacciones)
-    return f"{previous_hash};{timestamp};{md5('|'.join(serializadas))};"

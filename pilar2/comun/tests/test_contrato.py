@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, firmada
 
 VECTOR = json.loads((Path(__file__).parent.parent / "vector_prueba.json").read_text())
 ALICE, BOB, MINERO, ORGANIZADOR = CUENTA["alice"], CUENTA["bob"], CUENTA["minero"], CUENTA["organizador"]
@@ -211,43 +211,43 @@ def test_pedido_con_encabezados_malos(cambio, motivo):
     assert minero is None and motivo in error
 
 
-# ── Versión 1 (la usan los servicios hasta pasarse a la 2) ──
+# ── Nombres, reparto por shares y lo que se lee de Redis ──
 
-def test_texto_v1_sigue_igual():
-    """El vector de la versión 1: el NCT y el TrP lo siguen usando hasta BC-62."""
-    txs = [{"id": "tx-1", "origen": "alice", "destino": "bob", "monto": 250, "timestamp": 1793836830},
-           {"id": "tx-2", "origen": "bob", "destino": "carol", "monto": 75, "timestamp": 1793836841}]
-    texto = contrato.texto_bloque("bf819460f5e4a7e1b99dea601790e56f", 1793836860, txs)
-    assert texto == "bf819460f5e4a7e1b99dea601790e56f;1793836860;24a6f443ef61b3fd8e144dbb91875121;"
-    assert contrato.hash_bloque(texto, 1339) == "0000664df63432d4884b763055877eb2"
-
-
-def test_transaccion_v1_valida():
-    assert contrato.validar_transaccion({"origen": "alice", "destino": "bob", "monto": 10}) == []
-    assert contrato.validar_transaccion({"origen": "alice", "destino": "bob", "monto": contrato.MONTO_MAXIMO}) == []
-
-
-@pytest.mark.parametrize("minero, valido", [
-    ("gpu-tomas", True), ("cpu_vm_3", True), ("", False), ("vm:1", False), ("x" * 33, False), (7, False),
+@pytest.mark.parametrize("nombre, valido", [
+    ("gpu-tomas", True), ("cpu_vm_3", True), ("minero-gpu-0", True), ("alice.b", True),
+    ("", False), ("vm:1", False), ("x" * 33, False), (7, False),
 ])
-def test_id_del_minero_con_formato_de_usuario(minero, valido):
-    assert contrato.usuario_valido(minero) is valido
+def test_nombre_de_una_cuenta_o_un_minero(nombre, valido):
+    assert contrato.nombre_valido(nombre) is valido
 
 
-@pytest.mark.parametrize("datos, campo", [
-    ({"destino": "bob", "monto": 10}, "origen"),
-    ({"origen": "a:b", "destino": "bob", "monto": 10}, "origen"),
-    ({"origen": "alice", "destino": "x" * 33, "monto": 10}, "destino"),
-    ({"origen": "alice", "destino": "bob", "monto": 0}, "monto"),
-    ({"origen": "alice", "destino": "bob", "monto": 1.5}, "monto"),
-    ({"origen": "alice", "destino": "bob", "monto": True}, "monto"),
-    ({"origen": "alice", "destino": "bob", "monto": contrato.MONTO_MAXIMO + 1}, "monto"),
-    ({"origen": "alice", "destino": "alice", "monto": 10}, "distintos"),
-    ({"origen": "genesis", "destino": "bob", "monto": 10}, "origen: «genesis»"),
-    ({"origen": "alice", "destino": "genesis", "monto": 10}, "destino: «genesis»"),
-    ({"origen": "emision", "destino": "bob", "monto": 10}, "origen: «emision»"),
-    ([1, 2], "objeto"),
-])
-def test_transaccion_v1_invalida(datos, campo):
-    errores = contrato.validar_transaccion(datos)
-    assert any(campo in error for error in errores), errores
+def test_el_reparto_es_proporcional_a_los_shares():
+    assert contrato.repartir(100, {"a": 30, "b": 10}, {}) == {"a": 75, "b": 25}
+    assert contrato.repartir(100, {}, {}) == {} and contrato.repartir(100, {"a": 0}, {}) == {}
+
+
+def test_la_racha_suma_10_por_ciento_por_epoca_hasta_50():
+    assert [contrato.peso_participacion(10, r) for r in (1, 2, 3, 6, 7, 20)] == [100, 110, 120, 150, 150, 150]
+    # con la misma cantidad de shares, el que lleva 6 épocas seguidas cobra 1,5 veces más
+    assert contrato.repartir(250, {"a": 10, "b": 10}, {"a": 6, "b": 1}) == {"a": 150, "b": 100}
+
+
+def test_los_montos_son_enteros_y_el_resto_se_pierde():
+    montos = contrato.repartir(100, {"a": 1, "b": 1, "c": 1}, {})
+    assert montos == {"a": 33, "b": 33, "c": 33}
+
+
+def test_primer_bloque_de_cada_epoca():
+    assert [a for a in range(0, 35) if contrato.es_primer_bloque_de_epoca(a)] == [10, 20, 30]
+
+
+def test_transaccion_y_tarea_como_las_devuelve_redis():
+    tx = firmada("alice", "bob", 7, nonce=3)
+    texto = {k: str(v) for k, v in tx.items() if k != "id"}
+    assert contrato.transaccion_guardada(tx["id"], {**texto, "estado": "pendiente"}) == tx
+    tarea = VECTOR["tarea"]
+    guardada = {"previous_hash": tarea["previous_hash"], "timestamp": str(tarea["timestamp"]),
+                "altura": str(tarea["altura"]), "prefijo": tarea["prefijo"],
+                "transacciones": json.dumps(tarea["transacciones"]), "estado": "en_curso"}
+    assert contrato.tarea_guardada(guardada) == tarea
+    assert contrato.texto_para(contrato.tarea_guardada(guardada), VECTOR["minero"]) == VECTOR["texto"]

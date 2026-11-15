@@ -26,16 +26,6 @@ resource "google_artifact_registry_repository" "imagenes" {
   depends_on    = [google_project_service.apis]
 }
 
-# El MINER_TOKEN de las VMs minero-cpu. Acá sólo el secreto vacío: el valor se carga con gcloud
-# (pilar3/README.md) para que no quede en el state.
-resource "google_secret_manager_secret" "miner_token" {
-  secret_id = "miner-token"
-  replication {
-    auto {}
-  }
-  depends_on = [google_project_service.apis]
-}
-
 # IP pública fija del gateway de mineros: vive acá y no en infra/ para que sobreviva a un destroy
 # del cluster (los mineros de afuera la tienen configurada). El Service la toma en el Pipeline 3.
 resource "google_compute_address" "gateway" {

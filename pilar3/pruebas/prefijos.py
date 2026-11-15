@@ -8,8 +8,9 @@ rearma, cuenta desde la primera publicación. Por bloque manda una transacción 
     python pilar3/pruebas/prefijos.py --api http://<traefik> --salida gpu.csv
     python pilar3/pruebas/prefijos.py --api http://<traefik> --salida cpu.csv --tipo cpu --maximo 600
 
-Sólo biblioteca estándar; usa el `kubectl` del cluster (KUBECONFIG) para cambiar el prefijo y leer
-logs. Al terminar (o con Ctrl+C) deja el TrP como estaba: PREFIJO_BASE=6 y el ajuste prendido.
+Usa el `kubectl` del cluster (KUBECONFIG) para cambiar el prefijo y leer logs. Al terminar (o con
+Ctrl+C) deja el TrP como estaba: PREFIJO_BASE=6 y el ajuste prendido. Las transacciones van firmadas
+por la cuenta de prueba alice (firmar.py): correrlo con el Python de pilar2 (pilar2/.venv/bin/python).
 """
 
 import argparse
@@ -21,6 +22,8 @@ import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
+
+from firmar import CUENTA, PRIVADA, contrato
 
 NS = "blockchain"
 PUBLICADA = re.compile(r"Tarea (\w+) publicada")
@@ -98,7 +101,8 @@ def un_bloque(base, largo, maximo, ventana):
     """Manda una transacción y espera su bloque. None si no salió en `maximo` s desde la publicación."""
     antes, desde = punta(base), datetime.now(timezone.utc).replace(microsecond=0)
     time.sleep(1)  # que el --since-time no corte la primera línea
-    api(base, "/api/transacciones", {"origen": "alice", "destino": "bob", "monto": 1})
+    nonce = api(base, f"/api/cuentas/{CUENTA['alice']}")["nonce"] + 1
+    api(base, "/api/transacciones", contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], 1, nonce))
     limite = time.time() + ventana + maximo + 15
     while time.time() < limite:
         time.sleep(1)

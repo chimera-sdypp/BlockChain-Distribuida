@@ -10,7 +10,7 @@ import pytest
 from comun import Rabbit, config, contrato, redisdb
 from trp.app import Ajustes, RANGOS, TAREAS, particionar
 
-VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
+VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba_v1.json").read_text())
 AHORA = 1_800_000_000
 
 

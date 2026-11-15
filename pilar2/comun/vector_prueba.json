@@ -1,34 +1,58 @@
 {
-  "descripcion": "El mismo texto + nonce tiene que dar el mismo MD5 en Python y en CUDA",
+  "descripcion": "El mismo texto + nonce tiene que dar el mismo MD5 en Python y en CUDA. Claves: comun/tests/claves.py",
+  "cuentas": {
+    "alice": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+    "bob": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+    "carol": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
+    "minero": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771"
+  },
   "genesis": {
     "saldos": {
-      "alice": 1000,
-      "bob": 1000
+      "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": 1000,
+      "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": 1000
     },
     "timestamp": 1793836800,
-    "block_hash": "bf819460f5e4a7e1b99dea601790e56f"
+    "block_hash": "7105193a54e7eff67ebe5334026c9053"
   },
-  "previous_hash": "bf819460f5e4a7e1b99dea601790e56f",
-  "timestamp": 1793836860,
-  "transacciones": [
-    {
-      "id": "tx-1",
-      "origen": "alice",
-      "destino": "bob",
-      "monto": 250,
-      "timestamp": 1793836830
-    },
-    {
-      "id": "tx-2",
-      "origen": "bob",
-      "destino": "carol",
-      "monto": 75,
-      "timestamp": 1793836841
-    }
-  ],
-  "raiz": "24a6f443ef61b3fd8e144dbb91875121",
-  "texto": "bf819460f5e4a7e1b99dea601790e56f;1793836860;24a6f443ef61b3fd8e144dbb91875121;",
-  "prefijo": "0000",
-  "nonce": 1339,
-  "block_hash": "0000664df63432d4884b763055877eb2"
+  "tarea": {
+    "previous_hash": "7105193a54e7eff67ebe5334026c9053",
+    "timestamp": 1793836860,
+    "altura": 1,
+    "prefijo": "0000",
+    "transacciones": [
+      {
+        "id": "d9b477f1968b9218d72c40068bc7351d",
+        "origen": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+        "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+        "monto": 250,
+        "nonce": 1,
+        "timestamp": 1793836830,
+        "firma": "4a05278c3de57e4ffd62cd6d75aadad7a87b5d8515b0b4fdda0a29f95f9fecfc4da671658b6782aa1fa439c7ed738db199d051486158ec7f48e6651b5d2ed109"
+      },
+      {
+        "id": "d3afb236ab943bb3ccab322fe5333e70",
+        "origen": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+        "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
+        "monto": 75,
+        "nonce": 1,
+        "timestamp": 1793836841,
+        "firma": "7a773c7886a8b921fc080e16cf2e624b68a27f1012ec70dd0d2c14e9673d569279759c5456537894449296ef9bd78bafe181578bff8573bd988f5cd0a7134301"
+      }
+    ]
+  },
+  "minero": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
+  "coinbase": {
+    "id": "cb-1-c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
+    "origen": "emision",
+    "destino": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
+    "monto": 40,
+    "nonce": 0,
+    "timestamp": 1793836860,
+    "firma": ""
+  },
+  "raiz": "1a465342405c708679dd6848601746e7",
+  "texto": "7105193a54e7eff67ebe5334026c9053;1793836860;1a465342405c708679dd6848601746e7;",
+  "nonce": 54068,
+  "block_hash": "0000838af561f709b423629230de3bab",
+  "texto_de_alice": "7105193a54e7eff67ebe5334026c9053;1793836860;3140e2fc35bab77980455f4e2641b227;"
 }

@@ -9,7 +9,7 @@ import pytest
 from comun import config, contrato, redisdb
 from trp.resultados import SOLUCIONES, recibir
 
-VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
+VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba_v1.json").read_text())
 TEXTO, PREFIJO, NONCE, HASH = VECTOR["texto"], VECTOR["prefijo"], VECTOR["nonce"], VECTOR["block_hash"]
 # Otra solución del mismo bloque, para el que llega segundo.
 OTRO_NONCE = next(n for n in range(NONCE + 1, 10**7) if contrato.cumple(contrato.hash_bloque(TEXTO, n), PREFIJO))

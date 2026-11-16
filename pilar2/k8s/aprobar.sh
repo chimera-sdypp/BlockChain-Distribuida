@@ -1,6 +1,6 @@
 #!/bin/bash
-# Aprueba una cuenta en el Redis del sistema desplegado: es lo que hace el organizador hasta que esté
-# el panel (BC-58). Un minero sin aprobar recibe 403 del gateway; un usuario sin aprobar no puede
+# Aprueba una cuenta en el Redis del sistema desplegado, salteando el panel del organizador (/organizador):
+# sirve para scripts y pruebas. Un minero sin aprobar recibe 403 del gateway; un usuario sin aprobar no puede
 # transferir (el NCT la rechaza con «cuenta no aprobada»).
 #
 #   pilar2/k8s/aprobar.sh <cuenta> <usuario | minero> [nombre]      # con el KUBECONFIG del sistema

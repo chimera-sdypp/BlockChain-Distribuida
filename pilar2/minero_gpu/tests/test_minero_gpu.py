@@ -80,7 +80,8 @@ def test_se_presenta_como_gpu_y_devuelve_el_nonce(falso):
                     placa=falso.placa)
     try:
         minero.presentarse()
-        assert gateway.de("/hello")[0] == {"minero": CUENTA["minero"], "tipo": "gpu", "placa": "GPU de mentira"}
+        assert gateway.de("/hello")[0] == {"minero": CUENTA["minero"], "tipo": "gpu", "placa": "GPU de mentira",
+                                            "alias": "gpu-prueba"}
         assert gateway.de("/bench")[0]["hashes_por_segundo"] > 0
         assert minero.un_rango()
         assert gateway.de("/results")[0] == {"tarea": "t1", "rango": 0, "minero": CUENTA["minero"],

@@ -34,8 +34,10 @@ class RedisFalso:
         return TuberiaFalsa(self)
 
     def register_script(self, script):
-        assert script == backend.LUA_CREAR
-        return self._crear
+        """Sólo LUA_CREAR: las altas (BC-58) se prueban contra Redis de verdad, en test_altas.py."""
+        if script == backend.LUA_CREAR:
+            return self._crear
+        return lambda **_: pytest.fail("este Redis falso sólo sabe LUA_CREAR")
 
     def _crear(self, keys, args):
         """LUA_CREAR: si alguna clave ya existe devuelve sus índices (desde 1); si no, las crea todas."""

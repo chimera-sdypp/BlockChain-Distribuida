@@ -47,6 +47,30 @@ def test_un_minero_sin_aprobar_da_403(armar, redis):
     assert cliente.post("/hello", hola(CUENTA["intruso"])).status_code == 403
 
 
+def test_un_minero_sin_aprobar_queda_pedido_con_su_alias(armar, redis):
+    """BC-58: la firma ya demuestra que tiene la privada, así que el organizador lo ve en el panel."""
+    _, cliente = armar("intruso")
+    assert cliente.post("/hello", {**hola(CUENTA["intruso"]), "alias": "gpu-intruso"}).status_code == 403
+    pedido = json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))
+    assert pedido["tipo"] == "minero" and pedido["nombre"] == "gpu-intruso"
+    assert cliente.get("/tasks/next").status_code == 403  # reintentar no lo duplica ni le cambia el alias
+    assert redis.hlen("altas:pendientes") == 1
+    assert json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["nombre"] == "gpu-intruso"
+
+
+def test_un_minero_sin_alias_queda_pedido_con_el_principio_de_la_cuenta(armar, redis):
+    _, cliente = armar("intruso")
+    cliente.post("/hello", {**hola(CUENTA["intruso"]), "alias": "no vale"})
+    assert json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["nombre"] == CUENTA["intruso"][:12]
+
+
+def test_una_firma_mala_no_deja_pedido(cliente, otro, redis):
+    cuerpo = json.dumps(hola()).encode()
+    firma = {**contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo), "X-Minero": CUENTA["intruso"]}
+    assert cliente.cliente.post("/hello", content=cuerpo, headers=firma).status_code == 401
+    assert not redis.exists("altas:pendientes")
+
+
 def test_el_minero_del_cuerpo_tiene_que_ser_el_que_firma(cliente):
     assert cliente.post("/hello", hola(CUENTA["minero2"])).status_code == 400
 

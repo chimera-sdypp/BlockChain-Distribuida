@@ -24,6 +24,7 @@ from prometheus_client import REGISTRY, Counter
 from prometheus_client.core import GaugeMetricFamily
 
 from comun import Rabbit, Servicio, config, contrato
+from comun.altas import Altas
 
 log = logging.getLogger("gateway")
 
@@ -112,6 +113,7 @@ class Gateway:
         self._renovar = redis.register_script(LUA_RENOVAR)
         self._reclamar = redis.register_script(LUA_RECLAMAR)
         self._sumar_shares = redis.register_script(LUA_SHARES)
+        self.altas = Altas(redis)
         self._lock = threading.Lock()
         self._tareas, self._textos = OrderedDict(), OrderedDict()
         COLECTOR.gateway = self
@@ -129,8 +131,20 @@ class Gateway:
         if not datos or json.loads(datos).get("tipo") != "minero":
             RECHAZOS.labels("no_aprobado").inc()
             log.warning("Pedido %s %s de %s, que no es un minero aprobado", metodo, ruta, minero)
+            self.pedir_alta(minero, cuerpo)
             return None, (403, f"la cuenta {minero} no es un minero aprobado: el organizador la tiene que aprobar")
         return minero, None
+
+    def pedir_alta(self, minero, cuerpo):
+        """Un minero firmado y sin aprobar queda en `altas:pendientes` (BC-58): la firma ya demuestra que
+        tiene la privada. El alias sale del /hello (`alias`); si no viene, el principio de la cuenta."""
+        try:
+            alias = json.loads(cuerpo).get("alias") if cuerpo else None
+        except (ValueError, AttributeError):
+            alias = None
+        alias = alias if contrato.nombre_valido(alias) else minero[:12]
+        if self.altas.pedir(minero, "minero", alias) == "nueva":
+            log.info("Pedido de alta de %s (minero): %s", alias, minero)
 
     # ── Registro ──
 

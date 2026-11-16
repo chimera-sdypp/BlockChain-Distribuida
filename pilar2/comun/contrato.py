@@ -331,29 +331,71 @@ def mensaje_pedido(metodo, ruta, tiempo, cuerpo=b""):
     return f"{metodo.upper()}\n{ruta}\n{tiempo}\n".encode() + _bytes(cuerpo)
 
 
-def firmar_pedido(privada_hex, metodo, ruta, cuerpo=b"", tiempo=None):
-    """Los encabezados X-Minero, X-Tiempo y X-Firma de un pedido."""
+# El encabezado con la cuenta que firma: los mineros al gateway (BC-57) y el organizador al panel (BC-58).
+MINERO, ORGANIZADOR = "X-Minero", "X-Organizador"
+_QUIEN = {MINERO: "del minero", ORGANIZADOR: "del organizador"}
+
+
+def firmar_pedido(privada_hex, metodo, ruta, cuerpo=b"", tiempo=None, quien=MINERO):
+    """Los encabezados `quien` (X-Minero o X-Organizador), X-Tiempo y X-Firma de un pedido."""
     tiempo = int(time.time()) if tiempo is None else tiempo
-    return {"X-Minero": clave_publica(privada_hex), "X-Tiempo": str(tiempo),
+    return {quien: clave_publica(privada_hex), "X-Tiempo": str(tiempo),
             "X-Firma": firmar(privada_hex, mensaje_pedido(metodo, ruta, tiempo, cuerpo))}
 
 
-def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None):
-    """(minero, None) si el pedido está bien firmado y en hora; (None, motivo) si no.
+def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MINERO):
+    """(cuenta, None) si el pedido está bien firmado y en hora; (None, motivo) si no.
 
     `encabezados` puede ser un dict o los headers de Starlette (que no distinguen mayúsculas).
+    `quien` es el encabezado con la cuenta: X-Minero o X-Organizador.
     """
     def leer(nombre):
         return encabezados.get(nombre) or encabezados.get(nombre.lower())
 
-    minero, tiempo, firma = leer("X-Minero"), leer("X-Tiempo"), leer("X-Firma")
-    if not cuenta_valida(minero):
-        return None, "X-Minero: clave pública Ed25519 en hex"
+    cuenta, tiempo, firma = leer(quien), leer("X-Tiempo"), leer("X-Firma")
+    if not cuenta_valida(cuenta):
+        return None, f"{quien}: clave pública Ed25519 en hex"
     if not isinstance(tiempo, str) or not re.fullmatch(r"[0-9]{1,12}", tiempo):
         return None, "X-Tiempo: segundos Unix"
     ahora = int(time.time()) if ahora is None else ahora
     if abs(ahora - int(tiempo)) > VENTANA_PEDIDO:
         return None, f"X-Tiempo: corrido más de {VENTANA_PEDIDO} s"
-    if not verificar_firma(minero, mensaje_pedido(metodo, ruta, tiempo, cuerpo), firma):
-        return None, "X-Firma: no es la del minero sobre el pedido"
-    return minero, None
+    if not verificar_firma(cuenta, mensaje_pedido(metodo, ruta, tiempo, cuerpo), firma):
+        return None, f"X-Firma: no es la {_QUIEN.get(quien, quien)} sobre el pedido"
+    return cuenta, None
+
+
+# ── Pedidos de alta (v2, BC-58) ──
+
+TIPOS_ALTA = ("usuario", "minero")  # el organizador no pide el alta: es ORGANIZADOR_CLAVE
+
+
+def mensaje_alta(tipo, cuenta, nombre):
+    """Lo que firma quien pide el alta: demuestra que tiene la privada de la cuenta que pide."""
+    return f"alta:{tipo}:{cuenta}:{nombre}"
+
+
+def pedido_alta(privada_hex, tipo, nombre):
+    """El cuerpo de POST /api/altas: {tipo, clave_publica, nombre, firma} (lo que arma la página «Pedir alta»)."""
+    cuenta = clave_publica(privada_hex)
+    return {"tipo": tipo, "clave_publica": cuenta, "nombre": nombre,
+            "firma": firmar(privada_hex, mensaje_alta(tipo, cuenta, nombre))}
+
+
+def validar_pedido_alta(datos):
+    """Los errores de un pedido de alta; vacío si sirve."""
+    if not isinstance(datos, dict):
+        return ["el cuerpo tiene que ser un objeto JSON"]
+    errores = []
+    if datos.get("tipo") not in TIPOS_ALTA:
+        errores.append(f"tipo: {' | '.join(TIPOS_ALTA)}")
+    if not cuenta_valida(datos.get("clave_publica")):
+        errores.append("clave_publica: clave pública Ed25519 en hex (64 caracteres en minúscula)")
+    if not nombre_valido(datos.get("nombre")):
+        errores.append("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
+    if errores:
+        return errores
+    if not verificar_firma(datos["clave_publica"], mensaje_alta(datos["tipo"], datos["clave_publica"], datos["nombre"]),
+                           datos.get("firma")):
+        return ["firma: no es la de clave_publica sobre alta:tipo:clave_publica:nombre"]
+    return []

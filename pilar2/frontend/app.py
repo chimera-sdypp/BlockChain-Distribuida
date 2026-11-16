@@ -3,6 +3,7 @@
 La página le pide los datos a la API del backend (`/api/*`, mismo dominio por el Ingress).
 Este servicio sólo sirve el HTML y reenvía al navegador los avisos del exchange `eventos`:
 cada pod tiene su propia cola atada, así que cada navegador recibe todos, esté en el pod que esté.
+Desde BC-58 sirve también «Pedir el alta» (/alta) y el panel del organizador (/organizador).
 """
 
 import asyncio
@@ -11,14 +12,20 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from prometheus_client import Counter, Gauge
 
 from comun import Servicio, config, contrato
 
 log = logging.getLogger("frontend")
 
-PAGINA = Path(__file__).parent / "estaticos" / "index.html"
+ESTATICOS = Path(__file__).parent / "estaticos"
+PAGINA = ESTATICOS / "index.html"
+# Las otras páginas (BC-58) y lo que comparten: ruta → (archivo, tipo).
+ARCHIVOS = {"/alta": ("alta.html", "text/html; charset=utf-8"),
+            "/organizador": ("organizador.html", "text/html; charset=utf-8"),
+            "/comun.js": ("comun.js", "text/javascript; charset=utf-8"),
+            "/estilos.css": ("estilos.css", "text/css; charset=utf-8")}
 KEEPALIVE = 15  # segundos: así el Ingress no corta las conexiones quietas
 AVISOS = (contrato.BLOQUE_CONFIRMADO, contrato.TRANSACCION_ESTADO)
 
@@ -71,6 +78,14 @@ def agregar_rutas(app, difusor, keepalive=KEEPALIVE):
     @app.get("/", response_class=HTMLResponse)
     def pagina():
         return PAGINA.read_text(encoding="utf-8")
+
+    def servir(archivo, tipo):
+        def leer():
+            return Response((ESTATICOS / archivo).read_text(encoding="utf-8"), media_type=tipo)
+        return leer
+
+    for ruta, (archivo, tipo) in ARCHIVOS.items():
+        app.get(ruta)(servir(archivo, tipo))
 
     @app.get("/eventos")
     async def eventos():

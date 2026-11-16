@@ -111,6 +111,20 @@ def test_una_cuenta_no_aprobada_no_puede_transferir(armar, redis):
     assert (estado(redis, tx), motivo(redis, tx)) == ("rechazada", "cuenta no aprobada")
 
 
+def test_un_usuario_dado_de_baja_no_puede_transferir(armar, redis):
+    """BC-58: la baja saca la cuenta de `cuentas`; el saldo queda, pero ya no puede operar."""
+    from comun.altas import Altas
+    nct = armar()
+    nct.cargar_genesis()
+    assert Altas(redis).baja(CUENTA["alice"])["tipo"] == "usuario"
+    tx = recibida(redis, "alice", "bob", 1)
+
+    nct.validar(tx)
+
+    assert (estado(redis, tx), motivo(redis, tx)) == ("rechazada", "cuenta no aprobada")
+    assert redis.hget("saldos", CUENTA["alice"]) is not None
+
+
 # ── Nonces que llegan desordenados ──
 
 def test_un_nonce_adelantado_espera_al_anterior_y_entran_los_dos_en_orden(armar, redis, publicador):

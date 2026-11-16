@@ -114,7 +114,8 @@ class Minero:
     # --- Al arrancar -----------------------------------------------------------------------
     def presentarse(self):
         """POST /hello; si el gateway devuelve la tarea modelo, la resuelve y manda POST /bench."""
-        _, respuesta = self._insistir("POST", "/hello", {"minero": self.cuenta, "tipo": self.tipo, "placa": self.placa})
+        _, respuesta = self._insistir("POST", "/hello", {"minero": self.cuenta, "tipo": self.tipo, "placa": self.placa,
+                                                           "alias": self.alias})
         if not respuesta or "bloque" not in respuesta:
             log.info("Registrado en el gateway")
             return

@@ -129,10 +129,10 @@ def test_cuenta_con_su_saldo_su_nonce_y_si_esta_aprobada(entorno):
 
     assert cliente.get(f"/api/cuentas/{alice}").json() == {
         "cuenta": alice, "saldo": 750, "comprometido": 50, "nonce": 3, "aprobada": True,
-        "tipo": "usuario", "nombre": "alice"}
+        "tipo": "usuario", "nombre": "alice", "alta_pedida": False}
     assert cliente.get(f"/api/cuentas/{CUENTA['zoe']}").json() == {
         "cuenta": CUENTA["zoe"], "saldo": 0, "comprometido": 0, "nonce": 0, "aprobada": False,
-        "tipo": None, "nombre": None}
+        "tipo": None, "nombre": None, "alta_pedida": False}
     assert cliente.get("/api/cuentas/emision").json()["nonce"] == 7
     assert cliente.get("/api/cuentas/alice").status_code == 400
 

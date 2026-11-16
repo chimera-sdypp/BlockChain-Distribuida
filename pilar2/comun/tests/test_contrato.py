@@ -251,3 +251,45 @@ def test_transaccion_y_tarea_como_las_devuelve_redis():
                 "transacciones": json.dumps(tarea["transacciones"]), "estado": "en_curso"}
     assert contrato.tarea_guardada(guardada) == tarea
     assert contrato.texto_para(contrato.tarea_guardada(guardada), VECTOR["minero"]) == VECTOR["texto"]
+
+
+def test_el_organizador_firma_con_su_encabezado():
+    encabezados = contrato.firmar_pedido(PRIVADA["organizador"], "POST", "/api/organizador/baja", CUERPO, tiempo=1000,
+                                         quien=contrato.ORGANIZADOR)
+    assert "X-Minero" not in encabezados
+    assert contrato.verificar_pedido(encabezados, "POST", "/api/organizador/baja", CUERPO, ahora=1000,
+                                     quien=contrato.ORGANIZADOR) == (CUENTA["organizador"], None)
+    # Firmado como minero no sirve como organizador: falta X-Organizador.
+    como_minero = contrato.firmar_pedido(PRIVADA["organizador"], "POST", "/api/organizador/baja", CUERPO, tiempo=1000)
+    cuenta, error = contrato.verificar_pedido(como_minero, "POST", "/api/organizador/baja", CUERPO, ahora=1000,
+                                              quien=contrato.ORGANIZADOR)
+    assert cuenta is None and "X-Organizador" in error
+
+
+# ── Pedidos de alta (BC-58) ──
+
+def test_pedido_de_alta_bien_firmado():
+    pedido = contrato.pedido_alta(PRIVADA["zoe"], "usuario", "zoe")
+    assert pedido["clave_publica"] == CUENTA["zoe"]
+    assert contrato.validar_pedido_alta(pedido) == []
+    assert contrato.validar_pedido_alta(contrato.pedido_alta(PRIVADA["zoe"], "minero", "gpu-zoe")) == []
+
+
+@pytest.mark.parametrize("cambio, error", [
+    ({"clave_publica": CUENTA["alice"]}, "firma"),   # la firma no corresponde a la clave: no es de quien pide
+    ({"nombre": "otra"}, "firma"),
+    ({"tipo": "minero"}, "firma"),
+    ({"tipo": "organizador"}, "tipo"),               # el organizador no se pide
+    ({"nombre": "con espacio"}, "nombre"),
+    ({"nombre": ""}, "nombre"),
+    ({"clave_publica": "zoe"}, "clave_publica"),
+    ({"firma": "ab" * 64}, "firma"),
+])
+def test_pedido_de_alta_invalido(cambio, error):
+    pedido = {**contrato.pedido_alta(PRIVADA["zoe"], "usuario", "zoe"), **cambio}
+    [motivo] = contrato.validar_pedido_alta(pedido)
+    assert motivo.startswith(error)
+
+
+def test_pedido_de_alta_que_no_es_un_objeto():
+    assert contrato.validar_pedido_alta(["zoe"]) == ["el cuerpo tiene que ser un objeto JSON"]

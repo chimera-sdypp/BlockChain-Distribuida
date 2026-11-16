@@ -8,7 +8,7 @@
     python -m claves aprobar <cuenta> --tipo minero --nombre gpu-tomas    # escribe en Redis (REDIS_*)
     python -m claves rafaga --url http://localhost -n 20 alice.clave bob.clave carol.clave
 
-`aprobar` habla directo con Redis: es lo que hace el organizador hasta que esté el panel (BC-58).
+`aprobar` habla directo con Redis y saltea el panel del organizador (/organizador): es para scripts y pruebas.
 El resto le habla al backend como cualquier cliente. La privada no sale nunca del archivo: lo que se
 manda es la transacción firmada.
 """
@@ -147,7 +147,7 @@ def principal(argumentos=None, salida=print):
         p.add_argument("--nonce", type=int, help="si no está, lo pide al backend (--url): el último + 1")
         p.add_argument("--url", help="el backend (http://<Ingress>)")
         p.add_argument("--enviar", action="store_true", help="la manda al backend (si no, sólo la muestra)")
-    p = sub.add_parser("aprobar", help="aprueba una cuenta en Redis (lo que hace el organizador hasta BC-58)")
+    p = sub.add_parser("aprobar", help="aprueba una cuenta directo en Redis, sin el panel (para scripts y pruebas)")
     p.add_argument("cuenta")
     p.add_argument("--tipo", choices=contrato.TIPOS_CUENTA, default="usuario")
     p.add_argument("--nombre", default="")

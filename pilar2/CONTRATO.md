@@ -9,7 +9,7 @@ Qué datos viajan entre los servicios. El código está en [`comun/contrato.py`]
 - Una cuenta es una **clave pública Ed25519** (RFC 8032): 32 bytes en hex, 64 caracteres en minúscula (`cuenta_valida`). La privada es la semilla de 32 bytes, también en hex.
 - El nombre (alias) va aparte, en `cuentas`, y sirve sólo para mostrar.
 - `emision` está reservada: es el origen de la plata nueva.
-- **Sólo operan las cuentas aprobadas** (`cuentas`): un usuario sin aprobar no puede transferir y un minero sin aprobar no entra al gateway. Las aprueba el organizador: con el panel (BC-58) o, hasta que esté, con `python -m claves aprobar` (Redis directo) o `k8s/aprobar.sh` (en el cluster). Las cuentas del génesis entran aprobadas.
+- **Sólo operan las cuentas aprobadas** (`cuentas`): un usuario sin aprobar no puede transferir y un minero sin aprobar no entra al gateway. Las aprueba el organizador en su panel (ver [Altas](#altas)). Las cuentas del génesis entran aprobadas.
 - Python: [`cryptography`](https://cryptography.io). Navegador: WebCrypto, con `Ed25519` en Chrome 137, Firefox 129 y Safari 17 o más nuevos; la privada se importa como JWK (RFC 8037: `{kty: "OKP", crv: "Ed25519", d, x}`, en base64url).
 
 ## Transacción
@@ -39,7 +39,7 @@ Las transacciones con origen `emision` crean plata. Cada una tiene un id fijo, q
 | Tipo | `id` | `nonce` | `firma` | La arma | Vale si |
 |---|---|---|---|---|---|
 | Génesis | `genesis-<cuenta>` | 0 | vacía | el NCT, en el bloque 0 | está en el génesis |
-| Carga de saldo | `carga-<n>` | `n` | del organizador | el panel (BC-58) | la firma es de `ORGANIZADOR_CLAVE` (`validar_carga`) y `n` es `nonces[emision] + 1`. No mira saldo |
+| Carga de saldo | `carga-<n>` | `n` | del organizador | el panel del organizador | la firma es de `ORGANIZADOR_CLAVE` (`validar_carga`) y `n` es `nonces[emision] + 1`. No mira saldo |
 | Coinbase | `cb-<altura>-<minero>` | 0 | vacía | el gateway en el texto (`texto_para`) y el NCT en el bloque | es la primera del bloque y es igual a `coinbase(altura, minero que mandó el nonce, recompensa(prefijo), timestamp)` |
 | Participación | `part-<época>-<minero>` | 0 | vacía | el NCT, al cerrar la época | está en la primera caja de la época siguiente con el monto del reparto (BC-63) |
 
@@ -83,7 +83,20 @@ Reemplazan a `MINER_TOKEN` (BC-57). Cada pedido al gateway lleva:
 
 - `firmar_pedido` arma los encabezados y `verificar_pedido` los controla.
 - Si la hora está corrida más de 30 s (`VENTANA_PEDIDO`), se rechaza: un pedido grabado no se puede volver a mandar después.
-- El `minero` del cuerpo tiene que ser el de `X-Minero`. Firma mala: 401; minero no aprobado en `cuentas`: 403.
+- El `minero` del cuerpo tiene que ser el de `X-Minero`. Firma mala: 401; minero no aprobado en `cuentas`: 403, y queda pedido en `altas:pendientes` con el `alias` de su `/hello`.
+- El panel del organizador usa lo mismo, con `X-Organizador` en vez de `X-Minero` (`quien=ORGANIZADOR`).
+
+## Altas
+
+La red es privada (BC-58): sólo opera quien aprueba el organizador, como los validadores de confianza de XRP Ledger o las identidades que admite una red permisionada de Hyperledger Fabric.
+
+- **Pedido** (`POST /api/altas`, público): `{tipo: usuario | minero, clave_publica, nombre, firma}`, con la firma de `clave_publica` sobre `alta:<tipo>:<clave_publica>:<nombre>` (`pedido_alta`, `validar_pedido_alta`). Demuestra que quien pide tiene la privada. Queda en `altas:pendientes`, con un tope de 1000 pedidos (`ALTAS_MAXIMAS`). Un minero firmado y sin aprobar queda pedido solo, al conectarse al gateway.
+- **Panel** (`/api/organizador/*`): cada pedido firmado por `ORGANIZADOR_CLAVE` en `X-Organizador`. Si no, 403.
+  - aprobar: la cuenta pasa a `cuentas` con su fecha de alta. A un usuario se le puede mandar, en el mismo pedido, una carga firmada por el organizador para esa cuenta.
+  - rechazar: se borra el pedido.
+  - dar de baja: la cuenta sale de `cuentas`. El gateway deja de atender a ese minero y el NCT rechaza las transferencias de ese usuario (`cuenta no aprobada`). El saldo queda donde está, y las transacciones que ya estaban validadas entran igual en su bloque.
+- **Saldo:** entra sólo por cargas del organizador (modelo exchange: la red opera la plata que se cargó adentro). El génesis de la red no trae saldos; `SALDOS_INICIALES` es sólo para las cuentas de prueba (alice, bob y carol) de los tests y las pruebas de carga.
+- Los pasos son Lua (`comun/altas.py`): dos réplicas del backend que aprueban lo mismo a la vez no se pisan.
 
 ## Tarea modelo (bench)
 
@@ -131,8 +144,8 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), con su `altura` |
 | `saldos` | hash | cuenta → saldo |
 | `tx:<id>` | hash | origen, destino, monto, nonce, timestamp, firma, estado, motivo y bloque |
-| `cuentas` | hash | cuenta → JSON `{tipo: usuario \| minero \| organizador, nombre, alta}` (`alta` en segundos Unix). Sólo operan las que están acá (BC-58) |
-| `altas:pendientes` | hash | cuenta → JSON `{tipo, nombre, pedida}`: los pedidos de alta que el organizador todavía no aprobó |
+| `cuentas` | hash | cuenta → JSON `{tipo: usuario \| minero \| organizador, nombre, alta}` (`alta` en segundos Unix). Sólo operan las que están acá |
+| `altas:pendientes` | hash | cuenta → JSON `{tipo, nombre, pedida}`: los pedidos de alta que el organizador todavía no aprobó ni rechazó |
 | `nonces` | hash | cuenta → último nonce aceptado (pendiente o confirmado). `emision` → la última carga |
 | `espera:<cuenta>` | sorted set | Las transacciones de la cuenta que llegaron antes que un nonce anterior (score = nonce). Las destraba el NCT al aceptar el que falta |
 | `tx:en_espera` | sorted set | id → cuándo entró en espera; el ticker rechaza las que esperan de más (`nonce salteado`) |

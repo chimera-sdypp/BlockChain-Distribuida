@@ -3,6 +3,9 @@
 Desde BC-56 las transferencias vienen firmadas por su origen (contrato v2): el backend verifica el
 formato y la firma, y calcula el id con el contenido, así que la misma transacción reenviada da 409.
 También entran las cargas de saldo, firmadas por el organizador (`ORGANIZADOR_CLAVE`).
+
+BC-58: los pedidos de alta (`POST /api/altas`, públicos y firmados por quien pide) y el panel del
+organizador (`/api/organizador/*`), donde cada pedido va firmado con su clave (X-Organizador).
 """
 
 import json
@@ -17,6 +20,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import Counter
 
 from comun import Servicio, config, contrato
+from comun.altas import ALTAS_MAXIMAS, Altas
 
 log = logging.getLogger("backend")
 
@@ -139,8 +143,9 @@ def _numero(texto):
 
 
 def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LOTE_MAXIMO,
-                  minero_vivo=MINERO_VIVO_SEGUNDOS, organizador=""):
+                  minero_vivo=MINERO_VIVO_SEGUNDOS, organizador="", altas_maximas=ALTAS_MAXIMAS):
     crear = redis.register_script(LUA_CREAR)
+    altas = Altas(redis, maximas=altas_maximas)
 
     def registrar_y_encolar(txs):
         """Primero Redis y después la cola: así el NCT nunca ve una tx que todavía no está en Redis.
@@ -200,6 +205,10 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             TX_RECIBIDAS.labels("invalida").inc()
             log.info("Transacción rechazada por el formato o la firma: %s", "; ".join(errores))
             return invalido(errores)
+        return await recibir_una(datos)
+
+    async def recibir_una(datos):
+        """Encola una transacción ya validada: 202, 409 si es un reenvío o 503."""
         tx = nueva_transaccion(datos)
         try:
             await encolar([tx])
@@ -208,7 +217,9 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             return JSONResponse({"error": REENVIO, "id": tx["id"]}, status_code=409)
         except NoDisponible as error:
             return JSONResponse({"error": error.motivo}, status_code=503)
-        return {"id": tx["id"]}
+        if contrato.es_emision(tx):
+            log.info("Carga %s del organizador: %s a %s", tx["id"], tx["monto"], tx["destino"])
+        return JSONResponse({"id": tx["id"]}, status_code=202)
 
     @app.post("/api/transacciones/lote", status_code=202)
     async def recibir_lote(request: Request):
@@ -297,11 +308,12 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         tuberia.hget(contrato.COMPROMETIDO, cuenta)
         tuberia.hget(contrato.NONCES, cuenta)
         tuberia.hget(contrato.CUENTAS, cuenta)
-        saldo_, comprometido, nonce, datos = tuberia.execute()
+        tuberia.hexists(contrato.ALTAS_PENDIENTES, cuenta)
+        saldo_, comprometido, nonce, datos, pedida = tuberia.execute()
         datos = json.loads(datos) if datos else {}
         return {"cuenta": cuenta, "saldo": int(saldo_ or 0), "comprometido": int(comprometido or 0),
                 "nonce": int(nonce or 0), "aprobada": bool(datos), "tipo": datos.get("tipo"),
-                "nombre": datos.get("nombre")}
+                "nombre": datos.get("nombre"), "alta_pedida": bool(pedida)}
 
     @app.get("/api/saldos")
     def saldos():
@@ -342,6 +354,127 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         if not guardado:
             return JSONResponse({"error": "no existe el bloque"}, status_code=404)
         return _bloque(guardado)
+
+    # ── BC-58: pedidos de alta y panel del organizador ──
+
+    @app.post("/api/altas", status_code=202)
+    async def pedir_alta(request: Request):
+        """Público: {tipo, clave_publica, nombre, firma}. La firma demuestra que tiene la privada."""
+        datos = await leer_json(request)
+        errores = ["el cuerpo no es JSON válido"] if datos is None else \
+            await run_in_threadpool(contrato.validar_pedido_alta, datos)
+        if errores:
+            log.info("Pedido de alta rechazado: %s", "; ".join(errores))
+            return invalido(errores)
+        cuenta_ = datos["clave_publica"]
+        resultado = await run_in_threadpool(altas.pedir, cuenta_, datos["tipo"], datos["nombre"])
+        if resultado == "aprobada":
+            return JSONResponse({"error": "la cuenta ya está aprobada", "cuenta": cuenta_}, status_code=409)
+        if resultado == "lleno":
+            log.warning("Pedido de alta de %s rechazado: ya hay %d pendientes", cuenta_, altas_maximas)
+            return JSONResponse({"error": "hay demasiados pedidos pendientes; probá más tarde"}, status_code=429)
+        if resultado == "nueva":
+            log.info("Pedido de alta de %s (%s): %s", datos["nombre"], datos["tipo"], cuenta_)
+        return JSONResponse({"cuenta": cuenta_, "estado": "pendiente"}, status_code=202)
+
+    def del_organizador(atender):
+        """Envuelve una ruta del panel: el pedido tiene que venir firmado por ORGANIZADOR_CLAVE (si no, 403).
+
+        La firma cubre método, ruta (con la query), hora y cuerpo, como los pedidos de los mineros.
+        """
+        async def pedido(request: Request):
+            cuerpo = await request.body()
+            if not organizador:
+                return JSONResponse({"error": "este backend no tiene ORGANIZADOR_CLAVE: el panel está apagado"},
+                                    status_code=403)
+            firmada = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+            quien, motivo = await run_in_threadpool(contrato.verificar_pedido, request.headers, request.method,
+                                                    firmada, cuerpo, None, contrato.ORGANIZADOR)
+            if not motivo and quien != organizador:
+                motivo = f"{contrato.ORGANIZADOR}: no es la cuenta del organizador"
+            if motivo:
+                log.warning("Pedido %s %s al panel rechazado: %s", request.method, firmada, motivo)
+                return JSONResponse({"error": motivo}, status_code=403)
+            try:
+                datos = json.loads(cuerpo) if cuerpo else {}
+            except ValueError:
+                return invalido(["el cuerpo no es JSON válido"])
+            if not isinstance(datos, dict):
+                return invalido(["el cuerpo tiene que ser un objeto JSON"])
+            return await atender(datos)
+        return pedido
+
+    def cuenta_del_pedido(datos):
+        cuenta_ = datos.get("cuenta")
+        return cuenta_ if contrato.cuenta_valida(cuenta_) else None
+
+    async def listar_altas(datos):
+        return {"pendientes": await run_in_threadpool(altas.pendientes)}
+
+    async def listar_cuentas(datos):
+        return {"cuentas": await run_in_threadpool(altas.aprobadas)}
+
+    async def aprobar(datos):
+        """{cuenta, nombre?, carga?}: la cuenta pasa a `cuentas`; si viene `carga` (una carga-<n> firmada
+        por el organizador para esa cuenta), además se encola como cualquier transacción."""
+        cuenta_ = cuenta_del_pedido(datos)
+        nombre = datos.get("nombre") or ""
+        errores = [] if cuenta_ else ["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"]
+        if nombre and not contrato.nombre_valido(nombre):
+            errores.append("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
+        carga_ = datos.get("carga")
+        if carga_ is not None and not errores:
+            errores = [f"carga: {e}" for e in await run_in_threadpool(contrato.validar_carga, carga_, organizador)]
+            if not errores and carga_["destino"] != cuenta_:
+                errores = ["carga: el destino tiene que ser la cuenta que se aprueba"]
+        if errores:
+            return invalido(errores)
+        pedido = next((p for p in await run_in_threadpool(altas.pendientes) if p["cuenta"] == cuenta_), None)
+        if pedido is None:
+            return JSONResponse({"error": "no hay un pedido de alta de esa cuenta"}, status_code=404)
+        if carga_ is not None and pedido["tipo"] != "usuario":
+            return invalido(["carga: sólo a un usuario (los mineros cobran minando)"])
+        aprobada = await run_in_threadpool(altas.aprobar, cuenta_, nombre)
+        if aprobada is None:  # otro pedido la aprobó o la rechazó en el medio
+            return JSONResponse({"error": "no hay un pedido de alta de esa cuenta"}, status_code=404)
+        log.info("El organizador aprobó a %s (%s): %s", aprobada["nombre"], aprobada["tipo"], cuenta_)
+        resultado = {"cuenta": cuenta_, **aprobada}
+        if carga_ is None:
+            return resultado
+        respuesta = await recibir_una(carga_)
+        if respuesta.status_code != 202:
+            return JSONResponse({**resultado, "error": "aprobada, pero la carga no entró: " +
+                                 json.loads(respuesta.body)["error"]}, status_code=respuesta.status_code)
+        return {**resultado, "carga": carga_["id"]}
+
+    async def rechazar(datos):
+        cuenta_ = cuenta_del_pedido(datos)
+        if not cuenta_:
+            return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
+        pedido = await run_in_threadpool(altas.rechazar, cuenta_)
+        if pedido is None:
+            return JSONResponse({"error": "no hay un pedido de alta de esa cuenta"}, status_code=404)
+        log.info("El organizador rechazó el alta de %s (%s): %s", pedido.get("nombre"), pedido.get("tipo"), cuenta_)
+        return {"cuenta": cuenta_, "rechazada": True}
+
+    async def dar_de_baja(datos):
+        cuenta_ = cuenta_del_pedido(datos)
+        if not cuenta_:
+            return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
+        if cuenta_ == organizador:
+            return invalido(["cuenta: el organizador no se puede dar de baja a sí mismo"])
+        datos_cuenta = await run_in_threadpool(altas.baja, cuenta_)
+        if datos_cuenta is None:
+            return JSONResponse({"error": "la cuenta no está aprobada"}, status_code=404)
+        log.info("El organizador dio de baja a %s (%s): %s", datos_cuenta.get("nombre"), datos_cuenta.get("tipo"),
+                 cuenta_)
+        return {"cuenta": cuenta_, "baja": True}
+
+    app.get("/api/organizador/altas")(del_organizador(listar_altas))
+    app.get("/api/organizador/cuentas")(del_organizador(listar_cuentas))
+    app.post("/api/organizador/aprobar")(del_organizador(aprobar))
+    app.post("/api/organizador/rechazar")(del_organizador(rechazar))
+    app.post("/api/organizador/baja")(del_organizador(dar_de_baja))
 
     @app.exception_handler(redislib.RedisError)
     def redis_caido(request, error):

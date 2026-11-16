@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel del organizador</title>
+<link rel="stylesheet" href="/estilos.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Panel del organizador</h1>
+    <nav><a href="/">Volver a la cadena</a></nav>
+  </header>
+
+  <section aria-labelledby="t-clave">
+    <h2 id="t-clave">Tu clave</h2>
+    <!-- Cada acción va firmada con esta clave (X-Organizador); el backend la compara con ORGANIZADOR_CLAVE. -->
+    <form id="form-clave" autocomplete="off">
+      <label><span>La privada del organizador (el JWK de <span class="mono">python -m claves exportar</span>)</span>
+        <textarea name="jwk" required spellcheck="false" placeholder='{"kty":"OKP","crv":"Ed25519","d":"…","x":"…"}'></textarea></label>
+      <button type="submit">Entrar</button>
+    </form>
+    <p id="quien" class="suave" hidden></p>
+    <p id="mensaje" class="mensaje" hidden></p>
+  </section>
+
+  <section aria-labelledby="t-altas" class="panel" hidden>
+    <h2 id="t-altas">Pedidos de alta</h2>
+    <p class="suave">A un usuario se le puede cargar saldo al aprobarlo: es una carga firmada por vos que queda en un
+      bloque. Los mineros cobran minando.</p>
+    <div id="altas" class="tabla"></div>
+  </section>
+
+  <section aria-labelledby="t-carga" class="panel" hidden>
+    <h2 id="t-carga">Cargar saldo</h2>
+    <form id="form-carga" class="ancho" autocomplete="off">
+      <label>Destino (un usuario aprobado) <input name="destino" required minlength="64" maxlength="64"
+             pattern="[0-9a-f]{64}" spellcheck="false" class="mono" list="usuarios"></label>
+      <label>Monto <input name="monto" required type="number" min="1" step="1"></label>
+      <button type="submit">Firmar y cargar</button>
+    </form>
+    <datalist id="usuarios"></datalist>
+    <ul id="cargas" class="lista" style="margin-top:12px"></ul>
+  </section>
+
+  <section aria-labelledby="t-cuentas" class="panel" hidden>
+    <h2 id="t-cuentas">Cuentas aprobadas</h2>
+    <p class="suave">Dar de baja saca la cuenta de la red: el gateway deja de atender a ese minero y el NCT rechaza
+      las transferencias de ese usuario. El saldo queda donde está.</p>
+    <div id="cuentas" class="tabla"></div>
+  </section>
+</main>
+
+<script src="/comun.js"></script>
+<script>
+"use strict";
+let organizador = null;  // {clave, cuenta, ultimaCarga}
+let cargas = [];         // [{id, destino, monto, estado, motivo?}], la más nueva primero
+
+const pedir = (metodo, ruta, datos) => pedidoFirmado(organizador, "X-Organizador", metodo, ruta, datos);
+
+function mostrarMensaje(texto, error = false) {
+  $("mensaje").textContent = texto;
+  $("mensaje").classList.toggle("error", error);
+  $("mensaje").hidden = !texto;
+}
+
+// ── Cargas: carga-<n> firmada por el organizador, n = la última de «emision» + 1 ──
+
+async function cargaFirmada(destino, monto) {
+  const { ok, cuerpo } = await api("/api/cuentas/emision");
+  if (!ok) throw new Error("no se pudo leer la última carga");
+  organizador.ultimaCarga = Math.max(organizador.ultimaCarga, cuerpo.nonce);
+  const nonce = organizador.ultimaCarga + 1;
+  const tx = { id: `carga-${nonce}`, origen: "emision", destino, monto, nonce, timestamp: Math.floor(Date.now() / 1000) };
+  return { ...tx, firma: await firmar(organizador.clave, mensajeTransaccion(tx)) };
+}
+
+function seguirCarga(id, destino, monto) {
+  cargas = [{ id, destino, monto, estado: "recibida" }, ...cargas].slice(0, 20);
+  pintarCargas();
+}
+
+function pintarCargas() {
+  $("cargas").replaceChildren(...cargas.map((c) => el("li", { clase: "tx" },
+    el("span", { clase: `chip ${c.estado}` }, c.estado),
+    el("span", { clase: "mono" }, `${c.id}: ${c.monto} a ${corto(c.destino)}`),
+    c.motivo ? el("span", { clase: "suave" }, c.motivo) : "")));
+}
+
+async function actualizarCargas() {
+  const abiertas = cargas.filter((c) => c.estado !== "confirmada" && c.estado !== "rechazada");
+  for (const carga of abiertas) {
+    const { ok, cuerpo } = await api(`/api/transacciones/${carga.id}`);
+    if (ok) Object.assign(carga, { estado: cuerpo.estado, motivo: cuerpo.motivo });
+    // Una rechazada no gastó su número: la próxima vuelve a salir del último que aceptó el NCT.
+    if (carga.estado === "rechazada") organizador.ultimaCarga = 0;
+  }
+  if (abiertas.length) pintarCargas();
+}
+
+// ── Pedidos de alta ──
+
+function botonConfirmar(texto, clase, accion) {
+  // Dos clics: el primero pide confirmación (sin diálogos del navegador).
+  const boton = el("button", { type: "button", clase }, texto);
+  boton.addEventListener("click", async () => {
+    if (!boton.dataset.seguro) {
+      boton.dataset.seguro = "1";
+      boton.textContent = "¿Seguro?";
+      setTimeout(() => { delete boton.dataset.seguro; boton.textContent = texto; }, 4000);
+      return;
+    }
+    boton.disabled = true;
+    await accion();
+    boton.disabled = false;
+  });
+  return boton;
+}
+
+async function aprobar(pedido, monto) {
+  const datos = { cuenta: pedido.cuenta };
+  if (pedido.tipo === "usuario" && monto > 0) datos.carga = await cargaFirmada(pedido.cuenta, monto);
+  const { ok, status, cuerpo } = await pedir("POST", "/api/organizador/aprobar", datos);
+  if (ok && datos.carga) {
+    organizador.ultimaCarga = datos.carga.nonce;
+    seguirCarga(datos.carga.id, pedido.cuenta, monto);
+  }
+  mostrarMensaje(ok ? `Aprobada: ${pedido.nombre} (${pedido.tipo})${cuerpo.carga ? `, con ${cuerpo.carga} de ${monto}` : ""}`
+                    : `No se pudo aprobar (${status}): ${errorDe(cuerpo)}`, !ok);
+  await recargar();
+}
+
+async function rechazar(pedido) {
+  const { ok, status, cuerpo } = await pedir("POST", "/api/organizador/rechazar", { cuenta: pedido.cuenta });
+  mostrarMensaje(ok ? `Rechazado: ${pedido.nombre}` : `No se pudo rechazar (${status}): ${errorDe(cuerpo)}`, !ok);
+  await recargar();
+}
+
+function pintarAltas(pendientes) {
+  if (!pendientes.length) { $("altas").replaceChildren(el("p", { clase: "vacio" }, "No hay pedidos.")); return; }
+  $("altas").replaceChildren(el("table", {},
+    el("thead", {}, el("tr", {}, ...["nombre", "tipo", "cuenta", "pedido", "saldo inicial", ""].map((t) => el("th", {}, t)))),
+    el("tbody", {}, ...pendientes.map((p) => {
+      const monto = el("input", { type: "number", min: "0", step: "1", placeholder: "0", "aria-label": `saldo de ${p.nombre}` });
+      const aprobarBoton = el("button", { type: "button" }, "Aprobar");
+      aprobarBoton.addEventListener("click", async () => {
+        aprobarBoton.disabled = true;
+        try { await aprobar(p, Number(monto.value || 0)); } finally { aprobarBoton.disabled = false; }
+      });
+      return el("tr", {},
+        el("td", {}, p.nombre || "—"), el("td", {}, p.tipo),
+        el("td", { clase: "mono", title: p.cuenta }, corto(p.cuenta)),
+        el("td", {}, p.pedida ? hora(p.pedida) : "—"),
+        el("td", {}, p.tipo === "usuario" ? monto : el("span", { clase: "suave" }, "—")),
+        el("td", { clase: "acciones" }, aprobarBoton, botonConfirmar("Rechazar", "secundario", () => rechazar(p))));
+    }))));
+}
+
+// ── Cuentas aprobadas ──
+
+async function darDeBaja(cuenta) {
+  const { ok, status, cuerpo } = await pedir("POST", "/api/organizador/baja", { cuenta: cuenta.cuenta });
+  mostrarMensaje(ok ? `Dada de baja: ${cuenta.nombre || corto(cuenta.cuenta)}`
+                    : `No se pudo dar de baja (${status}): ${errorDe(cuerpo)}`, !ok);
+  await recargar();
+}
+
+function pintarCuentas(cuentas) {
+  $("usuarios").replaceChildren(...cuentas.filter((c) => c.tipo === "usuario")
+    .map((c) => el("option", { value: c.cuenta }, c.nombre || "")));
+  if (!cuentas.length) { $("cuentas").replaceChildren(el("p", { clase: "vacio" }, "No hay cuentas aprobadas.")); return; }
+  $("cuentas").replaceChildren(el("table", {},
+    el("thead", {}, el("tr", {}, ...["nombre", "tipo", "cuenta", "alta", "saldo", ""]
+      .map((t, i) => el("th", i === 4 ? { clase: "num" } : {}, t)))),
+    el("tbody", {}, ...cuentas.map((c) => el("tr", {},
+      el("td", {}, c.nombre || "—"), el("td", {}, c.tipo),
+      el("td", { clase: "mono", title: c.cuenta }, corto(c.cuenta)),
+      el("td", {}, c.alta ? hora(c.alta) : "—"), el("td", { clase: "num" }, String(c.saldo)),
+      el("td", { clase: "acciones" }, botonConfirmar("Dar de baja", "peligro", () => darDeBaja(c))))))));
+}
+
+// ── Todo junto ──
+
+async function recargar() {
+  const [altas, cuentas] = await Promise.all([pedir("GET", "/api/organizador/altas"), pedir("GET", "/api/organizador/cuentas")]);
+  if (!altas.ok || !cuentas.ok) {
+    const fallida = altas.ok ? cuentas : altas;
+    mostrarMensaje(`El panel no te dejó entrar (${fallida.status}): ${errorDe(fallida.cuerpo)}`, true);
+    return false;
+  }
+  pintarAltas(altas.cuerpo.pendientes);
+  pintarCuentas(cuentas.cuerpo.cuentas);
+  await actualizarCargas();
+  return true;
+}
+
+$("form-clave").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  try {
+    organizador = { ...await importarClave(new FormData(evento.target).get("jwk")), ultimaCarga: 0 };
+  } catch (error) {
+    mostrarMensaje(`No se pudo usar la clave: ${error.message}. ${AVISO_NAVEGADOR}`, true);
+    return;
+  }
+  if (!await recargar()) { organizador = null; return; }
+  evento.target.reset();
+  evento.target.hidden = true;
+  mostrarMensaje("");
+  $("quien").hidden = false;
+  $("quien").replaceChildren("Entraste como ", el("span", { clase: "mono" }, organizador.cuenta));
+  for (const seccion of document.querySelectorAll("section.panel")) seccion.hidden = false;
+  setInterval(recargar, 10_000);
+});
+
+$("form-carga").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const formulario = evento.target;
+  const datos = Object.fromEntries(new FormData(formulario));
+  const boton = formulario.querySelector("button");
+  boton.disabled = true;
+  try {
+    const tx = await cargaFirmada(datos.destino.trim(), Number(datos.monto));
+    const { ok, status, cuerpo } = await api("/api/transacciones", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+    if (ok) {
+      organizador.ultimaCarga = tx.nonce;
+      seguirCarga(tx.id, tx.destino, tx.monto);
+      formulario.reset();
+      mostrarMensaje(`Carga ${tx.id} recibida: ${tx.monto} a ${corto(tx.destino)}`);
+    } else {
+      mostrarMensaje(`No se pudo cargar (${status}): ${errorDe(cuerpo)}`, true);
+    }
+  } catch (error) {
+    mostrarMensaje(`No se pudo cargar: ${error.message}`, true);
+  } finally {
+    boton.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

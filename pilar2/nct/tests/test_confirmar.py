@@ -25,7 +25,7 @@ def test_una_solucion_valida_guarda_el_bloque_con_su_coinbase_mueve_saldos_y_avi
     assert redis.lrange("cadena", 0, -1) == [genesis, solucion["hash"]]
     bloque = redis.hgetall(f"bloque:{solucion['hash']}")
     assert (bloque["previous_hash"], bloque["altura"], bloque["nonce"]) == (genesis, "1", str(solucion["nonce"]))
-    assert bloque["prefijo"] == "00"
+    assert bloque["prefijo"] == "00" and float(bloque["duracion"]) >= 0
     # El minero y la recompensa no se guardan aparte: están en la coinbase, adentro del hash.
     assert "minero" not in bloque and "recompensa" not in bloque
     coinbase, *transferencias = json.loads(bloque["transactions"])

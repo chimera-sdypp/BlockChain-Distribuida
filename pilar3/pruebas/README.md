@@ -87,7 +87,7 @@ El TrP elige el largo p del prefijo con la potencia de los mineros vivos: el may
 
 Lo importante: **el criterio sólo elige p, pero minan todos**. El bloque tarda en promedio 16^p intentos dividido la potencia **total**, así que la suma es el único criterio que apunta al objetivo. Los otros eligen un p más corto (nunca más largo: el promedio, el mínimo y el máximo son ≤ la suma) y los bloques salen antes de lo buscado.
 
-**Tabla teórica**, sin cluster: [`potencia_teorica.py`](potencia_teorica.py) usa la misma función que el TrP, con los bench de BC-39 (RTX 4060: 1,78 GH/s; VM e2-highcpu-2: 1,44 MH/s), y deja `resultados/potencia-teorica.csv`. Sin tope:
+**Tabla teórica**, sin cluster: [`potencia_teorica.py`](potencia_teorica.py) usa la misma función que el TrP, con los bench de BC-39 (RTX 4060: 1,78 GH/s; VM e2-highcpu-2: 1,44 MH/s) y la T4 de Colab estimada en 700 MH/s (el kernel del Hit 7 en el cierre del Pilar 1), y deja `resultados/potencia-teorica.csv`. Sin tope:
 
 | Grupo | Suma | Promedio | Mínimo | Máximo |
 |---|---|---|---|---|
@@ -97,16 +97,21 @@ Lo importante: **el criterio sólo elige p, pero minan todos**. El bloque tarda 
 | 1 GPU y 2 CPU | 8 (2,4 s) | 8 (2,4 s) | **6 (0,009 s)** | 8 (2,4 s) |
 | 1 GPU y 15 CPU | 8 (2,4 s) | **7 (0,15 s)** | **6 (0,009 s)** | 8 (2,4 s) |
 | 2 GPU | **9 (19 s)** | 8 (1,2 s) | 8 (1,2 s) | 8 (1,2 s) |
+| RTX, 2 T4 y 2 CPU (el de la prueba) | **9 (22 s)** | 8 (1,3 s) | **6 (0,005 s)** | 8 (1,3 s) |
 
 - El **mínimo** se separa en cuanto hay una CPU junto a una GPU: el prefijo lo elige el más lento y la GPU lo resuelve enseguida.
 - El **promedio** se separa cuando hay muchos mineros: es la suma dividida la cantidad, así que depende de cuántos hay y no de cuánto pueden.
 - El **máximo** se separa cuando hay varios mineros fuertes: con 2 GPU elige como si hubiera una.
+- En el grupo de la prueba se separan tres: la suma (9), el máximo y el promedio (8) y el mínimo (6). Pasa con cualquier T4 de más de ~0,26 GH/s, así que no depende de la estimación. Sin las CPU, el mínimo sería una T4 y daría 8 como el resto.
 - Como p sube de a un carácter (×16), los criterios muchas veces coinciden, y aun con la suma el bloque tarda entre T/16 y T (con 1 GPU, 2,4 s y no 30). Los tiempos teóricos no incluyen el resto del sistema: en BC-39, hasta prefijo 5 un bloque tarda 1 a 2 s igual.
 
-**Medición en GKE**: [`potencia.py`](potencia.py) recorre los criterios con el ajuste prendido (`AJUSTAR_PREFIJO=1`), tope 8, `ESPACIO_NONCES=2^34` (con prefijo 8 quedan sin solución ~1,8 % de las tareas en vez de ~37 %) y 10 %, y saca de los logs del TrP el criterio, el prefijo y la potencia de cada tarea. Exige 1 GPU y 2 CPU vivos. Al terminar deja el TrP como estaba.
+**Medición en GKE**: [`potencia.py`](potencia.py) recorre los criterios con el ajuste prendido (`AJUSTAR_PREFIJO=1`), tope 9, `ESPACIO_NONCES=2^38` (con prefijo 9 hacen falta 2^36 intentos: quedan sin solución ~1,8 % de las tareas en vez de ~37 %) y 10 %, y saca de los logs del TrP el criterio, el prefijo y la potencia de cada tarea. Exige 3 GPU y 2 CPU vivos (`--gpus` y `--cpus` lo cambian). Al terminar deja el TrP como estaba. Con la medición, el gráfico calcula lo teórico con la potencia que registró el TrP (la suma) y no con la T4 estimada.
+
+El grupo: la RTX 4060 del k3s, 2 GPU de Colab ([`colab.ipynb`](../../pilar2/minero_gpu/colab.ipynb), cada una con su cuenta aprobada) y 2 VMs CPU fijas. Conviene hacerla en la misma sesión que BC-40, que con varias GPU también se ve mejor: primero `fragmentos.py --tipo gpu` sin VMs, después las VMs y esta.
 
 ```bash
-PROYECTO=<proyecto de GCP> pilar3/pruebas/preparar.sh fijar-vms 2       # y la GPU del k3s prendida
+# Con la RTX y los 2 Colab prendidos, y el TrP de BC-59 desplegado en GKE
+PROYECTO=<proyecto de GCP> pilar3/pruebas/preparar.sh fijar-vms 2
 pilar2/.venv/bin/python pilar3/pruebas/potencia_teorica.py
 pilar2/.venv/bin/python pilar3/pruebas/potencia.py --api http://<traefik> --salida pilar3/pruebas/resultados/potencia.csv
 python pilar3/pruebas/grafico_potencia.py

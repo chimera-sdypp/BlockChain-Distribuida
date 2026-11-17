@@ -10,9 +10,10 @@ Para comparar con la tabla teórica (potencia_teorica.py) y armar el gráfico (g
 
     python pilar3/pruebas/potencia.py --api http://<traefik> --salida pilar3/pruebas/resultados/potencia.csv
 
-Grupo de la prueba: 1 GPU (k3s) y 2 VMs CPU fijas (preparar.sh fijar-vms 2). Con prefijo 8 hacen falta
-16^8 = 2^32 intentos: con ESPACIO_NONCES=2^34, ~1,8 % de las tareas quedan sin solución (e^-4) en vez
-de ~37 %. Usa el kubectl del cluster (KUBECONFIG). Al terminar (o con Ctrl+C) deja PREFIJO_BASE,
+Grupo de la prueba: 3 GPU de potencias distintas (la RTX 4060 del k3s y 2 T4 de Colab) y 2 VMs CPU fijas
+(preparar.sh fijar-vms 2). Así los criterios se separan: la suma da 9, el máximo y el promedio 8, y el
+mínimo (una CPU) 6. Con prefijo 9 hacen falta 16^9 = 2^36 intentos: con ESPACIO_NONCES=2^38, ~1,8 % de
+las tareas quedan sin solución (e^-4) en vez de ~37 %. Usa el kubectl del cluster (KUBECONFIG). Al terminar (o con Ctrl+C) deja PREFIJO_BASE,
 AJUSTAR_PREFIJO, FRAGMENTO_PORCENTAJE, ESPACIO_NONCES y CRITERIO_POTENCIA del TrP como estaban.
 Correrlo con el Python de pilar2 (pilar2/.venv/bin/python): firma con la cuenta de prueba alice.
 """
@@ -60,13 +61,13 @@ def main():
     p.add_argument("--api", required=True, help="URL de Traefik (frontend y API)")
     p.add_argument("--salida", required=True, help="CSV de resultados (se agregan filas)")
     p.add_argument("--criterios", default=",".join(CRITERIOS), help="CRITERIO_POTENCIA a probar, separados por coma")
-    p.add_argument("--tope", type=int, default=8, help="PREFIJO_BASE: el máximo que puede elegir el TrP")
-    p.add_argument("--espacio", type=int, default=2**34, help="ESPACIO_NONCES del TrP")
+    p.add_argument("--tope", type=int, default=9, help="PREFIJO_BASE: el máximo que puede elegir el TrP")
+    p.add_argument("--espacio", type=int, default=2**38, help="ESPACIO_NONCES del TrP")
     p.add_argument("--porcentaje", type=int, default=10, help="FRAGMENTO_PORCENTAJE del TrP")
     p.add_argument("--bloques", type=int, default=5, help="bloques por criterio")
     p.add_argument("--maximo", type=int, default=300, help="segundos máximos por bloque; si se pasa, sigue con el próximo criterio")
     p.add_argument("--ventana", type=int, default=30, help="VENTANA_SEGUNDOS del NCT")
-    p.add_argument("--gpus", type=int, default=1, help="mineros GPU que tienen que estar vivos")
+    p.add_argument("--gpus", type=int, default=3, help="mineros GPU que tienen que estar vivos")
     p.add_argument("--cpus", type=int, default=2, help="mineros CPU que tienen que estar vivos")
     args = p.parse_args()
     criterios = args.criterios.split(",")

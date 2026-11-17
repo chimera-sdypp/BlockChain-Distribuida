@@ -1,7 +1,9 @@
 """Gráfico del criterio de potencia (BC-59): segundos por bloque según cómo elige el prefijo el TrP.
 
-- Izquierda: el grupo de la prueba (1 GPU y 2 CPU, tope 8). Barras: lo teórico; puntos: lo medido
-  (potencia.csv), si ya está.
+- Izquierda: el grupo de la prueba (RTX 4060, 2 T4 y 2 CPU, tope 9). Barras: lo teórico; puntos: lo
+  medido (potencia.csv). Con la medición, lo teórico sale de ella: 16^p (el prefijo que eligió el TrP)
+  dividido la potencia total (la que registró el TrP con la suma). Sin la medición, de la tabla teórica,
+  con la T4 estimada.
 - Derecha: lo teórico sin tope para todos los grupos de potencia-teorica.csv. Muestra cuándo se separan
   los criterios: el escalón de ×16 por carácter los junta casi siempre.
 
@@ -23,7 +25,7 @@ FONDO, TEXTO, TEXTO_2, GRILLA = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 CRITERIOS = ["suma", "promedio", "minimo", "maximo"]
 NOMBRES = {"suma": "suma", "promedio": "promedio", "minimo": "mínimo", "maximo": "máximo"}
 COLORES = {"suma": "#2a78d6", "promedio": "#199e70", "minimo": "#eb6834", "maximo": "#8a5cc2"}
-GRUPO_PRUEBA, TOPE_PRUEBA, SIN_TOPE, OBJETIVO = "1 GPU y 2 CPU", 8, 32, 30
+GRUPO_PRUEBA, TOPE_PRUEBA, SIN_TOPE, OBJETIVO = "RTX, 2 T4 y 2 CPU", 9, 32, 30
 
 
 def leer(nombre):
@@ -49,16 +51,37 @@ def estilo(ax, titulo):
         ax.spines[lado].set_color(GRILLA)
 
 
+def teorico_medido(medida):
+    """{criterio: (prefijo, segundos)} con lo que registró el TrP en la corrida; None si falta la suma."""
+    totales = [float(f["potencia"]) for f in medida if f["criterio"] == "suma" and f["potencia"]]
+    if not totales:
+        return None
+    total, resultado = statistics.mean(totales), {}
+    for criterio in CRITERIOS:
+        prefijos = [int(f["prefijo"]) for f in medida if f["criterio"] == criterio and f["prefijo"]]
+        if prefijos:
+            prefijo = statistics.mode(prefijos)
+            resultado[criterio] = (prefijo, 16**prefijo / total)
+    return resultado
+
+
 def prueba(ax, teorica, medida):
-    teoricos = {f["criterio"]: f for f in teorica if f["grupo"] == GRUPO_PRUEBA and int(f["tope"]) == TOPE_PRUEBA}
+    teoricos = teorico_medido(medida) if medida else None
+    origen = "potencia medida"
+    if teoricos is None:
+        teoricos = {f["criterio"]: (int(f["prefijo"]), float(f["segundos"])) for f in teorica
+                    if f["grupo"] == GRUPO_PRUEBA and int(f["tope"]) == TOPE_PRUEBA}
+        origen = "T4 estimada"
     medidos = defaultdict(list)
     for fila in medida:
         if fila["segundos"]:
             medidos[fila["criterio"]].append(float(fila["segundos"]))
     for x, criterio in enumerate(CRITERIOS):
-        fila = teoricos[criterio]
-        ax.bar(x, float(fila["segundos"]), width=0.6, color=COLORES[criterio], alpha=0.35, zorder=2)
-        ax.text(x, float(fila["segundos"]) * 1.2, f"prefijo {fila['prefijo']}", color=TEXTO_2, fontsize=8, ha="center")
+        if criterio not in teoricos:
+            continue
+        prefijo, segundos = teoricos[criterio]
+        ax.bar(x, segundos, width=0.6, color=COLORES[criterio], alpha=0.35, zorder=2)
+        ax.text(x, 4e-3, f"prefijo {prefijo}", color=TEXTO, fontsize=8, ha="center")
         if medidos[criterio]:
             ax.scatter([x] * len(medidos[criterio]), medidos[criterio], s=22, color=COLORES[criterio],
                        linewidths=0, zorder=3)
@@ -66,9 +89,9 @@ def prueba(ax, teorica, medida):
             ax.plot([x - 0.25, x + 0.25], [media, media], color=COLORES[criterio], linewidth=2.5, zorder=3)
     ax.set_xticks(range(len(CRITERIOS)), [NOMBRES[c] for c in CRITERIOS])
     ax.set_ylabel("Segundos por bloque (escala logarítmica)", color=TEXTO_2)
-    medido = "barras: teórico (16^p / potencia total); puntos y raya: medido" if medida else \
-        "teórico (16^p / potencia total); falta la medición"
-    estilo(ax, f"{GRUPO_PRUEBA}, tope de 8 caracteres\n{medido}")
+    detalle = f"barras: teórico, con la {origen}\npuntos y raya: medido" if any(medidos.values()) else \
+        f"teórico, con la {origen}; falta la medición"
+    estilo(ax, f"{GRUPO_PRUEBA}, tope de {TOPE_PRUEBA} caracteres\n{detalle}")
 
 
 def grupos(ax, teorica):

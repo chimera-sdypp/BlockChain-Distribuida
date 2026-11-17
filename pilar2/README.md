@@ -164,8 +164,9 @@ Toma cada tarea de `tareas`, elige el prefijo, la parte en rangos de nonce y pub
 | `SEGUNDOS_POR_BLOQUE` | 30 | Cuánto se quiere que tarde un bloque |
 | `AJUSTAR_PREFIJO` | 1 | 0: siempre el prefijo base (para la prueba de prefijos) |
 | `VIVO_SEGUNDOS` | 15 | Un minero cuenta si avisó hace menos que esto |
+| `CRITERIO_POTENCIA` | suma | Cómo se junta el `bench` de los vivos para el prefijo (`suma`, `promedio`, `minimo` o `maximo`). Fuera de la suma, sólo para la prueba de BC-59 |
 
-- **Prefijo:** con p caracteres hacen falta 16^p intentos en promedio. Con la potencia viva P (la suma de los `bench` de los mineros que avisaron hace menos de 15 s), el largo es el mayor p con 16^p ≤ P × 30 s, entre 1 y `PREFIJO_BASE`. Sin GPU baja (un minero CPU de 8,6 MH/s da 6; uno de 0,5 MH/s, 5); sin mineros vivos es 1, para que el primero que llegue lo resuelva enseguida.
+- **Prefijo:** con p caracteres hacen falta 16^p intentos en promedio. Con la potencia viva P (la **suma** de los `bench` de los mineros que avisaron hace menos de 15 s), el largo es el mayor p con 16^p ≤ P × 30 s, entre 1 y `PREFIJO_BASE`. Sin GPU baja (un minero CPU de 8,6 MH/s da 6; uno de 0,5 MH/s, 5); sin mineros vivos es 1, para que el primero que llegue lo resuelva enseguida. Por qué la suma y no el promedio, el mínimo o el máximo, por qué el `bench` y cómo se reparte el trabajo según la potencia: [trp/README.md](trp/README.md).
 - Si el pod muere a mitad, la tarea vuelve a la cola y se repite entera: `tarea:<id>` queda igual y los rangos repetidos no molestan.
 
 También toma `resultados` (otra conexión, en otro hilo) y le pasa al NCT, por `soluciones`, sólo el ganador:

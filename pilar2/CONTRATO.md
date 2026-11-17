@@ -98,6 +98,14 @@ La red es privada (BC-58): sólo opera quien aprueba el organizador, como los va
 - **Saldo:** entra sólo por cargas del organizador (modelo exchange: la red opera la plata que se cargó adentro). El génesis de la red no trae saldos; `SALDOS_INICIALES` es sólo para las cuentas de prueba (alice, bob y carol) de los tests y las pruebas de carga.
 - Los pasos son Lua (`comun/altas.py`): dos réplicas del backend que aprueban lo mismo a la vez no se pisan.
 
+## Reparto según la potencia
+
+Cada minero recibe trabajo según su potencia medida (contrato 4, BC-59):
+
+- **El prefijo** lo elige el TrP con la **suma** de los `bench` de los mineros vivos (los que avisaron hace menos de `VIVO_SEGUNDOS`): el mayor p con 16^p ≤ suma × `SEGUNDOS_POR_BLOQUE`, entre 1 y `PREFIJO_BASE`. La suma, porque minan todos y el bloque tarda 16^p intentos dividido la potencia total del pool. `CRITERIO_POTENCIA` (promedio, mínimo o máximo) existe sólo para la prueba.
+- **El reparto** es por pull: todos los rangos miden lo mismo y cada minero pide otro cuando termina el suyo. El que tiene más potencia termina antes y se lleva más rangos. El gateway los cuenta en `historial:<minero>` (`rangos`).
+- **Fuente:** el vardiff del protocolo Stratum (pools de Bitcoin), que ajusta la dificultad de los shares de cada minero según su potencia. Acá no hay vardiff: los rangos y los shares tienen el mismo tamaño y la misma dificultad para todos. El porqué, en el [README del TrP](trp/README.md).
+
 ## Tarea modelo (bench)
 
 Iguales para todos: `bloque = "bench;"`, rango `[0, 2^24 − 1]` y prefijo `f` × 32, que no aparece nunca, así el minero recorre el rango entero. En la RTX 4060 tarda ~7 ms y en CPU con Python ~15 s (1,1 MH/s, un solo núcleo). El minero manda los segundos y los hashes/s, y queda clasificado en `nodo:<id>`.

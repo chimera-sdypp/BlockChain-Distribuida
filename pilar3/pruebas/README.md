@@ -1,10 +1,11 @@
-# Pruebas de carga y escalabilidad (BC-38 a BC-42)
+# Pruebas de carga y escalabilidad (BC-38 a BC-42, BC-59)
 
 | Carpeta / archivo | Qué es |
 |---|---|
 | [`bulks/`](bulks/README.md) | BC-38: bulks de 1 a 100.000 transacciones con k6 |
 | [`prefijos.py`](prefijos.py) y `grafico_prefijos.py` | BC-39: prefijo de 1 a 8 caracteres |
 | [`fragmentos.py`](fragmentos.py) | BC-40: fragmentación del pool del 1 % al 50 % |
+| [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
@@ -16,7 +17,7 @@ Se corre a mano: **Actions → Pilar 3 · Preparar prueba → Run workflow**. En
 | Acción | Qué hace |
 |---|---|
 | `estado` | Sólo muestra; no cambia nada |
-| `preparar` | Fija `PREFIJO_BASE`, `AJUSTAR_PREFIJO` y `FRAGMENTO_PORCENTAJE` en el TrP (y el mismo prefijo en el escalador). Opcionales: reiniciar la cadena y dejar una cantidad fija de VMs |
+| `preparar` | Fija `PREFIJO_BASE`, `AJUSTAR_PREFIJO`, `FRAGMENTO_PORCENTAJE` y, si se elige, `CRITERIO_POTENCIA` en el TrP (y el mismo prefijo en el escalador). Opcionales: reiniciar la cadena y dejar una cantidad fija de VMs |
 | `restaurar` | TrP y escalador como en los manifiestos, y el escalador de nuevo en manos de KEDA |
 
 **Reiniciar la cadena** (escribir `REINICIAR` en el campo): apaga el NCT y el TrP, vacía las colas y Redis, y los vuelve a prender. El NCT carga el génesis con los `SALDOS_INICIALES` de su Deployment, que en GKE son 1.000.000.000 por usuario ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Se pierden todos los bloques y saldos anteriores, para todo el grupo. Se niega si el NCT todavía tiene los saldos por defecto.
@@ -31,6 +32,7 @@ Desde una PC con `kubectl` apuntando al cluster es lo mismo:
 pilar3/pruebas/preparar.sh estado
 pilar3/pruebas/preparar.sh reiniciar
 pilar3/pruebas/preparar.sh condiciones 5 0 10        # PREFIJO_BASE, AJUSTAR_PREFIJO, FRAGMENTO_PORCENTAJE
+pilar3/pruebas/preparar.sh condiciones 8 1 10 minimo # … y CRITERIO_POTENCIA (BC-59)
 PROYECTO=<proyecto de GCP> pilar3/pruebas/preparar.sh fijar-vms 1
 pilar3/pruebas/preparar.sh restaurar
 ```
@@ -78,6 +80,42 @@ pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --sa
 - `prestados_hasta_ganar - 1` es el trabajo desperdiciado, contado en rangos y no en hashes: de un rango cortado no se sabe cuánto se llegó a minar.
 - Con `ESPACIO_NONCES = 2^32`, un rango del 1 % tiene ~43 M de nonces. Con prefijo 6 (~16 M intentos), en CPU la solución cae casi siempre en el primer rango que agarra cada minero, así que no se ve la sobrecarga de los rangos chicos. Para verla: GPU con prefijo 7 u 8, o un `--espacio` más chico. Con eso sube la probabilidad de una tarea sin solución, e^(−espacio/16^prefijo).
 - En CPU conviene `preparar.sh fijar-vms N` con N ≥ 3: con 50 % hay sólo 2 rangos y se ve un minero sin trabajo.
+
+## Criterio de potencia (BC-59)
+
+El TrP elige el largo p del prefijo con la potencia de los mineros vivos: el mayor p con 16^p ≤ potencia × 30 s, hasta `PREFIJO_BASE` (ver [el README del TrP](../../pilar2/trp/README.md)). La potencia es la **suma** de sus `bench`. `CRITERIO_POTENCIA` permite, sólo para esta prueba, juntarlos con el promedio, el mínimo o el máximo.
+
+Lo importante: **el criterio sólo elige p, pero minan todos**. El bloque tarda en promedio 16^p intentos dividido la potencia **total**, así que la suma es el único criterio que apunta al objetivo. Los otros eligen un p más corto (nunca más largo: el promedio, el mínimo y el máximo son ≤ la suma) y los bloques salen antes de lo buscado.
+
+**Tabla teórica**, sin cluster: [`potencia_teorica.py`](potencia_teorica.py) usa la misma función que el TrP, con los bench de BC-39 (RTX 4060: 1,78 GH/s; VM e2-highcpu-2: 1,44 MH/s), y deja `resultados/potencia-teorica.csv`. Sin tope:
+
+| Grupo | Suma | Promedio | Mínimo | Máximo |
+|---|---|---|---|---|
+| 1 CPU | 6 (11,7 s) | 6 (11,7 s) | 6 (11,7 s) | 6 (11,7 s) |
+| 3 CPU | 6 (3,9 s) | 6 (3,9 s) | 6 (3,9 s) | 6 (3,9 s) |
+| 1 GPU | 8 (2,4 s) | 8 (2,4 s) | 8 (2,4 s) | 8 (2,4 s) |
+| 1 GPU y 2 CPU | 8 (2,4 s) | 8 (2,4 s) | **6 (0,009 s)** | 8 (2,4 s) |
+| 1 GPU y 15 CPU | 8 (2,4 s) | **7 (0,15 s)** | **6 (0,009 s)** | 8 (2,4 s) |
+| 2 GPU | **9 (19 s)** | 8 (1,2 s) | 8 (1,2 s) | 8 (1,2 s) |
+
+- El **mínimo** se separa en cuanto hay una CPU junto a una GPU: el prefijo lo elige el más lento y la GPU lo resuelve enseguida.
+- El **promedio** se separa cuando hay muchos mineros: es la suma dividida la cantidad, así que depende de cuántos hay y no de cuánto pueden.
+- El **máximo** se separa cuando hay varios mineros fuertes: con 2 GPU elige como si hubiera una.
+- Como p sube de a un carácter (×16), los criterios muchas veces coinciden, y aun con la suma el bloque tarda entre T/16 y T (con 1 GPU, 2,4 s y no 30). Los tiempos teóricos no incluyen el resto del sistema: en BC-39, hasta prefijo 5 un bloque tarda 1 a 2 s igual.
+
+**Medición en GKE**: [`potencia.py`](potencia.py) recorre los criterios con el ajuste prendido (`AJUSTAR_PREFIJO=1`), tope 8, `ESPACIO_NONCES=2^34` (con prefijo 8 quedan sin solución ~1,8 % de las tareas en vez de ~37 %) y 10 %, y saca de los logs del TrP el criterio, el prefijo y la potencia de cada tarea. Exige 1 GPU y 2 CPU vivos. Al terminar deja el TrP como estaba.
+
+```bash
+PROYECTO=<proyecto de GCP> pilar3/pruebas/preparar.sh fijar-vms 2       # y la GPU del k3s prendida
+pilar2/.venv/bin/python pilar3/pruebas/potencia_teorica.py
+pilar2/.venv/bin/python pilar3/pruebas/potencia.py --api http://<traefik> --salida pilar3/pruebas/resultados/potencia.csv
+python pilar3/pruebas/grafico_potencia.py
+pilar3/pruebas/preparar.sh restaurar
+```
+
+![Tiempo por bloque según el criterio](resultados/potencia.png)
+
+Pendiente: la corrida en GKE (`resultados/potencia.csv`). Hasta entonces, el gráfico muestra sólo lo teórico.
 
 ## Firmas (contrato v2)
 

@@ -1,14 +1,14 @@
 # Pilar 3 — Despliegue, pruebas y escalabilidad
 
-> **Desplegado** en el proyecto `chimera-blockchain` (org `distribuidos-chimera`). Sistema en `http://<IP de Traefik>`
+> **Desplegado** en el proyecto `chimera-blockchain` (org `distribuidos-chimera`). Sistema en `https://blockchain-chimera.duckdns.org`
 > y estado de cada servicio en `/salud/<servicio>`; los mineros entran por `http://<IP del gateway>:8081`.
 > Sin las variables `GCP_*` en el repo los pipelines sólo validan (`fmt` y `validate`).
 
 | Carpeta | Qué es | Pipeline |
 |---|---|---|
-| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31) y la IP fija del gateway | A mano, una vez |
+| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31) y las IP fijas del gateway y de Traefik (`ingreso`) | A mano, una vez |
 | `infra/` | VPC y GKE zonal con dos nodegroups, `infra` (con taint) y `apps` (BC-32) | 1 · `pilar3-cluster.yml` |
-| `helm/`, `k8s/servicios-base/` | Traefik, KEDA, RabbitMQ ×3, Redis ×3 y la observabilidad en el nodegroup de infra (BC-33, BC-37) | 2 · `pilar3-servicios-base.yml` |
+| `helm/`, `k8s/servicios-base/` | Traefik, cert-manager, KEDA, RabbitMQ ×3, Redis ×3 y la observabilidad en el nodegroup de infra (BC-33, BC-37) | 2 · `pilar3-servicios-base.yml` |
 | `k8s/apps/` | frontend, backend, nct, trp, gateway y escalador en el nodegroup de apps, y `/salud/<servicio>` (BC-34) | 3 · `pilar3-apps.yml` |
 | `vms/` | Plantilla de las VMs minero-cpu, firewall y permisos (BC-35) | 4 · `pilar3-vms.yml` |
 | `vms/instancias/` | Las VMs `minero-cpu-0…N-1` (BC-35) | Ninguno: lo aplica el escalador |
@@ -54,7 +54,8 @@ Para conectarse: `tofu output -raw conectarse`.
 
 - **En un PR:** gitleaks, `helm template` de todos los charts y `kubectl kustomize` de RabbitMQ, Redis y el monitoreo.
 - **Al mergear a `main`** (o a mano, con *Run workflow*): los instala en GKE y espera a que estén listos.
-- **Traefik** (chart 42.3.2) es la clase de Ingress por defecto, con 2 réplicas. Su LoadBalancer es la IP pública del sistema, en el puerto 80. El balanceador HTTP de GKE está desactivado en `infra/`.
+- **Traefik** (chart 42.3.2) es la clase de Ingress por defecto, con 2 réplicas. Su LoadBalancer toma la IP fija `ingreso` (puertos 80 y 443), a la que apunta `blockchain-chimera.duckdns.org`. El balanceador HTTP de GKE está desactivado en `infra/`.
+- **HTTPS:** cert-manager (chart v1.21.3) pide el certificado a Let's Encrypt por HTTP-01 (`k8s/certificados/`) y HTTP redirige a HTTPS (`k8s/apps/ingreso-https.yaml`). Hace falta porque el navegador sólo habilita WebCrypto (con lo que las páginas firman) en HTTPS o en `localhost`.
 - **KEDA** usa el chart 2.21.0, el mismo que en k3s.
 - **RabbitMQ y Redis** usan los manifiestos del Pilar 2 sin cambios: [`servicios-base/`](k8s/servicios-base/kustomization.yaml) sólo les agrega el nodeSelector y la toleration de infra. Sus Services son internos.
 - **El Secret `blockchain-secretos`** sale de los secretos del ambiente `produccion` de GitHub: `RABBIT_USUARIO`, `RABBIT_CLAVE`, `RABBIT_COOKIE` y `REDIS_CLAVE`. Los mineros no usan un secreto compartido: firman con su clave (BC-57).
@@ -75,7 +76,7 @@ Para conectarse: `tofu output -raw conectarse`.
   - Workload Identity se configura con la anotación del ServiceAccount.
 
   KEDA lo prende y lo apaga según el Prometheus del Pipeline 2 (0 pods en reposo).
-- **Health-check público:** `http://<IP de Traefik>/salud/<servicio>` para `backend`, `frontend`, `nct`, `trp` y `gateway`. Devuelve el `/health` del servicio: `{servicio: estado, rabbitmq: …, redis: …}`, y 503 si algo está caído. El escalador no tiene, porque apagado es su estado normal.
+- **Health-check público:** `https://blockchain-chimera.duckdns.org/salud/<servicio>` para `backend`, `frontend`, `nct`, `trp` y `gateway`. Devuelve el `/health` del servicio: `{servicio: estado, rabbitmq: …, redis: …}`, y 503 si algo está caído. El escalador no tiene, porque apagado es su estado normal.
 - La imagen del minero GPU no va en este pipeline: la publica `ci.yml` en GHCR.
 
 ## Pipeline 4 · VMs minero-cpu

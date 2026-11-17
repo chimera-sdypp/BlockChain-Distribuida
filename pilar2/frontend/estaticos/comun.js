@@ -29,7 +29,10 @@ const errorDe = (cuerpo) => [].concat(cuerpo.errores ? Object.values(cuerpo.erro
 
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const deBase64url = (texto) => Uint8Array.from(atob(texto.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
-const AVISO_NAVEGADOR = "Este navegador necesita Ed25519 en WebCrypto (Chrome 137, Firefox 129 o Safari 17).";
+// WebCrypto sólo existe en HTTPS o en localhost: por HTTP plano, `crypto.subtle` no está y no se puede firmar.
+const AVISO_NAVEGADOR = window.isSecureContext
+  ? "Este navegador necesita Ed25519 en WebCrypto (Chrome 137, Firefox 129 o Safari 17)."
+  : "La página no está en HTTPS y el navegador no deja firmar: entrá por https:// (o por localhost).";
 
 // El JWK de `python -m claves exportar` (o el que baja la página «Pedir el alta») → {clave, cuenta}.
 async function importarClave(texto) {

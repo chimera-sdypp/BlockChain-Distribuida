@@ -1,0 +1,24 @@
+# cert-manager (Pipeline 2): pide y renueva el certificado HTTPS de blockchain-chimera.duckdns.org a
+# Let's Encrypt. Sin HTTPS el navegador no habilita WebCrypto y las páginas no pueden firmar.
+#   helm upgrade --install cert-manager jetstack/cert-manager --version v1.21.3 -n cert-manager --create-namespace -f cert-manager.yaml
+crds:
+  enabled: true
+
+nodeSelector: { nodegroup: infra }
+tolerations:
+  - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }
+
+webhook:
+  nodeSelector: { nodegroup: infra }
+  tolerations:
+    - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }
+
+cainjector:
+  nodeSelector: { nodegroup: infra }
+  tolerations:
+    - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }
+
+startupapicheck:
+  nodeSelector: { nodegroup: infra }
+  tolerations:
+    - { key: nodegroup, operator: Equal, value: infra, effect: NoSchedule }

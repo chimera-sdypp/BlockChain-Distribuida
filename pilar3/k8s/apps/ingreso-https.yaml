@@ -1,0 +1,14 @@
+# HTTPS en GKE: el Ingress del Pilar 2 con el certificado de blockchain-chimera.duckdns.org (lo pide
+# cert-manager a Let's Encrypt) y HTTP → HTTPS (a-https.yaml). El nombre de DuckDNS apunta a la IP
+# fija «ingreso» de bootstrap/, que es la del Service de Traefik. En k3s el Ingress sigue sin TLS.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: blockchain
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    traefik.ingress.kubernetes.io/router.middlewares: blockchain-a-https@kubernetescrd
+spec:
+  tls:
+    - hosts: [blockchain-chimera.duckdns.org]
+      secretName: blockchain-tls

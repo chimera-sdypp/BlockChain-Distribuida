@@ -35,6 +35,15 @@ resource "google_compute_address" "gateway" {
   depends_on  = [google_project_service.apis]
 }
 
+# IP pública fija de Traefik (las páginas y la API): el nombre de DuckDNS apunta acá y el certificado
+# de Let's Encrypt es para ese nombre, así que tiene que sobrevivir a un destroy del cluster.
+resource "google_compute_address" "ingreso" {
+  name        = "ingreso"
+  region      = var.region
+  description = "IP fija de Traefik (las paginas y la API, con HTTPS)"
+  depends_on  = [google_project_service.apis]
+}
+
 # ---------------------------------------------------------------- Workload Identity Federation
 # GitHub Actions entra con su token OIDC (vence en 1 h) y nada más: no hay claves en GitHub Secrets.
 

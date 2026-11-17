@@ -1143,6 +1143,117 @@
       ]
     },
     {
+      "type": "timeseries",
+      "id": 21,
+      "title": "Rangos por minero por minuto",
+      "description": "Rangos que el gateway le prestó a cada minero (BC-59). La GPU termina antes y pide otro: se lleva más.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero) (increase(blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}[1m]))",
+          "legendFormat": "{{minero}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "id": 22,
+      "title": "Rangos por tipo",
+      "description": "Rangos prestados en el rango de tiempo del dashboard, por tipo de minero (BC-59).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tipo) (max by (minero, tipo) (increase(blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}[$__range])))",
+          "legendFormat": "{{tipo}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Recursos",
       "id": 15,
@@ -1151,7 +1262,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 44
       },
       "panels": []
     },
@@ -1168,7 +1279,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -1226,7 +1337,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -1280,7 +1391,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "panels": []
     },
@@ -1297,7 +1408,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 54
       },
       "fieldConfig": {
         "defaults": {
@@ -1356,7 +1467,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 61
       },
       "options": {
         "showTime": true,

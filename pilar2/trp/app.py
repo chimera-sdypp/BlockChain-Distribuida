@@ -14,7 +14,7 @@ from prometheus_client import Counter, Gauge
 
 from comun import Rabbit, Servicio, config, contrato
 
-from .particion import largo_prefijo, partir, potencia_viva
+from .particion import CRITERIOS, largo_prefijo, partir, potencia_viva
 from .resultados import SOLUCIONES, recibir
 
 log = logging.getLogger("trp")
@@ -34,6 +34,7 @@ class Ajustes:
     segundos_objetivo: int  # cuánto se quiere que tarde un bloque con los mineros vivos
     ajustar: bool           # False: siempre el prefijo base (para la prueba de prefijos, BC-39)
     vivo_segundos: int      # un minero cuenta si avisó hace menos que esto
+    criterio: str = "suma"  # cómo se junta la potencia de los vivos; otro que "suma", sólo para BC-59
 
 
 def cargar_ajustes():
@@ -44,6 +45,7 @@ def cargar_ajustes():
         segundos_objetivo=config.entero("SEGUNDOS_POR_BLOQUE", 30),
         ajustar=config.entero("AJUSTAR_PREFIJO", 1) == 1,
         vivo_segundos=config.entero("VIVO_SEGUNDOS", 15),
+        criterio=config.texto("CRITERIO_POTENCIA", "suma"),
     )
     if not 1 <= ajustes.porcentaje <= 50:
         raise ValueError("FRAGMENTO_PORCENTAJE va de 1 a 50")
@@ -51,6 +53,8 @@ def cargar_ajustes():
         raise ValueError("PREFIJO_BASE va de 1 a 32")
     if ajustes.espacio < 2 or ajustes.espacio > 2**64:
         raise ValueError("ESPACIO_NONCES va de 2 a 2^64")
+    if ajustes.criterio not in CRITERIOS:
+        raise ValueError(f"CRITERIO_POTENCIA va {', '.join(CRITERIOS)}, no {ajustes.criterio!r}")
     return ajustes
 
 
@@ -73,11 +77,20 @@ def errores_tarea(tarea):
 
 
 def elegir_prefijo(redis, ajustes, ahora):
+    """(prefijo, potencia en hashes/s); sin ajuste, la potencia es None porque no se mira."""
     if not ajustes.ajustar:
-        return "0" * ajustes.prefijo_base
+        return "0" * ajustes.prefijo_base, None
     nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=100)]
-    potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos)
-    return "0" * largo_prefijo(potencia, ajustes.segundos_objetivo, ajustes.prefijo_base)
+    potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos, ajustes.criterio)
+    return "0" * largo_prefijo(potencia, ajustes.segundos_objetivo, ajustes.prefijo_base), potencia
+
+
+def legible(hashes_por_segundo):
+    """1817200000 → "1,82 GH/s", como se escriben los números en los README."""
+    for divisor, unidad in ((1e9, "GH/s"), (1e6, "MH/s"), (1e3, "kH/s")):
+        if hashes_por_segundo >= divisor:
+            return f"{hashes_por_segundo / divisor:.2f} {unidad}".replace(".", ",")
+    return f"{hashes_por_segundo:.0f} H/s"
 
 
 def particionar(tarea, redis, publicar, ajustes, ahora=None):
@@ -95,7 +108,7 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
     if errores:
         log.error("Tarea inválida, se descarta (%s): %r", ", ".join(errores), tarea)
         return
-    prefijo = elegir_prefijo(redis, ajustes, time.time() if ahora is None else ahora)
+    prefijo, potencia = elegir_prefijo(redis, ajustes, time.time() if ahora is None else ahora)
     rangos = partir(ajustes.espacio, ajustes.porcentaje)
     redis.hset(contrato.TAREA.format(tarea["tarea"]), mapping={"prefijo": prefijo, "rangos": len(rangos)})
     for numero, (desde, hasta) in enumerate(rangos):
@@ -103,8 +116,10 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
                           "prefijo": prefijo})
     RANGOS_PUBLICADOS.inc(len(rangos))
     PREFIJO.set(len(prefijo))
-    log.info("Tarea %s: %d transacciones, prefijo %s, %d rangos del %d %%",
-             tarea["tarea"], len(tarea["transacciones"]), prefijo, len(rangos), ajustes.porcentaje)
+    # Las pruebas de pilar3 leen esta línea (fragmentos.py, potencia.py): agregar sólo al final.
+    detalle = "" if potencia is None else f", criterio {ajustes.criterio}, potencia {legible(potencia)}"
+    log.info("Tarea %s: %d transacciones, prefijo %s, %d rangos del %d %%%s",
+             tarea["tarea"], len(tarea["transacciones"]), prefijo, len(rangos), ajustes.porcentaje, detalle)
 
 
 def main():

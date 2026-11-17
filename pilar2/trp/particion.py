@@ -12,19 +12,35 @@ def partir(espacio, porcentaje):
     return [(desde, min(desde + tamano, espacio) - 1) for desde in range(0, espacio, tamano)]
 
 
-def potencia_viva(nodos, ahora, vivo_segundos):
-    """Suma de los bench (hashes/s) de los mineros que avisaron hace menos de `vivo_segundos`.
+CRITERIOS = ("suma", "promedio", "minimo", "maximo")
 
+
+def potencia_viva(nodos, ahora, vivo_segundos, criterio="suma"):
+    """Potencia (hashes/s) de los mineros que avisaron hace menos de `vivo_segundos`, según su `bench`.
+
+    `criterio` dice cómo se juntan los bench: "suma" es la del sistema, porque un bloque tarda 16^p
+    intentos dividido la potencia de TODO el pool (minan todos). "promedio", "minimo" y "maximo"
+    existen sólo para la prueba de BC-59 (`CRITERIO_POTENCIA`). Sin mineros vivos, 0 con cualquiera.
     `nodos` son los hashes `nodo:<id>` como los devuelve Redis (todo texto).
     """
-    total = 0.0
+    if criterio not in CRITERIOS:
+        raise ValueError(f"criterio desconocido: {criterio!r} (va {', '.join(CRITERIOS)})")
+    benchs = []
     for nodo in nodos:
         try:
             if ahora - float(nodo.get("ultimo_aviso", 0)) < vivo_segundos:
-                total += float(nodo.get("bench", 0))
+                benchs.append(float(nodo.get("bench", 0)))
         except ValueError:
             continue  # un nodo a medio escribir no cuenta
-    return total
+    if not benchs:
+        return 0.0
+    if criterio == "promedio":
+        return sum(benchs) / len(benchs)
+    if criterio == "minimo":
+        return min(benchs)
+    if criterio == "maximo":
+        return max(benchs)
+    return sum(benchs)
 
 
 def largo_prefijo(potencia, segundos_objetivo, base):

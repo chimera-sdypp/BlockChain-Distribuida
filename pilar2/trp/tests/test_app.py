@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -8,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from comun import Rabbit, config, contrato, redisdb
-from trp.app import Ajustes, RANGOS, TAREAS, particionar
+from trp.app import Ajustes, RANGOS, TAREAS, cargar_ajustes, particionar
 
 VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
 AHORA = 1_800_000_000
@@ -21,7 +22,8 @@ def tarea(id_="t1"):
 
 
 def ajustes(**cambios):
-    base = dict(espacio=2**32, porcentaje=10, prefijo_base=6, segundos_objetivo=30, ajustar=True, vivo_segundos=15)
+    base = dict(espacio=2**32, porcentaje=10, prefijo_base=6, segundos_objetivo=30, ajustar=True, vivo_segundos=15,
+                criterio="suma")
     return Ajustes(**{**base, **cambios})
 
 
@@ -79,6 +81,44 @@ def test_sin_gpu_baja_el_prefijo_y_con_gpu_usa_el_base():
 
 def test_sin_ajuste_siempre_el_prefijo_base():
     assert correr(tarea(), RedisFalso(), ajustar=False, prefijo_base=8)[0][1]["prefijo"] == "0" * 8
+
+
+def test_el_prefijo_sigue_el_criterio():
+    grupo = {"gpu-1": {"tipo": "gpu", "bench": "1800000000", "ultimo_aviso": str(AHORA)},
+             "cpu-1": {"tipo": "cpu", "bench": "8600000", "ultimo_aviso": str(AHORA)},
+             "cpu-2": {"tipo": "cpu", "bench": "8600000", "ultimo_aviso": str(AHORA)}}
+    assert correr(tarea(), RedisFalso(grupo), prefijo_base=8)[0][1]["prefijo"] == "0" * 8
+    assert correr(tarea(), RedisFalso(grupo), prefijo_base=8, criterio="minimo")[0][1]["prefijo"] == "0" * 6
+
+
+def test_el_log_de_la_tarea_dice_criterio_y_potencia(caplog):
+    gpu = {"gpu-1": {"tipo": "gpu", "bench": "1817200000", "ultimo_aviso": str(AHORA)}}
+    with caplog.at_level("INFO", logger="trp"):
+        correr(tarea(), RedisFalso(gpu), prefijo_base=8)
+    linea = caplog.messages[-1]
+    assert linea.endswith(", criterio suma, potencia 1,82 GH/s")
+    # La prueba de fragmentación (BC-40) lee esta línea con su regex: tiene que seguir andando.
+    partida = re.search(r"Tarea (\w+): \d+ transacciones, prefijo (0+), (\d+) rangos del (\d+) %", linea)
+    assert partida.groups() == ("t1", "0" * 8, "10", "10")
+
+
+def test_sin_ajuste_el_log_no_inventa_potencia(caplog):
+    with caplog.at_level("INFO", logger="trp"):
+        correr(tarea(), RedisFalso(), ajustar=False)
+    assert caplog.messages[-1].endswith("rangos del 10 %")
+
+
+def test_criterio_por_defecto_suma(monkeypatch):
+    monkeypatch.delenv("CRITERIO_POTENCIA", raising=False)
+    assert cargar_ajustes().criterio == "suma"
+    monkeypatch.setenv("CRITERIO_POTENCIA", "minimo")
+    assert cargar_ajustes().criterio == "minimo"
+
+
+def test_criterio_invalido_no_arranca(monkeypatch):
+    monkeypatch.setenv("CRITERIO_POTENCIA", "mediana")
+    with pytest.raises(ValueError, match="CRITERIO_POTENCIA"):
+        cargar_ajustes()
 
 
 def test_repetir_la_tarea_deja_lo_mismo():

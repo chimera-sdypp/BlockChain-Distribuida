@@ -28,7 +28,9 @@ spec:
             - { name: RABBIT_HOST, value: rabbitmq }
             - { name: REDIS_SENTINELS, value: "redis:26379" }
             - { name: PREFIJO_BASE, value: "6" }
-            - { name: SEGUNDOS_POR_BLOQUE, value: "30" }
+            - { name: SEGUNDOS_POR_BLOQUE, value: "60" }
+            - { name: VENTANA_AJUSTE, value: "5" }
+            - { name: AJUSTE_MAXIMO, value: "1" }
             - { name: FRAGMENTO_PORCENTAJE, value: "10" }
             - name: RABBIT_USUARIO
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }

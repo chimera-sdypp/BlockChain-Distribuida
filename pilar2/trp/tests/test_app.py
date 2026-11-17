@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from prometheus_client import REGISTRY
+
 from comun import Rabbit, config, contrato, redisdb
-from trp.app import Ajustes, RANGOS, TAREAS, particionar
+from trp.app import Ajustes, RANGOS, TAREAS, cargar_ajustes, particionar
 
 VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
 AHORA = 1_800_000_000
@@ -26,8 +28,11 @@ def ajustes(**cambios):
 
 
 class RedisFalso:
-    def __init__(self, nodos=None):
+    def __init__(self, nodos=None, cadena=None, bloques=None):
         self.hashes = {f"nodo:{id_}": nodo for id_, nodo in (nodos or {}).items()}
+        for hash_, bloque in (bloques or {}).items():
+            self.hashes[f"bloque:{hash_}"] = bloque
+        self.listas = {"cadena": list(cadena or [])}
 
     def scan_iter(self, match, count=None):
         prefijo = match.rstrip("*")
@@ -38,6 +43,17 @@ class RedisFalso:
 
     def hset(self, clave, mapping):
         self.hashes.setdefault(clave, {}).update({k: str(v) for k, v in mapping.items()})
+
+    def lrange(self, clave, inicio, fin):
+        lista = self.listas.get(clave, [])
+        n = len(lista)
+        if inicio < 0:
+            inicio = max(0, n + inicio)
+        if fin < 0:
+            fin = n + fin
+        if fin < inicio or inicio >= n:
+            return []
+        return list(lista[inicio:fin + 1])
 
 
 def correr(t, redis, **cambios):
@@ -96,6 +112,62 @@ def test_tarea_invalida_se_descarta(cambio):
     redis = RedisFalso()
     assert correr({**tarea(), **cambio}, redis) == []
     assert "tarea:t1" not in redis.hashes
+
+
+def test_cargar_ajustes_por_defecto_usa_contrato_5(monkeypatch):
+    for var in ("SEGUNDOS_POR_BLOQUE", "VENTANA_AJUSTE", "AJUSTE_MAXIMO", "PREFIJO_INICIAL"):
+        monkeypatch.delenv(var, raising=False)
+    a = cargar_ajustes()
+    assert (a.segundos_objetivo, a.ventana_ajuste, a.ajuste_maximo, a.prefijo_inicial) == (60, 5, 1, 0)
+
+
+def test_ajuste_por_tiempo_desde_cadena_y_metricas():
+    gpu = {"gpu-1": {"tipo": "gpu", "bench": "2300000000", "ultimo_aviso": str(AHORA)}}
+    cadena = ["g", "b1", "b2", "b3", "b4", "b5"]
+    bloques = {
+        "g": {"altura": "0", "timestamp": "1000"},
+        **{f"b{i}": {"altura": str(i), "prefijo": "0000", "timestamp": str(1000 + i * 2)} for i in range(1, 6)},
+    }
+    redis = RedisFalso(gpu, cadena=cadena, bloques=bloques)
+    antes_tiempo = REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "tiempo"}) or 0
+    antes_techo = REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "techo"}) or 0
+
+    # Altura 5 (múltiplo de 5) y bloques cada 2 s frente a 60 s -> sube de 4 a 5
+    publicados = correr(tarea("t5"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5)
+    assert publicados[0][1]["prefijo"] == "00000"
+    assert REGISTRY.get_sample_value("blockchain_prefijo") == 5
+    assert REGISTRY.get_sample_value("blockchain_tiempo_bloque_esperado_segundos") == 60
+    assert REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "tiempo"}) == antes_tiempo + 1
+
+    # Si desaparece la GPU antes de la siguiente ventana (altura 5 todavía), baja por techo enseguida
+    redis.hashes["nodo:gpu-1"]["ultimo_aviso"] = str(AHORA - 60)
+    redis.hashes["nodo:cpu-lento"] = {"tipo": "cpu", "bench": "200000", "ultimo_aviso": str(AHORA)}
+    # 200 kH/s * 60 s = 1,2e7 -> techo 5; supongamos que los bloques eran de prefijo 6
+    redis.hashes["bloque:b5"]["prefijo"] = "000000"
+    publicados_sin_gpu = correr(tarea("t5-rearmada"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5)
+    assert publicados_sin_gpu[0][1]["prefijo"] == "00000"
+    assert REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "techo"}) == antes_techo + 1
+
+
+def test_duracion_guardada_ignora_huecos_ociosos_entre_bloques():
+    gpu = {"gpu-1": {"tipo": "gpu", "bench": "2300000000", "ultimo_aviso": str(AHORA)}}
+    cadena = ["g", "b1", "b2", "b3", "b4", "b5"]
+    # Timestamps muy separados (1 hora ociosa entre bloques), pero duración real de minado 2 s cada uno
+    bloques = {
+        "g": {"altura": "0", "timestamp": "0"},
+        **{f"b{i}": {"altura": str(i), "prefijo": "000", "timestamp": str(i * 3600), "duracion": "2.0"}
+           for i in range(1, 6)},
+    }
+    redis = RedisFalso(gpu, cadena=cadena, bloques=bloques)
+    publicados = correr(tarea("t6"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5)
+    assert publicados[0][1]["prefijo"] == "0000"  # subió de 3 a 4 pese al tiempo ocioso
+
+
+def test_convergencia_desde_prefijo_inicial_bajo():
+    gpu = {"gpu-1": {"tipo": "gpu", "bench": "2300000000", "ultimo_aviso": str(AHORA)}}
+    redis = RedisFalso(gpu, cadena=["g"], bloques={"g": {"altura": "0", "timestamp": "1000"}})
+    primero = correr(tarea("t1"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5, prefijo_inicial=2)
+    assert primero[0][1]["prefijo"] == "00"
 
 
 # --- Con RabbitMQ y Redis de verdad (INTEGRACION=1) -------------------------------------------

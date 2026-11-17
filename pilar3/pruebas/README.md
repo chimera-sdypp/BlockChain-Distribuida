@@ -5,6 +5,7 @@
 | [`bulks/`](bulks/README.md) | BC-38: bulks de 1 a 100.000 transacciones con k6 |
 | [`prefijos.py`](prefijos.py) y `grafico_prefijos.py` | BC-39: prefijo de 1 a 8 caracteres |
 | [`fragmentos.py`](fragmentos.py) | BC-40: fragmentación del pool del 1 % al 50 % |
+| [`dificultad.py`](dificultad.py) y `grafico_dificultad.py` | BC-60: ajuste de dificultad (convergencia y caída sin GPU) |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
@@ -84,3 +85,13 @@ pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --sa
 Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de prueba del génesis (alice, bob y carol, de `pilar2/comun/tests/claves.py`), que en GKE tienen saldos altos ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.
 
 La ráfaga de la demo: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`.
+
+## Ajuste de dificultad (BC-60)
+
+[`dificultad.py`](dificultad.py) arranca la cadena con `PREFIJO_INICIAL=2` y `PREFIJO_BASE=8`, espera que el prefijo vaya subiendo de a 1 cada `VENTANA_AJUSTE` bloques hasta acercarse al objetivo de 60 s (`SEGUNDOS_POR_BLOQUE`), y con `--esperar-gpu` pausa para desconectar la GPU y comprobar la bajada inmediata por techo de potencia viva. Al terminar deja el TrP en su configuración normal.
+
+```bash
+# Correr con cadena limpia (preparar.sh reiniciar antes)
+pilar2/.venv/bin/python pilar3/pruebas/dificultad.py --api http://<traefik> --salida pilar3/pruebas/resultados/dificultad.csv --esperar-gpu
+python pilar3/pruebas/grafico_dificultad.py
+```

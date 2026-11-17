@@ -32,7 +32,7 @@ spec:
             - { name: VMS_ACTIVAS, value: "0" }          # 1 cuando exista el módulo de BC-35
             - { name: VMS_MAXIMO, value: "3" }
             - { name: PREFIJO_BASE, value: "6" }          # el mismo que el TrP
-            - { name: SEGUNDOS_POR_BLOQUE, value: "30" }
+            - { name: SEGUNDOS_POR_BLOQUE, value: "60" }
             - { name: ESPERA_SUBIR_SEGUNDOS, value: "30" }
             - { name: ESPERA_BAJAR_SEGUNDOS, value: "120" }
             - name: REDIS_CLAVE

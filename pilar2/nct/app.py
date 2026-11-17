@@ -456,6 +456,9 @@ class Nct:
         timestamp = max(int(time.time()), despues_de + 1)
         vencida = self._relevar(keys=[contrato.TAREA_ULTIMA], args=[id_tarea])
         if vencida:
+            ts_vieja = self.redis.hget(contrato.TAREA.format(vencida), "timestamp")
+            if ts_vieja:
+                timestamp = max(timestamp, int(ts_vieja) + 1)
             log.info("La tarea %s venció sin bloque: se cierra y su caja se vuelve a armar", vencida)
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "altura": altura,
@@ -565,10 +568,11 @@ class Nct:
 
     def _guardar(self, id_tarea, tarea, transacciones, mensaje):
         prefijo, hash_, minero = tarea["prefijo"], mensaje["hash"], mensaje["minero"]
+        duracion = max(0.0, time.time() - float(tarea["publicada"]))
         del_bloque = contrato.transacciones_del_bloque(datos_tarea(tarea, transacciones), minero)
         bloque = {"previous_hash": tarea["previous_hash"], "timestamp": tarea["timestamp"],
                   "transactions": json.dumps(del_bloque), "nonce": mensaje["nonce"], "block_hash": hash_,
-                  "prefijo": prefijo}
+                  "prefijo": prefijo, "duracion": round(duracion, 3)}
         movimientos = [str(x) for tx in del_bloque
                        for x in (tx["id"], tx["origen"], tx["destino"], tx["monto"], tx["timestamp"])]
         resultado, *datos = self._consenso(
@@ -584,7 +588,7 @@ class Nct:
         hash_, altura = datos[0], int(datos[1])
         if resultado == "confirmada":
             BLOQUES.inc()
-            TIEMPO_BLOQUE.observe(max(0.0, time.time() - float(tarea["publicada"])))
+            TIEMPO_BLOQUE.observe(duracion)
             log.info("Bloque %d confirmado: %s (minó %s, cobra %d)", altura, hash_, minero, del_bloque[0]["monto"])
         self._esperar_replica(hash_)
         self.publicador.avisar(contrato.EXCHANGE_EVENTOS, contrato.BLOQUE_CONFIRMADO,

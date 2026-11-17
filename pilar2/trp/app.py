@@ -14,7 +14,7 @@ from prometheus_client import Counter, Gauge
 
 from comun import Rabbit, Servicio, config, contrato
 
-from .particion import largo_prefijo, partir, potencia_viva
+from .particion import decidir_prefijo, partir, potencia_viva
 from .resultados import SOLUCIONES, recibir
 
 log = logging.getLogger("trp")
@@ -24,6 +24,9 @@ HASH = re.compile(r"^[0-9a-f]{32}$")
 
 RANGOS_PUBLICADOS = Counter("blockchain_rangos_publicados", "Rangos de nonce publicados en la cola rangos")
 PREFIJO = Gauge("blockchain_prefijo", "Largo del prefijo elegido para la última tarea")
+PREFIJO_MOTIVO = Counter("blockchain_prefijo_elecciones", "Decisiones de prefijo del TrP por motivo", ["motivo"])
+TIEMPO_ESPERADO = Gauge("blockchain_tiempo_bloque_esperado_segundos",
+                        "Tiempo esperado por bloque configurado en el TrP")
 
 
 @dataclass(frozen=True)
@@ -31,9 +34,12 @@ class Ajustes:
     espacio: int            # se buscan nonces en [0, espacio - 1]
     porcentaje: int         # tamaño de cada rango, en % del espacio (1 a 50)
     prefijo_base: int       # caracteres del prefijo del sistema: el máximo
-    segundos_objetivo: int  # cuánto se quiere que tarde un bloque con los mineros vivos
+    segundos_objetivo: int  # cuánto se quiere que tarde un bloque (SEGUNDOS_POR_BLOQUE)
     ajustar: bool           # False: siempre el prefijo base (para la prueba de prefijos, BC-39)
     vivo_segundos: int      # un minero cuenta si avisó hace menos que esto
+    ventana_ajuste: int = 5     # cada cuántos bloques minados se reajusta por tiempo (VENTANA_AJUSTE)
+    ajuste_maximo: int = 1      # máximo de caracteres hex por ajuste (AJUSTE_MAXIMO)
+    prefijo_inicial: int = 0    # 0: arranca según la potencia; > 0: arranca bajo para convergencia
 
 
 def cargar_ajustes():
@@ -41,9 +47,12 @@ def cargar_ajustes():
         espacio=config.entero("ESPACIO_NONCES", 2**32),
         porcentaje=config.entero("FRAGMENTO_PORCENTAJE", 10),
         prefijo_base=config.entero("PREFIJO_BASE", 6),
-        segundos_objetivo=config.entero("SEGUNDOS_POR_BLOQUE", 30),
+        segundos_objetivo=config.entero("SEGUNDOS_POR_BLOQUE", 60),
         ajustar=config.entero("AJUSTAR_PREFIJO", 1) == 1,
         vivo_segundos=config.entero("VIVO_SEGUNDOS", 15),
+        ventana_ajuste=config.entero("VENTANA_AJUSTE", 5),
+        ajuste_maximo=config.entero("AJUSTE_MAXIMO", 1),
+        prefijo_inicial=config.entero("PREFIJO_INICIAL", 0),
     )
     if not 1 <= ajustes.porcentaje <= 50:
         raise ValueError("FRAGMENTO_PORCENTAJE va de 1 a 50")
@@ -51,6 +60,14 @@ def cargar_ajustes():
         raise ValueError("PREFIJO_BASE va de 1 a 32")
     if ajustes.espacio < 2 or ajustes.espacio > 2**64:
         raise ValueError("ESPACIO_NONCES va de 2 a 2^64")
+    if ajustes.segundos_objetivo < 1:
+        raise ValueError("SEGUNDOS_POR_BLOQUE tiene que ser >= 1")
+    if ajustes.ventana_ajuste < 1:
+        raise ValueError("VENTANA_AJUSTE tiene que ser >= 1")
+    if ajustes.ajuste_maximo < 0:
+        raise ValueError("AJUSTE_MAXIMO no puede ser negativo")
+    if not 0 <= ajustes.prefijo_inicial <= 32:
+        raise ValueError("PREFIJO_INICIAL va de 0 a 32")
     return ajustes
 
 
@@ -72,12 +89,20 @@ def errores_tarea(tarea):
     return errores
 
 
-def elegir_prefijo(redis, ajustes, ahora):
+def elegir_prefijo_con_motivo(redis, ajustes, ahora):
+    """Elige `(prefijo_hex, motivo)` combinando tiempo de bloques previos y techo por potencia viva."""
     if not ajustes.ajustar:
-        return "0" * ajustes.prefijo_base
+        return "0" * ajustes.prefijo_base, "fijo"
     nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=100)]
     potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos)
-    return "0" * largo_prefijo(potencia, ajustes.segundos_objetivo, ajustes.prefijo_base)
+    hashes = redis.lrange(contrato.CADENA, -(ajustes.ventana_ajuste + 1), -1) if hasattr(redis, "lrange") else []
+    bloques = [b for b in (redis.hgetall(contrato.BLOQUE.format(h)) for h in hashes) if b]
+    largo, motivo = decidir_prefijo(potencia, bloques, ajustes)
+    return "0" * largo, motivo
+
+
+def elegir_prefijo(redis, ajustes, ahora):
+    return elegir_prefijo_con_motivo(redis, ajustes, ahora)[0]
 
 
 def particionar(tarea, redis, publicar, ajustes, ahora=None):
@@ -95,7 +120,7 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
     if errores:
         log.error("Tarea inválida, se descarta (%s): %r", ", ".join(errores), tarea)
         return
-    prefijo = elegir_prefijo(redis, ajustes, time.time() if ahora is None else ahora)
+    prefijo, motivo = elegir_prefijo_con_motivo(redis, ajustes, time.time() if ahora is None else ahora)
     rangos = partir(ajustes.espacio, ajustes.porcentaje)
     redis.hset(contrato.TAREA.format(tarea["tarea"]), mapping={"prefijo": prefijo, "rangos": len(rangos)})
     for numero, (desde, hasta) in enumerate(rangos):
@@ -103,12 +128,15 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
                           "prefijo": prefijo})
     RANGOS_PUBLICADOS.inc(len(rangos))
     PREFIJO.set(len(prefijo))
-    log.info("Tarea %s: %d transacciones, prefijo %s, %d rangos del %d %%",
-             tarea["tarea"], len(tarea["transacciones"]), prefijo, len(rangos), ajustes.porcentaje)
+    PREFIJO_MOTIVO.labels(motivo).inc()
+    TIEMPO_ESPERADO.set(ajustes.segundos_objetivo)
+    log.info("Tarea %s: %d transacciones, prefijo %s (%s), %d rangos del %d %%",
+             tarea["tarea"], len(tarea["transacciones"]), prefijo, motivo, len(rangos), ajustes.porcentaje)
 
 
 def main():
     ajustes = cargar_ajustes()
+    TIEMPO_ESPERADO.set(ajustes.segundos_objetivo)
     servicio = Servicio("trp", colas=[TAREAS, RANGOS])
     servicio.log.info("Ajustes: %s", ajustes)
     servicio.servir_http()

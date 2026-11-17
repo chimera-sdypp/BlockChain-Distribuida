@@ -120,7 +120,7 @@ class Tofu:
 def cargar_ajustes():
     ajustes = Ajustes(
         prefijo_base=config.entero("PREFIJO_BASE", 6),
-        segundos_objetivo=config.entero("SEGUNDOS_POR_BLOQUE", 30),
+        segundos_objetivo=config.entero("SEGUNDOS_POR_BLOQUE", 60),
         maximo=config.entero("VMS_MAXIMO", 3),
         hps_vm=config.entero("HPS_POR_VM", 1_000_000),
         espera_subir=config.entero("ESPERA_SUBIR_SEGUNDOS", 30),

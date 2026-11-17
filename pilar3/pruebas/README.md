@@ -4,6 +4,7 @@
 |---|---|
 | [`bulks/`](bulks/README.md) | BC-38: bulks de 1 a 100.000 transacciones con k6 |
 | [`prefijos.py`](prefijos.py) y `grafico_prefijos.py` | BC-39: prefijo de 1 a 8 caracteres |
+| [`fragmentos.py`](fragmentos.py) | BC-40: fragmentación del pool del 1 % al 50 % |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
@@ -58,6 +59,25 @@ python pilar3/pruebas/grafico_prefijos.py
 - Hasta 5 caracteres no se mide el minado sino el resto del sistema (RabbitMQ, TrP, sondeo del minero, confirmación en Redis).
 - Con CPU se ve el ×16 por carácter desde el 6; con 8 harían falta ~17 min y el NCT vence la tarea a los 10 (`TAREA_VENCE`).
 - Con 8 caracteres hacen falta 16⁸ = 2³² intentos, el mismo tamaño que `ESPACIO_NONCES`: 3 de 8 tareas no tuvieron solución (e⁻¹ ≈ 37 %) y el NCT las rearmó con otro timestamp.
+
+## Fragmentación del 1 % al 50 % (BC-40)
+
+[`fragmentos.py`](fragmentos.py) fija el prefijo (sin ajuste) y recorre `FRAGMENTO_PORCENTAJE` (por defecto 1, 5, 10, 25 y 50). Manda una transacción por bloque y mide:
+
+- de los logs del NCT, el tiempo por bloque, igual que `prefijos.py`;
+- de los del TrP, en cuántos rangos se partió la tarea y en cuál cayó el nonce ganador;
+- de los del gateway, los rangos prestados (en total y hasta que llegó el ganador), los cortados a medio minar, los descartados sin prestar, los vencidos y cuántos tuvo cada minero.
+
+Al terminar, deja el TrP como estaba.
+
+```bash
+pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --salida pilar3/pruebas/resultados/fragmentos-gpu.csv --prefijo 7
+pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --salida pilar3/pruebas/resultados/fragmentos-cpu.csv --tipo cpu
+```
+
+- `prestados_hasta_ganar - 1` es el trabajo desperdiciado, contado en rangos y no en hashes: de un rango cortado no se sabe cuánto se llegó a minar.
+- Con `ESPACIO_NONCES = 2^32`, un rango del 1 % tiene ~43 M de nonces. Con prefijo 6 (~16 M intentos), en CPU la solución cae casi siempre en el primer rango que agarra cada minero, así que no se ve la sobrecarga de los rangos chicos. Para verla: GPU con prefijo 7 u 8, o un `--espacio` más chico. Con eso sube la probabilidad de una tarea sin solución, e^(−espacio/16^prefijo).
+- En CPU conviene `preparar.sh fijar-vms N` con N ≥ 3: con 50 % hay sólo 2 rangos y se ve un minero sin trabajo.
 
 ## Firmas (contrato v2)
 

@@ -105,7 +105,7 @@ Lo importante: **el criterio sólo elige p, pero minan todos**. El bloque tarda 
 - En el grupo de la prueba se separan tres: la suma (9), el máximo y el promedio (8) y el mínimo (6). Pasa con cualquier T4 de más de ~0,26 GH/s, así que no depende de la estimación. Sin las CPU, el mínimo sería una T4 y daría 8 como el resto.
 - Como p sube de a un carácter (×16), los criterios muchas veces coinciden, y aun con la suma el bloque tarda entre T/16 y T (con 1 GPU, 2,4 s y no 30). Los tiempos teóricos no incluyen el resto del sistema: en BC-39, hasta prefijo 5 un bloque tarda 1 a 2 s igual.
 
-**Medición en GKE**: [`potencia.py`](potencia.py) recorre los criterios con el ajuste prendido (`AJUSTAR_PREFIJO=1`), tope 9, `ESPACIO_NONCES=2^38` (con prefijo 9 hacen falta 2^36 intentos: quedan sin solución ~1,8 % de las tareas en vez de ~37 %) y 10 %, y saca de los logs del TrP el criterio, el prefijo y la potencia de cada tarea. Exige 3 GPU y 2 CPU vivos (`--gpus` y `--cpus` lo cambian). Al terminar deja el TrP como estaba. Con la medición, el gráfico calcula lo teórico con la potencia que registró el TrP (la suma) y no con la T4 estimada.
+**Medición en GKE**: [`potencia.py`](potencia.py) recorre los criterios con el ajuste prendido (`AJUSTAR_PREFIJO=1`), tope 9, `ESPACIO_NONCES=2^38` (con prefijo 9 hacen falta 2^36 intentos: quedan sin solución ~1,8 % de las tareas en vez de ~37 %) y 10 %, y saca de los logs del TrP el criterio, el prefijo y la potencia de cada tarea. Exige 3 GPU y 2 CPU vivos (`--gpus` y `--cpus` lo cambian). Con un TrP sin `CRITERIO_POTENCIA` (el de `main`), `--emular` lee el `bench` de los vivos de `/api/mineros`, calcula con `trp/particion.py` el prefijo de cada criterio y lo fija (`PREFIJO_BASE=p`, `AJUSTAR_PREFIJO=0`): mide lo mismo, porque minan todos igual. Al terminar deja el TrP como estaba. Con la medición, el gráfico calcula lo teórico con la potencia que registró el TrP (la suma) y no con la T4 estimada.
 
 El grupo: la RTX 4060 del k3s, 2 GPU de Colab ([`colab.ipynb`](../../pilar2/minero_gpu/colab.ipynb), cada una con su cuenta aprobada) y 2 VMs CPU fijas. Conviene hacerla en la misma sesión que BC-40, que con varias GPU también se ve mejor: primero `fragmentos.py --tipo gpu` sin VMs, después las VMs y esta.
 
@@ -114,6 +114,7 @@ El grupo: la RTX 4060 del k3s, 2 GPU de Colab ([`colab.ipynb`](../../pilar2/mine
 PROYECTO=<proyecto de GCP> pilar3/pruebas/preparar.sh fijar-vms 2
 pilar2/.venv/bin/python pilar3/pruebas/potencia_teorica.py
 pilar2/.venv/bin/python pilar3/pruebas/potencia.py --api http://<traefik> --salida pilar3/pruebas/resultados/potencia.csv
+#   … --emular si el TrP desplegado no es el de BC-59
 python pilar3/pruebas/grafico_potencia.py
 pilar3/pruebas/preparar.sh restaurar
 ```

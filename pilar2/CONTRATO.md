@@ -98,6 +98,14 @@ La red es privada (BC-58): sólo opera quien aprueba el organizador, como los va
 - **Saldo:** entra sólo por cargas del organizador (modelo exchange: la red opera la plata que se cargó adentro). El génesis de la red no trae saldos; `SALDOS_INICIALES` es sólo para las cuentas de prueba (alice, bob y carol) de los tests y las pruebas de carga.
 - Los pasos son Lua (`comun/altas.py`): dos réplicas del backend que aprueban lo mismo a la vez no se pisan.
 
+## Reparto según la potencia
+
+Cada minero recibe trabajo según su potencia medida (contrato 4, BC-59):
+
+- **El prefijo** lo elige el TrP con la **suma** de los `bench` de los mineros vivos (los que avisaron hace menos de `VIVO_SEGUNDOS`): el mayor p con 16^p ≤ suma × `SEGUNDOS_POR_BLOQUE`, entre 1 y `PREFIJO_BASE`. La suma, porque minan todos y el bloque tarda 16^p intentos dividido la potencia total del pool. `CRITERIO_POTENCIA` (promedio, mínimo o máximo) existe sólo para la prueba.
+- **El reparto** es por pull: todos los rangos miden lo mismo y cada minero pide otro cuando termina el suyo. El que tiene más potencia termina antes y se lleva más rangos. El gateway los cuenta en `historial:<minero>` (`rangos`).
+- **Fuente:** el vardiff del protocolo Stratum (pools de Bitcoin), que ajusta la dificultad de los shares de cada minero según su potencia. Acá no hay vardiff: los rangos y los shares tienen el mismo tamaño y la misma dificultad para todos. El porqué, en el [README del TrP](trp/README.md).
+
 ## Tarea modelo (bench)
 
 Iguales para todos: `bloque = "bench;"`, rango `[0, 2^24 − 1]` y prefijo `f` × 32, que no aparece nunca, así el minero recorre el rango entero. En la RTX 4060 tarda ~7 ms y en CPU con Python ~15 s (1,1 MH/s, un solo núcleo). El minero manda los segundos y los hashes/s, y queda clasificado en `nodo:<id>`.
@@ -141,7 +149,7 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | Clave | Tipo | Contenido |
 |---|---|---|
 | `cadena` | lista | Los `block_hash` en orden; la posición es la altura y el último es la punta |
-| `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), con su `altura` |
+| `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), su `altura` y su `duracion` (segundos reales de minado, BC-60) |
 | `saldos` | hash | cuenta → saldo |
 | `tx:<id>` | hash | origen, destino, monto, nonce, timestamp, firma, estado, motivo y bloque |
 | `cuentas` | hash | cuenta → JSON `{tipo: usuario \| minero \| organizador, nombre, alta}` (`alta` en segundos Unix). Sólo operan las que están acá |
@@ -165,6 +173,19 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva) y `shares` (cuántos le sumó) |
 | `escalador:claves` | hash | nombre de cada VM minero-cpu → su clave privada: el escalador se la genera, la aprueba y se la pasa por metadata (BC-57) |
 | `escalador:vms` | string | Las VMs pedidas cuando el escalador corre con `VMS_ACTIVAS=0` (simuladas); con VMs de verdad, la cantidad está en el state de OpenTofu |
+
+## Ajuste de dificultad (BC-60)
+
+El TrP ajusta el largo del prefijo combinando el tiempo real de los bloques anteriores con el techo que impone la potencia viva:
+
+- **Tiempo esperado (`SEGUNDOS_POR_BLOQUE`):** `60` segundos (1 minuto, consistente con el documento integrador).
+- **Reajuste por tiempo:** cada `VENTANA_AJUSTE` (`5`) bloques minados se promedia la duración de la última ventana (`duracion` en `bloque:<hash>`, o la diferencia entre sus `timestamp` si no está) y se calcula:
+  $$\text{nuevo} = \text{actual} + \text{redondeo}\!\left(\log_{16}\!\left(\frac{\text{esperado}}{\text{real}}\right)\right)$$
+  acotado a `±AJUSTE_MAXIMO` (`±1` carácter por ajuste, entre `1` y `PREFIJO_BASE`). Como $\log_{16}(4) = 0{,}5$, el prefijo sube recién cuando los bloques salen al menos 4 veces más rápido de lo esperado y baja cuando tardan al menos 4 veces más.
+- **Convivencia con la potencia viva:** `largo_prefijo(potencia_viva, esperado, base)` fija el **techo** inmediato (`min(por_tiempo, techo)`). Si la GPU se desconecta, el prefijo baja en el acto al rearmar o vencer la tarea (`vencida`), sin esperar 5 bloques lentos; si todavía no hay bloques minados, arranca con ese techo (o con `PREFIJO_INICIAL` si se configura para pruebas).
+- **Fuentes:**
+  - Satoshi Nakamoto (2008), *Bitcoin: A Peer-to-Peer Electronic Cash System*, sección 4 (*Proof-of-Work*): ajuste de dificultad mediante promedio móvil para mantener una tasa promedio constante de bloques.
+  - Bitcoin Core (`src/pow.cpp`, `CalculateNextWorkRequired`): retarget cada 2016 bloques (`nTargetTimespan` / tiempo real), acotado a un factor máximo de $\times 4$ / $\div 4$ por ventana para evitar oscilaciones bruscas.
 
 ## Vector de prueba
 

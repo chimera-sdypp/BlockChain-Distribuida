@@ -6,8 +6,9 @@
 #   preparar.sh estado                 IP pública, altura, saldos, mineros y condiciones actuales
 #   preparar.sh reiniciar              BORRA LA CADENA: vacía Redis y las colas; el NCT carga el génesis
 #                                      de nuevo, con los SALDOS_INICIALES de su Deployment
-#   preparar.sh condiciones P A F      TrP con PREFIJO_BASE=P, AJUSTAR_PREFIJO=A (0 o 1) y
-#                                      FRAGMENTO_PORCENTAJE=F (el escalador, con el mismo PREFIJO_BASE)
+#   preparar.sh condiciones P A F [C]  TrP con PREFIJO_BASE=P, AJUSTAR_PREFIJO=A (0 o 1),
+#                                      FRAGMENTO_PORCENTAJE=F y, si viene, CRITERIO_POTENCIA=C (suma,
+#                                      promedio, minimo o maximo; BC-59). El escalador, con el mismo PREFIJO_BASE
 #   preparar.sh fijar-vms N            pausa el escalador en KEDA y deja N VMs minero-cpu
 #                                      (necesita tofu y PROYECTO, el proyecto de GCP)
 #   preparar.sh restaurar              TrP y escalador como en los manifiestos, y el escalador de nuevo
@@ -40,7 +41,7 @@ estado() {
     local ip
     ip=$(ip_publica)
     echo "Sistema:   http://$ip   (para correr.py: --url http://$ip)"
-    echo "TrP:       PREFIJO_BASE=$(env_de trp PREFIJO_BASE) AJUSTAR_PREFIJO=$(env_de trp AJUSTAR_PREFIJO) FRAGMENTO_PORCENTAJE=$(env_de trp FRAGMENTO_PORCENTAJE)   (vacío: el valor por defecto del TrP)"
+    echo "TrP:       PREFIJO_BASE=$(env_de trp PREFIJO_BASE) AJUSTAR_PREFIJO=$(env_de trp AJUSTAR_PREFIJO) FRAGMENTO_PORCENTAJE=$(env_de trp FRAGMENTO_PORCENTAJE) CRITERIO_POTENCIA=$(env_de trp CRITERIO_POTENCIA)   (vacío: el valor por defecto del TrP)"
     echo "Escalador: pausado en KEDA=$(k get scaledobject escalador -o jsonpath='{.metadata.annotations.autoscaling\.keda\.sh/paused-replicas}' 2>/dev/null || true)   (vacío: lo maneja KEDA)"
     echo "NCT:       SALDOS_INICIALES=$(env_de nct SALDOS_INICIALES)"
     local base="http://$ip"
@@ -110,8 +111,11 @@ condiciones() {
     local prefijo=${1:?falta PREFIJO_BASE} ajustar=${2:?falta AJUSTAR_PREFIJO} fragmento=${3:?falta FRAGMENTO_PORCENTAJE}
     [[ $prefijo =~ ^[0-9]+$ ]] && ((prefijo >= 1 && prefijo <= 32)) || { echo "::error::PREFIJO_BASE va de 1 a 32"; exit 1; }
     [[ $ajustar == 0 || $ajustar == 1 ]] || { echo "::error::AJUSTAR_PREFIJO es 0 o 1"; exit 1; }
+    local criterio=${4:-}
     [[ $fragmento =~ ^[0-9]+$ ]] && ((fragmento >= 1 && fragmento <= 50)) || { echo "::error::FRAGMENTO_PORCENTAJE va de 1 a 50"; exit 1; }
-    k set env deploy/trp PREFIJO_BASE="$prefijo" AJUSTAR_PREFIJO="$ajustar" FRAGMENTO_PORCENTAJE="$fragmento"
+    [[ -z $criterio || $criterio =~ ^(suma|promedio|minimo|maximo)$ ]] || { echo "::error::CRITERIO_POTENCIA es suma, promedio, minimo o maximo"; exit 1; }
+    k set env deploy/trp PREFIJO_BASE="$prefijo" AJUSTAR_PREFIJO="$ajustar" FRAGMENTO_PORCENTAJE="$fragmento" \
+        ${criterio:+CRITERIO_POTENCIA="$criterio"}
     # El escalador calcula las VMs con el prefijo del sistema: el mismo que el TrP.
     k set env deploy/escalador PREFIJO_BASE="$prefijo"
     k rollout status deploy/trp --timeout=5m
@@ -159,7 +163,7 @@ restaurar() {
     local manifiesto argumentos variable valor variables
     # Cada variable vuelve al valor del manifiesto, o se saca si el manifiesto no la pone.
     for despliegue in trp escalador; do
-        variables="PREFIJO_BASE AJUSTAR_PREFIJO FRAGMENTO_PORCENTAJE"
+        variables="PREFIJO_BASE AJUSTAR_PREFIJO FRAGMENTO_PORCENTAJE CRITERIO_POTENCIA ESPACIO_NONCES"
         [ "$despliegue" = escalador ] && variables="PREFIJO_BASE"
         manifiesto=$(env_del_manifiesto "$despliegue")
         argumentos=()

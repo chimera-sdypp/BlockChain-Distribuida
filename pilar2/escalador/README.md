@@ -22,7 +22,7 @@ El tercero existe para que el escalador siga vivo hasta borrar sus VMs (sus mine
 
 ## Cuántas VMs
 
-- **Objetivo:** que, sin GPU, un bloque con el prefijo base salga en unos `SEGUNDOS_POR_BLOQUE`. Con p caracteres hacen falta 16^p intentos en promedio, así que la potencia objetivo es 16^p / T (prefijo 6 y 30 s: ~560 kH/s, alcanza una VM).
+- **Objetivo:** que, sin GPU, un bloque con el prefijo base salga en unos `SEGUNDOS_POR_BLOQUE`. Con p caracteres hacen falta 16^p intentos en promedio, así que la potencia objetivo es 16^p / T (prefijo 6 y 60 s: ~280 kH/s, alcanza una VM).
 - Se descuenta lo que aportan los otros mineros CPU vivos, y se divide por el bench de las VMs vivas (si no hay ninguna, `HPS_POR_VM`). Tope: `VMS_MAXIMO`.
 - Con una GPU viva o sin trabajo (`tx:pendientes` y `cajas` vacías): 0.
 - **Sin oscilar:** sube recién tras `ESPERA_SUBIR_SEGUNDOS` seguidos sin GPU, y baja recién cuando el número menor se sostuvo `ESPERA_BAJAR_SEGUNDOS`.
@@ -35,7 +35,7 @@ El tercero existe para que el escalador siga vivo hasta borrar sus VMs (sus mine
 | `TOFU_DIR` | `/tofu` | El módulo de las instancias (BC-35): variable y output `cantidad`, state en el bucket |
 | `VMS_MAXIMO` | 3 | Tope de VMs |
 | `HPS_POR_VM` | 1000000 | Hashes/s supuestos de una VM mientras no haya una viva |
-| `PREFIJO_BASE` / `SEGUNDOS_POR_BLOQUE` | 6 / 30 | Los mismos que el TrP |
+| `PREFIJO_BASE` / `SEGUNDOS_POR_BLOQUE` | 6 / 60 | Los mismos que el TrP |
 | `ESPERA_SUBIR_SEGUNDOS` / `ESPERA_BAJAR_SEGUNDOS` | 30 / 120 | Ver «sin oscilar» |
 | `CICLO_SEGUNDOS` | 10 | Cada cuánto mira |
 

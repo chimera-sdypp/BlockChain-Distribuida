@@ -21,7 +21,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 import redis as redislib
 from prometheus_client import REGISTRY, Counter
-from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 
 from comun import Rabbit, Servicio, config, contrato
 from comun.altas import Altas
@@ -241,6 +241,7 @@ class Gateway:
         tuberia = self.redis.pipeline()
         tuberia.hset(PRESTAMO.format(miembro), mapping={"mensaje": json.dumps(mensaje), "minero": minero})
         tuberia.zadd(contrato.PRESTAMOS, {miembro: time.time() + self.lease})
+        tuberia.hincrby(contrato.HISTORIAL.format(minero), "rangos", 1)  # el reparto por minero (BC-59)
         tuberia.execute()
         log.info("Rango %s prestado a %s", miembro, minero)
         return {**mensaje, "bloque": texto}
@@ -371,9 +372,24 @@ class Gateway:
                 totales[tipo][1] += float(hps or bench or 0)
         return totales
 
+    def rangos_por_minero(self):
+        """[(alias, tipo, rangos prestados)] de cada nodo:*; sin alias, el principio de la cuenta (BC-59)."""
+        claves = list(self.redis.scan_iter(match=contrato.NODOS, count=100))
+        cuentas = [clave.split(":", 1)[1] for clave in claves]
+        tuberia = self.redis.pipeline(transaction=False)
+        for clave, cuenta in zip(claves, cuentas):
+            tuberia.hmget(clave, "alias", "tipo")
+            tuberia.hget(contrato.HISTORIAL.format(cuenta), "rangos")
+        respuestas = tuberia.execute()
+        return [(alias or cuenta[:8], tipo or "", int(rangos or 0))
+                for cuenta, (alias, tipo), rangos in zip(cuentas, respuestas[::2], respuestas[1::2])]
+
 
 class ColectorMineros:
-    """Mineros vivos y hashes/s por tipo, leídos de Redis al momento del scrape."""
+    """Mineros vivos y hashes/s por tipo, y rangos prestados a cada minero, leídos de Redis al momento del scrape.
+
+    Las réplicas del gateway leen el mismo Redis y exponen lo mismo: en Grafana, `max`, no `sum`.
+    """
 
     def __init__(self):
         self.gateway = None
@@ -381,15 +397,20 @@ class ColectorMineros:
     def collect(self):
         mineros = GaugeMetricFamily("blockchain_mineros", "Mineros vivos por tipo", labels=["tipo"])
         hashes = GaugeMetricFamily("blockchain_hashes_por_segundo", "Potencia viva por tipo", labels=["tipo"])
+        rangos = CounterMetricFamily("blockchain_minero_rangos", "Rangos prestados a cada minero",
+                                     labels=["minero", "tipo"])
         if self.gateway is not None:
             try:
                 for tipo, (cantidad, hps) in self.gateway.mineros_vivos().items():
                     mineros.add_metric([tipo], cantidad)
                     hashes.add_metric([tipo], hps)
+                for alias, tipo, cantidad in self.gateway.rangos_por_minero():
+                    rangos.add_metric([alias, tipo], cantidad)
             except Exception:
                 log.exception("No se pudieron leer los mineros para /metrics")
         yield mineros
         yield hashes
+        yield rangos
 
 
 COLECTOR = ColectorMineros()

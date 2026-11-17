@@ -18,6 +18,7 @@ Cada pedido va **firmado con la clave del minero** (BC-57): `X-Minero` (su cuent
 
 - **Texto (BC-62):** el TrP publica los rangos sin texto. Al prestar uno, el gateway arma el texto de ese minero con los datos de `tarea:<id>` (los del NCT y el prefijo del TrP) y lo guarda en memoria por (tarea, minero): no recalcula la raíz en cada rango. Como cada minero mina un texto distinto, un nonce robado no le sirve a otro.
 - **Shares (BC-63):** verifica cada uno (que esté en el rango prestado y que su hash cumpla el prefijo menos un carácter) y un Lua los suma en `shares:<época>` y `historial:<minero>` sólo si la tarea sigue en curso, si el préstamo es de ese minero, sin repetidos (`tarea:<id>:shares`) y hasta 64 por préstamo.
+- **Rangos por minero (BC-59):** cada rango que presta (no el bench del `/hello` ni los de tareas cerradas, que descarta) suma 1 a `rangos` en `historial:<minero>`. Así se ve el reparto según la potencia: la GPU termina antes y pide otro, entonces se lleva más.
 
 ## Préstamos
 
@@ -43,7 +44,7 @@ No hace falta suscribirse a `eventos`, y un pod que se reinicia no pierde nada.
 | `MINERO_VIVO_SEGUNDOS` | 15 | Desde cuándo un minero sin avisar deja de contar en las métricas |
 | `COLA_RANGOS` · `COLA_RESULTADOS` | `rangos` · `resultados` | Las colas (los tests usan temporales) |
 
-Métricas: `blockchain_tareas_entregadas_total`, `blockchain_prestamos_vencidos_total`, `blockchain_shares_total{resultado}` (aceptado o descartado), `blockchain_pedidos_rechazados_total{motivo}` (firma o no_aprobado), y `blockchain_mineros{tipo}` y `blockchain_hashes_por_segundo{tipo}`, leídas de `nodo:*` (sólo los vivos). Las dos réplicas reportan lo mismo, así que KEDA tiene que usar `max`.
+Métricas: `blockchain_tareas_entregadas_total`, `blockchain_prestamos_vencidos_total`, `blockchain_shares_total{resultado}` (aceptado o descartado), `blockchain_pedidos_rechazados_total{motivo}` (firma o no_aprobado), `blockchain_mineros{tipo}` y `blockchain_hashes_por_segundo{tipo}`, leídas de `nodo:*` (sólo los vivos), y `blockchain_minero_rangos_total{minero, tipo}`, de `historial:<minero>` (`minero` es el alias de `nodo:<cuenta>`, o los primeros 8 caracteres de la cuenta). Las dos réplicas reportan lo mismo de Redis, así que KEDA y Grafana tienen que usar `max`.
 
 ## Ejecutar y probar (desde `pilar2/`)
 

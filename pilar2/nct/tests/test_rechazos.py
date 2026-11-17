@@ -94,6 +94,7 @@ def test_si_vence_la_tarea_actual_la_vieja_queda_vencida_y_se_arma_otra_con_la_m
     assert redis.hget(f"tarea:{vieja}", "estado") == "vencida"
     assert redis.hget(f"tarea:{nueva}", "estado") == "en_curso"
     assert redis.hget(f"tarea:{nueva}", "caja") == redis.hget(f"tarea:{vieja}", "caja")
+    assert int(redis.hget(f"tarea:{nueva}", "timestamp")) > int(redis.hget(f"tarea:{vieja}", "timestamp"))
 
 
 def test_la_solucion_tardia_de_una_tarea_vencida_no_entra(armar, redis, publicador):

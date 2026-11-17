@@ -1,7 +1,7 @@
 # Prepara GKE para las pruebas de carga del Pilar 3 (BC-38 a BC-41) y lo deja como estaba. Sólo a mano
 # (Actions → «Pilar 3 · Preparar prueba» → Run workflow). Corre pilar3/pruebas/preparar.sh:
 #   estado     IP pública, altura, saldos, mineros y condiciones (no cambia nada)
-#   preparar   (opcional) reinicia la cadena, fija prefijo y fragmentación, y (opcional) fija las VMs
+#   preparar   (opcional) reinicia la cadena, fija prefijo, fragmentación y criterio de potencia, y (opcional) fija las VMs
 #   restaurar  TrP y escalador como en los manifiestos
 # Mientras se mide nadie mergea a main: el Pipeline 3 volvería a aplicar los manifiestos.
 name: "Pilar 3 · Preparar prueba"
@@ -30,6 +30,11 @@ on:
         description: "Con preparar: FRAGMENTO_PORCENTAJE del TrP (1 a 50)"
         type: string
         default: "10"
+      criterio_potencia:
+        description: "Con preparar y ajuste: cómo junta el TrP la potencia de los mineros para el prefijo (BC-59; vacío: no se toca)"
+        type: choice
+        options: ["", suma, promedio, minimo, maximo]
+        default: ""
       vms_cpu:
         description: "Con preparar: cuántas VMs minero-cpu dejar fijas, con el escalador pausado (vacío: no se toca)"
         type: string
@@ -52,6 +57,7 @@ jobs:
       PREFIJO: ${{ inputs.prefijo_base }}
       AJUSTAR: ${{ inputs.ajustar_prefijo && '1' || '0' }}
       FRAGMENTO: ${{ inputs.fragmento_porcentaje }}
+      CRITERIO: ${{ inputs.criterio_potencia }}
       VMS: ${{ inputs.vms_cpu }}
       PROYECTO: ${{ vars.GCP_PROYECTO }}
     steps:
@@ -78,9 +84,9 @@ jobs:
             exit 1
           fi
           pilar3/pruebas/preparar.sh reiniciar
-      - name: Prefijo y fragmentación
+      - name: Prefijo, fragmentación y criterio
         if: inputs.accion == 'preparar'
-        run: pilar3/pruebas/preparar.sh condiciones "$PREFIJO" "$AJUSTAR" "$FRAGMENTO"
+        run: pilar3/pruebas/preparar.sh condiciones "$PREFIJO" "$AJUSTAR" "$FRAGMENTO" "$CRITERIO"
       - name: VMs fijas
         if: inputs.accion == 'preparar' && inputs.vms_cpu != ''
         run: pilar3/pruebas/preparar.sh fijar-vms "$VMS"

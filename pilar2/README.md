@@ -107,7 +107,7 @@ kubectl -n monitoring port-forward svc/monitoreo-grafana 3000:80    # http://loc
 kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d
 ```
 
-- **Dashboard «Blockchain distribuida»:** transacciones, bloques, mineros y prefijo, reparto del trabajo, colas, VMs del escalador, CPU y memoria por pod, errores y logs. `$app` filtra por servicio y `$nivel` filtra los logs. Grafana no tiene disco: el dashboard y los datasources (`prometheus` y `loki`) vuelven a cargarse en cada arranque.
+- **Dashboard «Blockchain distribuida»:** transacciones, bloques, mineros y prefijo, reparto del trabajo (con los rangos por minero y por tipo), colas, VMs del escalador, CPU y memoria por pod, errores y logs. `$app` filtra por servicio y `$nivel` filtra los logs. Grafana no tiene disco: el dashboard y los datasources (`prometheus` y `loki`) vuelven a cargarse en cada arranque.
 - **Errores:** cada log ERROR o superior de un servicio suma a `blockchain_errores_total{servicio, tipo}` (lo hace `comun/registro`).
 - **Logs:** también los de un pod que ya no existe. En Grafana → Explore → Loki, p. ej. `{app="nct", nivel="ERROR"}`. Los de los mineros no entran (corren fuera del cluster).
 
@@ -161,11 +161,15 @@ Toma cada tarea de `tareas`, elige el prefijo, la parte en rangos de nonce y pub
 | `ESPACIO_NONCES` | 2^32 | Se buscan nonces en [0, ESPACIO − 1] |
 | `FRAGMENTO_PORCENTAJE` | 10 | Tamaño de cada rango en % del espacio (1 a 50): 1 % → 100 rangos, 50 % → 2 |
 | `PREFIJO_BASE` | 6 | Caracteres del prefijo del sistema: el máximo |
-| `SEGUNDOS_POR_BLOQUE` | 30 | Cuánto se quiere que tarde un bloque |
+| `SEGUNDOS_POR_BLOQUE` | 60 | Tiempo esperado por bloque (1 minuto, BC-60) |
+| `VENTANA_AJUSTE` | 5 | Cada cuántos bloques minados se reajusta el prefijo por tiempo |
+| `AJUSTE_MAXIMO` | 1 | Máximo de caracteres que cambia por ajuste (`±1` equivale a `×4` / `÷4`) |
+| `PREFIJO_INICIAL` | 0 | 0: arranca según potencia viva; > 0: arranca en ese largo (pruebas de convergencia) |
 | `AJUSTAR_PREFIJO` | 1 | 0: siempre el prefijo base (para la prueba de prefijos) |
 | `VIVO_SEGUNDOS` | 15 | Un minero cuenta si avisó hace menos que esto |
+| `CRITERIO_POTENCIA` | suma | Cómo se junta el `bench` de los vivos para el prefijo (`suma`, `promedio`, `minimo` o `maximo`). Fuera de la suma, sólo para la prueba de BC-59 |
 
-- **Prefijo:** con p caracteres hacen falta 16^p intentos en promedio. Con la potencia viva P (la suma de los `bench` de los mineros que avisaron hace menos de 15 s), el largo es el mayor p con 16^p ≤ P × 30 s, entre 1 y `PREFIJO_BASE`. Sin GPU baja (un minero CPU de 8,6 MH/s da 6; uno de 0,5 MH/s, 5); sin mineros vivos es 1, para que el primero que llegue lo resuelva enseguida.
+- **Prefijo (BC-21, BC-59 y BC-60):** `largo_prefijo` calcula el techo según la potencia viva P, la **suma** de los `bench` de los mineros que avisaron hace menos de 15 s (`16^p ≤ P × 60 s`, entre 1 y `PREFIJO_BASE`; sin mineros vivos, 1). Cada `VENTANA_AJUSTE` (5) bloques minados, `ajustar_por_tiempo` toma el promedio `real` de los últimos 5 bloques desde Redis (`cadena` y `bloque:<hash>`) y ajusta el largo con `redondeo(log16(esperado / real))` acotado a `±AJUSTE_MAXIMO` (`±1`, umbral ×4 como Bitcoin Core). El resultado final es `min(por_tiempo, techo)`, de modo que si se cae la GPU la dificultad baja de inmediato sin esperar 5 bloques lentos. Por qué la suma y no el promedio, el mínimo o el máximo, por qué el `bench` y cómo se reparte el trabajo según la potencia: [trp/README.md](trp/README.md).
 - Si el pod muere a mitad, la tarea vuelve a la cola y se repite entera: `tarea:<id>` queda igual y los rangos repetidos no molestan.
 
 También toma `resultados` (otra conexión, en otro hilo) y le pasa al NCT, por `soluciones`, sólo el ganador:

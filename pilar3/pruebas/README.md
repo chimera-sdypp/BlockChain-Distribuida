@@ -121,7 +121,19 @@ pilar3/pruebas/preparar.sh restaurar
 
 ![Tiempo por bloque según el criterio](resultados/potencia.png)
 
-Pendiente: la corrida en GKE (`resultados/potencia.csv`). Hasta entonces, el gráfico muestra sólo lo teórico.
+17/11, en GKE con `--emular` (el TrP de `main`, todavía sin `CRITERIO_POTENCIA`), 5 bloques por criterio, sin rearmados. El grupo, con el `bench` que registró cada uno: la RTX 4060 del k3s (`minero-gpu-0`, 0,69 GH/s, compartida), 2 T4 de Colab (0,94 y 0,98 GH/s) y 2 mineros CPU con 2 procesos cada uno (3,0 y 3,1 MH/s). Potencia total: 2,62 GH/s ([`resultados/potencia.csv`](resultados/potencia.csv)).
+
+| Criterio | Potencia | Prefijo | Teórico (16^p / 2,62 GH/s) | Medido: media (mín. a máx.) |
+|---|---|---|---|---|
+| suma | 2.615 MH/s | 9 | 26,3 s | **13,6 s** (4,1 a 26,7) |
+| promedio | 523 MH/s | 8 | 1,6 s | 2,9 s (1,3 a 4,0) |
+| máximo | 981 MH/s | 8 | 1,6 s | 1,9 s (0,8 a 2,9) |
+| mínimo | 3 MH/s | 6 | 0,006 s | 0,7 s (0,5 a 0,9) |
+
+- **La suma es la única que se acerca al objetivo de 30 s.** El promedio y el máximo eligen un carácter menos y el bloque sale ~16 veces antes; el mínimo, que lo elige una CPU, tres caracteres menos.
+- La media de la suma quedó por debajo de lo teórico: con 5 bloques la dispersión es grande (el tiempo hasta encontrar el nonce es exponencial: 4 a 27 s), no es un sesgo.
+- Con el mínimo el bloque no tarda 6 ms sino 0,7 s: es lo que tarda el resto del sistema (publicar la tarea, prestar los rangos, verificar y confirmar), como en BC-39 con prefijos cortos.
+- Ganaron las tres GPU, ninguna CPU: con estos prefijos, los rangos que agarran las CPU casi nunca llegan a tener la solución antes que una GPU.
 
 ## Firmas (contrato v2)
 

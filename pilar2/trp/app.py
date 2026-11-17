@@ -14,7 +14,7 @@ from prometheus_client import Counter, Gauge
 
 from comun import Rabbit, Servicio, config, contrato
 
-from .particion import decidir_prefijo, partir, potencia_viva
+from .particion import CRITERIOS, decidir_prefijo, partir, potencia_viva
 from .resultados import SOLUCIONES, recibir
 
 log = logging.getLogger("trp")
@@ -40,6 +40,7 @@ class Ajustes:
     ventana_ajuste: int = 5     # cada cuántos bloques minados se reajusta por tiempo (VENTANA_AJUSTE)
     ajuste_maximo: int = 1      # máximo de caracteres hex por ajuste (AJUSTE_MAXIMO)
     prefijo_inicial: int = 0    # 0: arranca según la potencia; > 0: arranca bajo para convergencia
+    criterio: str = "suma"  # cómo se junta la potencia de los vivos; otro que "suma", sólo para BC-59
 
 
 def cargar_ajustes():
@@ -53,6 +54,7 @@ def cargar_ajustes():
         ventana_ajuste=config.entero("VENTANA_AJUSTE", 5),
         ajuste_maximo=config.entero("AJUSTE_MAXIMO", 1),
         prefijo_inicial=config.entero("PREFIJO_INICIAL", 0),
+        criterio=config.texto("CRITERIO_POTENCIA", "suma"),
     )
     if not 1 <= ajustes.porcentaje <= 50:
         raise ValueError("FRAGMENTO_PORCENTAJE va de 1 a 50")
@@ -68,6 +70,8 @@ def cargar_ajustes():
         raise ValueError("AJUSTE_MAXIMO no puede ser negativo")
     if not 0 <= ajustes.prefijo_inicial <= 32:
         raise ValueError("PREFIJO_INICIAL va de 0 a 32")
+    if ajustes.criterio not in CRITERIOS:
+        raise ValueError(f"CRITERIO_POTENCIA va {', '.join(CRITERIOS)}, no {ajustes.criterio!r}")
     return ajustes
 
 
@@ -90,19 +94,30 @@ def errores_tarea(tarea):
 
 
 def elegir_prefijo_con_motivo(redis, ajustes, ahora):
-    """Elige `(prefijo_hex, motivo)` combinando tiempo de bloques previos y techo por potencia viva."""
+    """(prefijo, motivo, potencia en hashes/s): el ajuste por tiempo con el techo de la potencia viva (BC-60),
+    juntada según el criterio (BC-59). Sin ajuste, la potencia es None porque no se mira."""
     if not ajustes.ajustar:
-        return "0" * ajustes.prefijo_base, "fijo"
+        return "0" * ajustes.prefijo_base, "fijo", None
     nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=100)]
-    potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos)
+    potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos, ajustes.criterio)
     hashes = redis.lrange(contrato.CADENA, -(ajustes.ventana_ajuste + 1), -1) if hasattr(redis, "lrange") else []
     bloques = [b for b in (redis.hgetall(contrato.BLOQUE.format(h)) for h in hashes) if b]
     largo, motivo = decidir_prefijo(potencia, bloques, ajustes)
-    return "0" * largo, motivo
+    return "0" * largo, motivo, potencia
 
 
 def elegir_prefijo(redis, ajustes, ahora):
-    return elegir_prefijo_con_motivo(redis, ajustes, ahora)[0]
+    """(prefijo, potencia en hashes/s); sin ajuste, la potencia es None porque no se mira."""
+    prefijo, _, potencia = elegir_prefijo_con_motivo(redis, ajustes, ahora)
+    return prefijo, potencia
+
+
+def legible(hashes_por_segundo):
+    """1817200000 → "1,82 GH/s", como se escriben los números en los README."""
+    for divisor, unidad in ((1e9, "GH/s"), (1e6, "MH/s"), (1e3, "kH/s")):
+        if hashes_por_segundo >= divisor:
+            return f"{hashes_por_segundo / divisor:.2f} {unidad}".replace(".", ",")
+    return f"{hashes_por_segundo:.0f} H/s"
 
 
 def particionar(tarea, redis, publicar, ajustes, ahora=None):
@@ -120,7 +135,7 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
     if errores:
         log.error("Tarea inválida, se descarta (%s): %r", ", ".join(errores), tarea)
         return
-    prefijo, motivo = elegir_prefijo_con_motivo(redis, ajustes, time.time() if ahora is None else ahora)
+    prefijo, motivo, potencia = elegir_prefijo_con_motivo(redis, ajustes, time.time() if ahora is None else ahora)
     rangos = partir(ajustes.espacio, ajustes.porcentaje)
     redis.hset(contrato.TAREA.format(tarea["tarea"]), mapping={"prefijo": prefijo, "rangos": len(rangos)})
     for numero, (desde, hasta) in enumerate(rangos):
@@ -130,8 +145,10 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
     PREFIJO.set(len(prefijo))
     PREFIJO_MOTIVO.labels(motivo).inc()
     TIEMPO_ESPERADO.set(ajustes.segundos_objetivo)
-    log.info("Tarea %s: %d transacciones, prefijo %s (%s), %d rangos del %d %%",
-             tarea["tarea"], len(tarea["transacciones"]), prefijo, motivo, len(rangos), ajustes.porcentaje)
+    # Las pruebas de pilar3 leen esta línea (fragmentos.py, potencia.py, dificultad.py): agregar sólo al final.
+    detalle = "" if potencia is None else f", criterio {ajustes.criterio}, potencia {legible(potencia)}"
+    log.info("Tarea %s: %d transacciones, prefijo %s, %d rangos del %d %%%s, motivo %s",
+             tarea["tarea"], len(tarea["transacciones"]), prefijo, len(rangos), ajustes.porcentaje, detalle, motivo)
 
 
 def main():

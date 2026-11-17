@@ -137,3 +137,36 @@ def test_un_resultado_mal_formado_da_400(cliente, colas):
                  resultado_de(shares="todos"), resultado_de(shares=list(range(65)))):
         assert cliente.post("/results", malo).status_code == 400, malo
     assert sacar(colas, "resultados") is None
+
+
+# --- Rangos por minero (BC-59) ---------------------------------------------------------------------
+def test_cada_prestamo_suma_en_el_historial_del_minero(cliente, otro, redis, colas):
+    publicar_rangos(redis, colas, rango("t1", 0), rango("t1", 1), rango("t1", 2))
+    cliente.get("/tasks/next")
+    cliente.get("/tasks/next")
+    otro.get("/tasks/next")
+    assert redis.hget(f"historial:{CUENTA['minero']}", "rangos") == "2"
+    assert redis.hget(f"historial:{CUENTA['minero2']}", "rangos") == "1"
+
+
+def test_los_rangos_descartados_y_el_bench_no_suman(cliente, redis, colas):
+    publicar_rangos(redis, colas, rango("vieja", 0), estado="confirmada")
+    assert cliente.get("/tasks/next").status_code == 204
+    cliente.post("/hello", {"minero": CUENTA["minero"], "tipo": "cpu", "placa": "x"})  # le toca la tarea modelo
+    cliente.post("/bench", {"minero": CUENTA["minero"], "segundos": 15, "hashes_por_segundo": 1_100_000})
+    assert redis.hget(f"historial:{CUENTA['minero']}", "rangos") is None
+
+
+def test_las_metricas_cuentan_los_rangos_por_minero_con_su_alias(armar, redis):
+    armar()
+    redis.hset("nodo:" + "a" * 64, mapping={"tipo": "gpu", "alias": "gpu-tomas"})
+    redis.hset("historial:" + "a" * 64, "rangos", 7)
+    redis.hset("nodo:" + "b" * 64, mapping={"tipo": "cpu"})  # sin alias: el principio de la cuenta
+    redis.hset("historial:" + "b" * 64, "rangos", 3)
+    redis.hset("nodo:" + "c" * 64, mapping={"tipo": "cpu", "alias": "nuevo"})  # todavía sin rangos
+
+    muestra = lambda minero, tipo: REGISTRY.get_sample_value(  # noqa: E731
+        "blockchain_minero_rangos_total", {"minero": minero, "tipo": tipo})
+    assert muestra("gpu-tomas", "gpu") == 7
+    assert muestra("b" * 8, "cpu") == 3
+    assert muestra("nuevo", "cpu") == 0

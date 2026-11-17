@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 from trp.particion import (
+    CRITERIOS,
     ajustar_por_tiempo,
     decidir_prefijo,
     largo_prefijo,
@@ -44,6 +45,40 @@ def test_potencia_cuenta_solo_los_vivos():
         {"tipo": "cpu"},                                                           # sin aviso todavía
     ]
     assert potencia_viva(nodos, ahora, 15) == 2_308_000_000
+
+
+GRUPO = [  # 1 GPU y 2 CPU, todos vivos
+    {"tipo": "gpu", "bench": "1800000000", "ultimo_aviso": "100"},
+    {"tipo": "cpu", "bench": "8600000", "ultimo_aviso": "100"},
+    {"tipo": "cpu", "bench": "8600000", "ultimo_aviso": "100"},
+    {"tipo": "gpu", "bench": "9000000000", "ultimo_aviso": "0"},  # muerto: no cuenta para ningún criterio
+]
+
+
+@pytest.mark.parametrize("criterio, potencia, largo", [
+    ("suma", 1_817_200_000, 8),
+    ("promedio", 1_817_200_000 / 3, 8),
+    ("maximo", 1_800_000_000, 8),
+    ("minimo", 8_600_000, 6),  # 8,6 MH/s × 30 s ≈ 2,6 × 10^8 < 16^7
+])
+def test_cada_criterio_con_una_gpu_y_dos_cpu(criterio, potencia, largo):
+    assert potencia_viva(GRUPO, 105, 15, criterio) == pytest.approx(potencia)
+    assert largo_prefijo(potencia_viva(GRUPO, 105, 15, criterio), 30, base=8) == largo
+
+
+def test_por_defecto_la_suma():
+    assert potencia_viva(GRUPO, 105, 15) == potencia_viva(GRUPO, 105, 15, "suma")
+
+
+@pytest.mark.parametrize("criterio", CRITERIOS)
+def test_sin_mineros_vivos_la_potencia_es_cero(criterio):
+    assert potencia_viva([], 105, 15, criterio) == 0
+    assert potencia_viva(GRUPO, 10_000, 15, criterio) == 0
+
+
+def test_criterio_desconocido():
+    with pytest.raises(ValueError):
+        potencia_viva(GRUPO, 105, 15, "mediana")
 
 
 @pytest.mark.parametrize("potencia, largo", [

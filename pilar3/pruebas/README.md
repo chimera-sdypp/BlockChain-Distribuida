@@ -98,13 +98,38 @@ Datos: [`prefijos-gpu.csv`](resultados/prefijos-gpu.csv) y [`prefijos-cpu.csv`](
 Al terminar, deja el TrP como estaba.
 
 ```bash
-pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --salida pilar3/pruebas/resultados/fragmentos-gpu.csv --prefijo 7
-pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --salida pilar3/pruebas/resultados/fragmentos-cpu.csv --tipo cpu
+# GPU: sólo mineros GPU vivos (la corrida del 18/11)
+pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api https://<ingreso> --salida pilar3/pruebas/resultados/fragmentos-gpu.csv --prefijo 9 --espacio $((2**38))
+# CPU (opcional): sin GPU vivas y 3 VMs fijas
+pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api https://<ingreso> --salida pilar3/pruebas/resultados/fragmentos-cpu.csv --tipo cpu
+python pilar3/pruebas/graficos.py fragmentos
 ```
 
 - `prestados_hasta_ganar - 1` es el trabajo desperdiciado, contado en rangos y no en hashes: de un rango cortado no se sabe cuánto se llegó a minar.
 - Con `ESPACIO_NONCES = 2^32`, un rango del 1 % tiene ~43 M de nonces. Con prefijo 6 (~16 M intentos), en CPU la solución cae casi siempre en el primer rango que agarra cada minero, así que no se ve la sobrecarga de los rangos chicos. Para verla: GPU con prefijo 7 u 8, o un `--espacio` más chico. Con eso sube la probabilidad de una tarea sin solución, e^(−espacio/16^prefijo).
 - En CPU conviene `preparar.sh fijar-vms N` con N ≥ 3: con 50 % hay sólo 2 rangos y se ve un minero sin trabajo.
+
+**18/11, en GKE con la v0.3.0**, 5 bloques por %, prefijo 9 fijo y `ESPACIO_NONCES = 2^38` (como en BC-59: con 16⁹ = 2³⁶ intentos, queda sin solución ~1,8 % de las tareas). Tres GPU, con el `bench` que registró cada una: la RTX 4060 de Tomas (`7c62b51a90c2`, 2,12 GH/s), y dos T4 de Colab (`gpu-colab-mateo`, 1,66 GH/s, y `gpu-colab-tomas-1`, 1,65 GH/s): 5,4 GH/s en total. Sólo minar 16⁹ con las tres tarda en promedio ~13 s.
+
+![Tiempo por bloque y rangos prestados según el %](resultados/fragmentos.png)
+
+| % | Rangos por tarea | Nonces por rango (T4) | Tiempo: media (mediana; mín. a máx.) | Prestados por bloque | Mineros con rango |
+|---|---|---|---|---|---|
+| 1 | 100 | 2.750 M (~1,7 s) | 26,5 s (8,8; 3,9 a 79,9), 1 rearmado | 38,4 | 3 |
+| 5 | 20 | 13.700 M (~8 s) | 11,5 s (13,4; 0,9 a 17,7) | 5,2 | 2,6 |
+| **10** | 10 | 27.500 M (~17 s) | **9,2 s (4,7; 2,1 a 25,4)** | 3,6 | 3 |
+| 25 | 4 | 68.700 M (~42 s) | 15,0 s (7,3; 1,5 a 31,4) | 3,0 | 3 |
+| 50 | 2 | 137.400 M (~83 s) | 27,7 s (21,5; 2,0 a 55,3) | 2,0 | **2** |
+
+Datos: [`fragmentos-gpu.csv`](resultados/fragmentos-gpu.csv) y su [log](resultados/fragmentos-gpu.log).
+
+- **Con rangos grandes trabajan pocos mineros.** Con 50 % hay 2 rangos para 3 GPU: en los 5 bloques una quedó sin trabajo, se minó con dos tercios de la potencia (~19 s esperados) y, si el nonce cae lejos del principio de un rango, nadie ayuda a recorrerlo (55 y 51 s). Con 25 % hay 4 rangos y minan las tres, pero el cuarto queda para la primera que termina: si el nonce está ahí, se espera a que alguna recorra uno entero.
+- **Con rangos chicos sube la sobrecarga.** Con 1 %, cada rango dura ~1,7 s en una T4 y por bloque hubo hasta 111 préstamos: cada uno es un `GET /tasks/next` firmado, keep-alives y un resultado, y entre un rango y el siguiente la GPU no mina. Con rangos de 1,7 s, ese ida y vuelta pesa.
+- **El 10 % (el valor por defecto del TrP) fue el mejor:** más rangos que mineros, así que nadie queda parado, y cada uno dura lo suficiente (~17 s) como para que pedirlo no pese. Su media (9,2 s) está cerca de lo que tarda sólo minar (~13 s): por debajo, por el ruido de 5 bloques.
+- **El trabajo desperdiciado es poco en todos los %:** `prestados_hasta_ganar` coincide con `prestados` en 24 de 25 bloques (cuando llega el ganador casi no se presta nada más) y los rangos cortados a medio minar son 0 a 2 por bloque, uno por minero que estaba en otro rango. Lo que cambia con el % es cuánto se pierde en cada corte: con 50 % es un rango de 83 s.
+- **El ruido es grande:** el tiempo hasta encontrar el nonce es exponencial, así que con 5 bloques la dispersión es del orden de la media. La U se ve igual en la mediana (8,8 → 13,4 → 4,7 → 7,3 → 21,5 s), aunque el 5 % sale peor que el 25 %: con más bloques se ordenaría mejor.
+- **El rearmado del 1 %:** en el bloque 4 la primera tarea no tenía solución en las 2³⁸ (la probabilidad es ~1,8 %). Los mineros la recorrieron entera, el NCT la rearmó con otro timestamp y se encontró en el rango 10 de la segunda: 79,9 s y 111 préstamos. Sin ese bloque, la media del 1 % es 13,2 s.
+- **Reparto entre mineros:** parejo en todos los %. El préstamo es por pedido (el que termina pide otro) y no por potencia, así que con muchos rangos la más rápida debería recibir más. Con 1 % no pasó (38, 39 y 34 rangos) aunque el bench de la RTX es ~28 % mayor: la RTX es la PC de Tomas, compartida, y durante la corrida pudo minar por debajo de su bench.
 
 ## Entrada y salida de GPU (BC-41)
 
@@ -161,7 +186,7 @@ Capturas de Grafana del mismo período (horario de Argentina, 02:36 a 03:03):
 |---|---|---|
 | Bulks (BC-38): respuesta HTTP p50/p95/p99 y tiempo hasta confirmar contra el tamaño | `bulks/resultados.csv` | [`bulks.png`](resultados/bulks.png) |
 | Prefijo (BC-39): tiempo por bloque contra el largo, GPU y CPU | `resultados/prefijos-{gpu,cpu}.csv` | [`prefijos.png`](resultados/prefijos.png) |
-| Fragmentación (BC-40): tiempo por bloque y rangos prestados contra el % | `resultados/fragmentos-{gpu,cpu}.csv` | `fragmentos.png` (falta la corrida) |
+| Fragmentación (BC-40): tiempo por bloque y rangos prestados contra el % | `resultados/fragmentos-{gpu,cpu}.csv` | [`fragmentos.png`](resultados/fragmentos.png) |
 | Entrada y salida de GPU (BC-41): línea de tiempo de cada ciclo | `resultados/gpu-ciclos-*.csv` | [`gpu-ciclos.png`](resultados/gpu-ciclos.png) |
 
 ![Bulks](resultados/bulks.png)

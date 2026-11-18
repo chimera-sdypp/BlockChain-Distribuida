@@ -1,5 +1,6 @@
 // Lo que comparten las páginas: armar nodos, llamar a la API y firmar con WebCrypto Ed25519.
-// La privada se importa como CryptoKey no exportable: no sale nunca del navegador ni se guarda.
+// La privada se importa como CryptoKey no exportable: no sale nunca del navegador. Sólo el panel del organizador
+// la recuerda (en IndexedDB, como CryptoKey: sin poder leer sus bytes).
 "use strict";
 
 const $ = (id) => document.getElementById(id);

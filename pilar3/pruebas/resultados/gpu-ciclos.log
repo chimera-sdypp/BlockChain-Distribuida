@@ -1,0 +1,85 @@
+== ciclo 1: esperando el reposo
+== ciclo 1, salida
+     17.2 s  gpu_muerta
+     29.4 s  escalador_arriba
+     35.5 s  alerta_pendiente
+     67.0 s  vm_creada
+     73.2 s  vm_corriendo
+     97.3 s  alerta_disparada
+    116.8 s  cpu_viva
+   bloque 2939: prefijo 6, 117.753 s, cpu
+    128.5 s  primer_bloque_cpu
+== ciclo 1, vuelta
+   bloque 2940: prefijo 6, 7.639 s, gpu
+   bloque 2941: prefijo 5, 0.748 s, gpu
+      6.2 s  primer_bloque_gpu
+   bloque 2942: prefijo 5, 0.701 s, gpu
+   bloque 2943: prefijo 5, 3.133 s, gpu
+     12.2 s  gpu_viva
+     24.2 s  alerta_apagada
+   bloque 2944: prefijo 5, 1.583 s, gpu
+   bloque 2945: prefijo 5, 1.553 s, cpu
+   bloque 2946: prefijo 6, 2.694 s, gpu
+   bloque 2947: prefijo 6, 1.545 s, gpu
+   bloque 2948: prefijo 6, 2.405 s, gpu
+    155.0 s  cpu_muerta
+== ciclo 1, apagado
+   bloque 2949: prefijo 6, 1.007 s, gpu
+    175.1 s  escalador_abajo
+== ciclo 2: esperando el reposo
+== ciclo 2, salida
+     17.2 s  gpu_muerta
+     47.8 s  alerta_pendiente
+     47.8 s  escalador_arriba
+     84.0 s  vm_creada
+     90.1 s  vm_corriendo
+    108.3 s  alerta_disparada
+    126.2 s  cpu_viva
+   bloque 2950: prefijo 1, 111.054 s, cpu
+    138.2 s  primer_bloque_cpu
+   bloque 2951: prefijo 1, 2.178 s, cpu
+== ciclo 2, vuelta
+   bloque 2952: prefijo 1, 2.244 s, cpu
+   bloque 2953: prefijo 1, 2.129 s, cpu
+   bloque 2954: prefijo 1, 1.835 s, cpu
+     12.7 s  gpu_viva
+     31.6 s  alerta_apagada
+   bloque 2955: prefijo 1, 2.166 s, cpu
+   bloque 2956: prefijo 2, 2.312 s, cpu
+   bloque 2957: prefijo 2, 3.048 s, cpu
+   bloque 2958: prefijo 2, 2.003 s, gpu
+    130.6 s  primer_bloque_gpu
+   bloque 2959: prefijo 2, 3.003 s, gpu
+    161.3 s  cpu_muerta
+== ciclo 2, apagado
+   bloque 2960: prefijo 2, 1.718 s, gpu
+    191.6 s  escalador_abajo
+== ciclo 3: esperando el reposo
+== ciclo 3, salida
+     24.4 s  gpu_muerta
+     30.1 s  escalador_arriba
+     35.9 s  alerta_pendiente
+     67.0 s  vm_creada
+     79.9 s  vm_corriendo
+     92.4 s  alerta_disparada
+    116.4 s  cpu_viva
+   bloque 2961: prefijo 3, 116.389 s, cpu
+    128.4 s  primer_bloque_cpu
+   bloque 2962: prefijo 3, 2.139 s, cpu
+== ciclo 3, vuelta
+   bloque 2963: prefijo 1, 2.118 s, cpu
+   bloque 2964: prefijo 1, 2.173 s, cpu
+   bloque 2965: prefijo 1, 2.255 s, cpu
+     17.8 s  gpu_viva
+     23.2 s  alerta_apagada
+   bloque 2966: prefijo 1, 1.464 s, cpu
+   bloque 2967: prefijo 1, 0.827 s, gpu
+     65.9 s  primer_bloque_gpu
+   bloque 2968: prefijo 1, 1.638 s, gpu
+   bloque 2969: prefijo 1, 2.006 s, cpu
+   bloque 2970: prefijo 1, 2.692 s, gpu
+    160.7 s  cpu_muerta
+== ciclo 3, apagado
+   bloque 2971: prefijo 2, 1.335 s, gpu
+    188.8 s  escalador_abajo
+== 217 transferencias; el StatefulSet vuelve a 1 réplicas

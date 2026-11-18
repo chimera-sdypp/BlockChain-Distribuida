@@ -142,7 +142,7 @@ def hay_trabajo(redis):
 
 
 def leer_nodos(redis):
-    claves = list(redis.scan_iter(match=contrato.NODOS, count=100))
+    claves = list(redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
     tuberia = redis.pipeline(transaction=False)
     for clave in claves:
         tuberia.hgetall(clave)

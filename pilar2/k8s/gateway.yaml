@@ -53,10 +53,11 @@ spec:
             httpGet: { path: /health, port: http }
             periodSeconds: 5
             failureThreshold: 2
-          livenessProbe:
-            httpGet: { path: /metrics, port: http }
+          livenessProbe:  # /health: /metrics lee Redis y con muchas claves tarda más que la probe
+            httpGet: { path: /health, port: http }
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false

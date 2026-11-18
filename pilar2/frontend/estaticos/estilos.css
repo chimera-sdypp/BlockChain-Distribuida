@@ -38,6 +38,8 @@
   td.num, th.num { text-align: right; }
   form { display: grid; grid-template-columns: 1fr 8rem auto; gap: 8px; align-items: end; }
   form#form-clave { grid-template-columns: 1fr auto; }
+  label.casilla { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
+  label.casilla input { width: auto; }
   @media (max-width: 560px) { form, form#form-clave { grid-template-columns: 1fr; } }
   textarea { font: .8rem/1.4 var(--mono); color: var(--texto); background: var(--fondo); border: 1px solid var(--borde);
              border-radius: 6px; padding: 6px 8px; width: 100%; min-height: 3.2rem; resize: vertical; }

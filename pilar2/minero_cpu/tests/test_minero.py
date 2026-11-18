@@ -184,6 +184,32 @@ def test_minero_nuevo_resuelve_la_tarea_modelo(armar):
     assert resultado["segundos"] > 0 and resultado["hashes_por_segundo"] > 0
 
 
+def test_bench_corto_calienta_y_mide_despues(armar):
+    """Una vuelta corta (GPU): la primera, con la placa fría, no cuenta para el bench."""
+    class BuscadorFrio:
+        def __init__(self):
+            self.vueltas = 0
+
+        def buscar(self, bloque, desde, hasta, prefijo):
+            self.vueltas += 1
+            time.sleep(0.2 if self.vueltas == 1 else 0.01)
+            return None, False
+
+        def cortar(self):
+            pass
+
+        def cerrar(self):
+            pass
+
+    falso, minero = armar(bench=dict(contrato.BENCH, hasta=9_999))
+    minero.buscador.cerrar()
+    minero.buscador = BuscadorFrio()
+    minero.presentarse()
+    resultado = falso.de("/bench")[0]
+    assert minero.buscador.vueltas > 2
+    assert resultado["hashes_por_segundo"] > 10_000 / 0.05  # con la vuelta fría saldría 50 000
+
+
 def test_minero_conocido_no_hace_bench(armar):
     falso, minero = armar()
     minero.presentarse()

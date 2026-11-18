@@ -91,7 +91,9 @@ class GatewayFalso:
         self.bench = bench
         self.aprobados = set(aprobados)
         self.recibido = []        # (ruta, cuerpo)
+        self.rechazados = []      # las rutas que contestó con 403
         self.cortar = False
+        self.presentarse = False  # lo que contesta el keep-alive, hasta el próximo /bench
         falso = self
 
         class Manejador(BaseHTTPRequestHandler):
@@ -111,6 +113,7 @@ class GatewayFalso:
                     self._responder(401, {"error": motivo})
                     return None
                 if minero not in falso.aprobados:
+                    falso.rechazados.append(self.path)
                     self._responder(403, {"error": "no aprobado"})
                     return None
                 return minero
@@ -135,8 +138,9 @@ class GatewayFalso:
                 if self.path == "/hello":
                     self._responder(200, falso.bench or {"registrado": True})
                 elif self.path == "/keepalive":
-                    self._responder(200, {"cortar": falso.cortar})
+                    self._responder(200, {"cortar": falso.cortar, **({"presentarse": True} if falso.presentarse else {})})
                 elif self.path == "/bench":
+                    falso.presentarse = False
                     self._responder(204)
                 else:
                     self._responder(202, {"shares": len(cuerpo.get("shares", []))})
@@ -285,3 +289,40 @@ def test_la_clave_de_la_semilla_depende_del_alias():
     assert cargar_clave("x", privada=PRIVADA["minero"], semilla="s") == PRIVADA["minero"]
     with pytest.raises(ValueError):
         cargar_clave("x", privada="no es una clave")
+
+
+def esperar(condicion, segundos=10):
+    limite = time.monotonic() + segundos
+    while time.monotonic() < limite and not condicion():
+        time.sleep(0.05)
+    return condicion()
+
+
+def test_si_el_keepalive_pide_presentarse_repite_el_hello_y_el_bench(armar):
+    """BC-71: la cadena se reinició con el minero andando y el gateway perdió su tipo y su bench."""
+    falso, minero = armar(bench=dict(contrato.BENCH, hasta=9_999), latido=0.1)
+    threading.Thread(target=minero.trabajar, daemon=True).start()
+    assert esperar(lambda: falso.de("/keepalive"))
+    assert falso.de("/hello") == []
+
+    falso.presentarse = True
+    assert esperar(lambda: falso.de("/bench"))
+    hola = falso.de("/hello")[0]
+    assert hola["alias"] == "cpu-prueba" and hola["tipo"] == "cpu"
+    time.sleep(0.5)
+    assert len(falso.de("/bench")) == 1  # una vez presentado no lo vuelve a hacer
+
+
+def test_con_403_vuelve_al_hello_con_su_alias_y_hace_el_bench_cuando_lo_aprueban(armar):
+    """Rechazado a mitad de camino (cadena reiniciada): deja de pedir rangos e insiste sólo con el /hello."""
+    falso, minero = armar([rango(0, 5000, 9999, "f" * 32)], bench=dict(contrato.BENCH, hasta=9_999), latido=0.1)
+    falso.aprobados.clear()
+    threading.Thread(target=minero.trabajar, daemon=True).start()
+    assert esperar(lambda: falso.rechazados.count("/hello") >= 3)  # espera_aprobacion es 0,2 s en los tests
+    principal = [r for r in falso.rechazados if r != "/keepalive"]
+    assert principal[0] == "/tasks/next" and set(principal[1:]) == {"/hello"}
+
+    falso.aprobados.add(CUENTA["minero"])
+    assert esperar(lambda: falso.de("/bench") and falso.de("/results"))
+    assert falso.de("/hello")[0]["alias"] == "cpu-prueba"
+    assert [r for r, _ in falso.recibido].index("/hello") < [r for r, _ in falso.recibido].index("/tasks/next")

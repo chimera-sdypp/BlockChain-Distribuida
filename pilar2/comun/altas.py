@@ -11,10 +11,23 @@ from comun import contrato
 
 ALTAS_MAXIMAS = 1000  # pedidos pendientes como mucho: un pedido sólo cuesta generar una clave
 
-# KEYS: cuentas, altas:pendientes  ARGV: cuenta, pedido (JSON), máximo de pendientes
+# KEYS: cuentas, altas:pendientes  ARGV: cuenta, pedido (JSON), máximo de pendientes, renombrar ('1' o '0')
+# Con renombrar, un pedido que ya estaba toma el nombre del nuevo (BC-71: el alias del /hello le gana al
+# principio de la cuenta con que lo anotó un keep-alive).
 LUA_PEDIR = """
 if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then return 'aprobada' end
-if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 1 then return 'pedida' end
+local previo = redis.call('HGET', KEYS[2], ARGV[1])
+if previo then
+  if ARGV[4] == '1' then
+    local pedido, nombre = cjson.decode(previo), cjson.decode(ARGV[2]).nombre
+    if pedido.nombre ~= nombre then
+      pedido.nombre = nombre
+      redis.call('HSET', KEYS[2], ARGV[1], cjson.encode(pedido))
+      return 'renombrada'
+    end
+  end
+  return 'pedida'
+end
 if redis.call('HLEN', KEYS[2]) >= tonumber(ARGV[3]) then return 'lleno' end
 redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 return 'nueva'
@@ -50,10 +63,14 @@ class Altas:
         self._aprobar = redis.register_script(LUA_APROBAR)
         self._sacar = redis.register_script(LUA_SACAR)
 
-    def pedir(self, cuenta, tipo, nombre, ahora=None):
-        """Anota el pedido. Devuelve «nueva», «pedida» (ya estaba), «aprobada» (ya opera) o «lleno»."""
+    def pedir(self, cuenta, tipo, nombre, ahora=None, renombrar=False):
+        """Anota el pedido. Devuelve «nueva», «pedida» (ya estaba), «aprobada» (ya opera) o «lleno».
+
+        Con `renombrar`, si ya estaba pedido con otro nombre le pone este y devuelve «renombrada».
+        """
         pedido = json.dumps({"tipo": tipo, "nombre": nombre, "pedida": int(time.time() if ahora is None else ahora)})
-        return self._pedir(keys=[contrato.CUENTAS, contrato.ALTAS_PENDIENTES], args=[cuenta, pedido, self.maximas])
+        return self._pedir(keys=[contrato.CUENTAS, contrato.ALTAS_PENDIENTES],
+                           args=[cuenta, pedido, self.maximas, "1" if renombrar else "0"])
 
     def aprobar(self, cuenta, nombre="", ahora=None):
         """Pasa el pedido a `cuentas` con la fecha de alta. Devuelve {tipo, nombre, alta}, o None si no había pedido."""

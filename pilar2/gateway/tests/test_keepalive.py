@@ -5,7 +5,14 @@ import time
 import pytest
 
 from comun.tests.claves import CUENTA
+from gateway.tests.conftest import presentado
 from gateway.tests.test_rangos import publicar_rangos, rango
+
+
+@pytest.fixture(autouse=True)
+def ya_presentados(redis):
+    for nombre in ("minero", "minero2"):
+        presentado(redis, nombre)
 
 
 def prestado(cliente, redis, colas, tarea="t1", numero=0, **opciones):
@@ -63,3 +70,18 @@ def test_sin_rango_solo_dice_que_esta_vivo(cliente, redis):
 ])
 def test_un_keepalive_mal_formado_da_400(cliente, malo):
     assert cliente.post("/keepalive", malo).status_code == 400
+
+
+def test_sin_bench_le_pide_que_se_vuelva_a_presentar(cliente, redis, colas):
+    """BC-71: la cadena se reinició con el minero andando, así que su nodo:<id> ya no tiene tipo ni bench."""
+    prestado(cliente, redis, colas)
+    redis.delete(f"nodo:{CUENTA['minero']}")
+
+    assert cliente.post("/keepalive", aviso()).json() == {"cortar": False, "presentarse": True}
+    assert cliente.post("/keepalive", aviso(tarea=None)).json() == {"cortar": False, "presentarse": True}
+    assert redis.zscore("prestamos", "t1:0") > time.time() + 25  # el préstamo se renueva igual
+
+    cliente.post("/hello", {"minero": CUENTA["minero"], "tipo": "gpu", "placa": "RTX 4060"})
+    assert cliente.post("/keepalive", aviso()).json() == {"cortar": False, "presentarse": True}
+    cliente.post("/bench", {"minero": CUENTA["minero"], "segundos": 0.5, "hashes_por_segundo": 1_500_000_000})
+    assert cliente.post("/keepalive", aviso()).json() == {"cortar": False}

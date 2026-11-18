@@ -113,6 +113,9 @@ class Minero:
         self.rango = None          # el rango en curso, para el keep-alive
         self._lock = threading.Lock()  # el rango y sus shares, entre el hilo que mina y el del keep-alive
         self.detenido = threading.Event()
+        # El gateway no lo conoce (403) o perdió su nodo (`presentarse` en el keep-alive): pasa si la cadena
+        # se reinicia con el minero andando. Entre un rango y el siguiente repite el /hello y el bench (BC-71).
+        self.presentarse_de_nuevo = threading.Event()
 
     # --- Al arrancar -----------------------------------------------------------------------
     def presentarse(self):
@@ -121,6 +124,7 @@ class Minero:
                                                            "alias": self.alias})
         if not respuesta or "bloque" not in respuesta:
             log.info("Registrado en el gateway")
+            self.presentarse_de_nuevo.clear()
             return
         log.info("Minero nuevo: resuelvo la tarea modelo (%d nonces)", respuesta["hasta"] - respuesta["desde"] + 1)
         segundos, vueltas = self._tarea_modelo(respuesta), 1
@@ -132,8 +136,12 @@ class Minero:
             while segundos < MEDIR_AL_MENOS:
                 segundos, vueltas = segundos + self._tarea_modelo(respuesta), vueltas + 1
         hps = round(vueltas * (respuesta["hasta"] - respuesta["desde"] + 1) / segundos)
-        self._insistir("POST", "/bench", {"minero": self.cuenta, "segundos": round(segundos, 3), "hashes_por_segundo": hps})
+        codigo, _ = self._insistir("POST", "/bench", {"minero": self.cuenta, "segundos": round(segundos, 3),
+                                                      "hashes_por_segundo": hps})
         log.info("Bench: %.2f s, %d hashes/s", segundos, hps)
+        if codigo < 400:
+            # Al final: un keep-alive de mientras medía todavía veía el nodo sin bench.
+            self.presentarse_de_nuevo.clear()
 
     def _tarea_modelo(self, tarea):
         """Los segundos que tarda una vuelta de la tarea modelo."""
@@ -172,6 +180,10 @@ class Minero:
     def trabajar(self):
         threading.Thread(target=self._latir, name="keepalive", daemon=True).start()
         while not self.detenido.is_set():
+            if self.presentarse_de_nuevo.is_set():
+                log.info("El gateway no tiene mis datos (¿se reinició la cadena?): me vuelvo a presentar")
+                self.presentarse()
+                continue
             if not self.un_rango():
                 self.detenido.wait(self.espera)
 
@@ -188,22 +200,33 @@ class Minero:
             if rango:
                 aviso["shares"] = shares
             try:
-                _, respuesta = self.gateway.pedir("POST", "/keepalive", aviso)
+                codigo, respuesta = self.gateway.pedir("POST", "/keepalive", aviso)
             except (urllib.error.URLError, OSError) as error:
                 log.warning("Keep-alive sin respuesta: %r", error)
                 continue
             except ClaveRechazada:
                 continue  # lo informa el hilo principal
+            if codigo == 403 or (respuesta and respuesta.get("presentarse")):
+                self.presentarse_de_nuevo.set()
             if respuesta and respuesta.get("cortar") and rango is self.rango and rango is not None:
                 self.buscador.cortar()
 
     def _insistir(self, metodo, ruta, cuerpo=None):
-        """Reintenta mientras el gateway no conteste (espera creciente, hasta 30 s) o mientras la cuenta
-        no esté aprobada (403: cada `espera_aprobacion` segundos)."""
+        """Reintenta mientras el gateway no conteste (espera creciente, hasta 30 s).
+
+        Con 403 (cuenta sin aprobar) reintenta sólo el /hello, cada `espera_aprobacion` segundos: es el que
+        lleva el alias para el panel del organizador. Cualquier otro pedido devuelve el 403 y deja anotado
+        que hay que presentarse de nuevo.
+        """
         espera = 1
         while True:
             try:
                 codigo, respuesta = self.gateway.pedir(metodo, ruta, cuerpo)
+                if codigo == 403 and ruta != "/hello":
+                    if not self.presentarse_de_nuevo.is_set():
+                        log.warning("El gateway rechazó %s %s: la cuenta %s no está aprobada", metodo, ruta, self.cuenta)
+                    self.presentarse_de_nuevo.set()
+                    return codigo, None
                 if codigo == 403 and not self.detenido.is_set():
                     log.warning("La cuenta %s no está aprobada como minero: el organizador la tiene que aprobar. "
                                 "Reintento en %d s", self.cuenta, self.espera_aprobacion)

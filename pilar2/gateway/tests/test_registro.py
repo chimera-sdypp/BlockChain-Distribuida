@@ -58,6 +58,20 @@ def test_un_minero_sin_aprobar_queda_pedido_con_su_alias(armar, redis):
     assert json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["nombre"] == "gpu-intruso"
 
 
+def test_el_hello_le_pone_el_alias_a_un_pedido_que_anoto_un_keepalive(armar, redis):
+    """BC-71: con la cadena reiniciada, el primer pedido del minero puede ser un keep-alive, que no trae alias."""
+    _, cliente = armar("intruso")
+    aviso = {"minero": CUENTA["intruso"], "hashes_por_segundo": 1, "rango": None}
+    assert cliente.post("/keepalive", aviso).status_code == 403
+    assert json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["nombre"] == CUENTA["intruso"][:12]
+    pedida = json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["pedida"]
+
+    assert cliente.post("/hello", {**hola(CUENTA["intruso"]), "alias": "minero-gpu-0"}).status_code == 403
+
+    pedido = json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))
+    assert (pedido["nombre"], pedido["tipo"], pedido["pedida"]) == ("minero-gpu-0", "minero", pedida)
+
+
 def test_un_minero_sin_alias_queda_pedido_con_el_principio_de_la_cuenta(armar, redis):
     _, cliente = armar("intruso")
     cliente.post("/hello", {**hola(CUENTA["intruso"]), "alias": "no vale"})

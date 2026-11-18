@@ -52,25 +52,38 @@ Los scripts [`bulks/correr.py`](bulks/correr.py) y [`bulks/bulk.js`](bulks/bulk.
 [`prefijos.py`](prefijos.py) fija el prefijo del TrP (`PREFIJO_BASE=n`, `AJUSTAR_PREFIJO=0`), manda una transacción por bloque y toma de los logs del NCT el tiempo desde que publica la tarea hasta que confirma el bloque (si la tarea vuelve sin solución, desde la primera publicación). Al terminar deja el TrP como estaba.
 
 ```bash
-pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api http://<traefik> --salida resultados/prefijos-gpu.csv
-pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api http://<traefik> --salida resultados/prefijos-cpu.csv --tipo cpu --maximo 600
+# GPU: sólo mineros GPU vivos
+pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api https://<ingreso> --salida pilar3/pruebas/resultados/prefijos-gpu.csv
+# CPU: sin GPU vivas (la del k3s en 0 réplicas, Colab cortado) y 3 VMs fijas
+GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token) PROYECTO=<proyecto> pilar3/pruebas/preparar.sh fijar-vms 3
+pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api https://<ingreso> --salida pilar3/pruebas/resultados/prefijos-cpu.csv --tipo cpu --maximo 600
+pilar3/pruebas/preparar.sh restaurar   # el escalador borra las VMs cuando vuelve la GPU
 python pilar3/pruebas/grafico_prefijos.py
 ```
 
-13/11, 5 bloques por largo: GPU con la RTX 4060 del k3s; CPU con 3 VMs e2-highcpu-2 (el escalador con `PREFIJO_BASE=8` durante la corrida, para que pida el máximo).
+**18/11, en GKE con la v0.2.0** (contrato v2: firmas, coinbase y shares), 5 bloques por largo, `ESPACIO_NONCES = 2^32` y 10 % por rango:
+- **GPU:** la RTX 4060 del k3s (`minero-gpu-0`, bench 1,95 GH/s) y una T4 de Colab (1,06 GH/s): 3,0 GH/s en total.
+- **CPU:** 3 VMs e2-highcpu-2 (`minero-cpu-0..2`, bench 1,25-1,29 MH/s cada una): 3,8 MH/s en total.
 
 ![Tiempo por bloque según el prefijo](resultados/prefijos.png)
 
-| Prefijo | 1 GPU | 3 VMs CPU |
-|---|---|---|
-| 1 a 5 | 1,3 a 1,7 s | 0,8 a 1,5 s |
-| 6 | 1,8 s | 7,3 s |
-| 7 | 2,3 s | 72 s |
-| 8 | 9,4 s | sin bloque en 600 s |
+| Prefijo | 2 GPU: media (mín. a máx.) | 3 VMs CPU: media (mín. a máx.) | Sólo minar 16^p: GPU / CPU |
+|---|---|---|---|
+| 1 a 5 | 0,8 a 1,2 s (0,2 a 2,4) | 0,7 a 1,6 s (0,1 a 2,4) | < 1 ms / < 0,3 s |
+| 6 | 0,9 s (0,4 a 1,7) | 5,0 s (3,8 a 5,9) | 6 ms / 4,4 s |
+| 7 | 1,8 s (0,5 a 2,9) | 123 s (22 a 169) | 0,1 s / 70 s |
+| 8 | 5,8 s (1,3 a 11), 4 rearmados | 340 s (140 a 565), 0 rearmados | 1,4 s / 1.130 s |
 
-- Hasta 5 caracteres no se mide el minado sino el resto del sistema (RabbitMQ, TrP, sondeo del minero, confirmación en Redis).
-- Con CPU se ve el ×16 por carácter desde el 6; con 8 harían falta ~17 min y el NCT vence la tarea a los 10 (`TAREA_VENCE`).
-- Con 8 caracteres hacen falta 16⁸ = 2³² intentos, el mismo tamaño que `ESPACIO_NONCES`: 3 de 8 tareas no tuvieron solución (e⁻¹ ≈ 37 %) y el NCT las rearmó con otro timestamp.
+Datos: [`prefijos-gpu.csv`](resultados/prefijos-gpu.csv) y [`prefijos-cpu.csv`](resultados/prefijos-cpu.csv), con sus logs.
+
+- **Hasta 5 caracteres (GPU hasta 7) no se mide el minado sino el resto del sistema:** publicar la tarea, prestar los rangos, el sondeo del minero, verificar y confirmar en Redis. Es ~1 s, con o sin GPU.
+- **Con CPU se ve el ×16 por carácter desde el 6:** 5 s → 123 s → 340 s. Con GPU recién se nota en el 8.
+- **Con 8 caracteres hacen falta 16⁸ = 2³² intentos, el mismo tamaño que `ESPACIO_NONCES`.**
+  - Una tarea no tiene solución con probabilidad e⁻¹ ≈ 37 %: la GPU recorre las 2³² en ~1,4 s y el NCT la rearma con otro timestamp. Hubo 4 rearmados en 9 tareas, y por eso la media (5,8 s) es mayor que lo que tarda en minar.
+  - Con CPU no hubo ninguna sin solución en 5 (probabilidad 0,63⁵ ≈ 10 %). Si hubiera habido una, recorrer las 2³² le lleva ~19 min y el NCT la vence a los 10 (`TAREA_VENCE_SEGUNDOS`).
+  - Cuando la tarea tiene solución, está dentro de las 2³² y se encuentra antes que el promedio sin tope: se espera 0,42 × 2³² intentos, ~470 s con 3,8 MH/s. Por eso con CPU la media medida (340 s) queda por debajo de los 1.130 s de 16⁸ / potencia.
+- El tiempo hasta encontrar el nonce es exponencial: con 5 bloques la dispersión es grande (con CPU, prefijo 7, de 22 a 169 s).
+- **Contra el 13/11** (v1, 1 RTX y 3 VMs; los CSV viejos quedan en el historial de git): la GPU con prefijo 8 bajó de 9,4 a 5,8 s con la segunda placa; el prefijo 8 con CPU, que entonces no salió en 600 s, ahora salió 5 de 5. Hasta el 7 los tiempos son del mismo orden: la v2 (firmas, coinbase y shares) no agregó una demora que se note.
 
 ## Fragmentación del 1 % al 50 % (BC-40)
 

@@ -145,6 +145,18 @@ pilar3/pruebas/preparar.sh restaurar
 - Con el mínimo el bloque no tarda 6 ms sino 0,7 s: es lo que tarda el resto del sistema (publicar la tarea, prestar los rangos, verificar y confirmar), como en BC-39 con prefijos cortos.
 - Ganaron las tres GPU, ninguna CPU: con estos prefijos, los rangos que agarran las CPU casi nunca llegan a tener la solución antes que una GPU.
 
+### El reparto de rangos en Grafana
+
+Los paneles «Rangos por minero por minuto» y «Rangos por tipo», de la fila «Reparto del trabajo» del dashboard, cuentan los rangos que el gateway le presta a cada minero (`blockchain_minero_rangos_total`). Capturas del 17/11, de 23:19 a 23:30, en GKE con el código de `dev` y las condiciones normales (prefijo 6 fijo, 10 %). El grupo, con su `bench`: la RTX 4060 del k3s (`minero-gpu-0`, 1,44 GH/s), una T4 de Colab (`gpu-colab-tomas`, 0,98 GH/s) y 2 mineros CPU con 2 procesos cada uno (`cpu-mateo-1` y `cpu-mateo-2`, 3,0 y 3,1 MH/s). `gpu-colab-mateo` estaba apagado. Las transacciones las puso [`rafaga.sh`](rafaga.sh) en loop, de a 500.
+
+![Rangos por minero por minuto](resultados/potencia-rangos-por-minero.png)
+
+![Rangos por tipo](resultados/potencia-rangos-por-tipo.png)
+
+- **Las GPU se llevaron 17 rangos y las CPU 8**: el doble, con el mismo número de mineros de cada tipo.
+- La diferencia es mucho menor que la de potencia (~400 veces: 2,42 GH/s contra 6,1 MH/s). Lo más probable es que sea por el prefijo corto: el bloque sale en 1 a 2 s, así que casi todo el reparto pasa en el primer pedido de cada tarea, cuando todos agarran uno. Ese rango cuenta al prestarse, aunque la CPU no llegue a terminarlo (el TrP lo descarta con «ya resuelta»). Con un prefijo que tarde más, la GPU volvería a pedir muchas veces antes que la CPU.
+- Entre 23:23:40 y 23:25:40 todo está en 0: no hubo transacciones pendientes y el TrP no armó tareas.
+
 ## Firmas (contrato v2)
 
 Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de prueba del génesis (alice, bob y carol, de `pilar2/comun/tests/claves.py`), que en GKE tienen saldos altos ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.

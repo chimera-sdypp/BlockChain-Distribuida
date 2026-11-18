@@ -127,6 +127,31 @@
             "value": "CRITICAL"
           }
         ]
+      },
+      {
+        "type": "custom",
+        "name": "mineros",
+        "label": "Mineros",
+        "query": "vivos : 1,todos : 0",
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "selected": true,
+          "text": "vivos",
+          "value": "1"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "vivos",
+            "value": "1"
+          },
+          {
+            "selected": false,
+            "text": "todos",
+            "value": "0"
+          }
+        ]
       }
     ]
   },
@@ -602,7 +627,7 @@
       "type": "timeseries",
       "id": 8,
       "title": "Mineros vivos por tipo",
-      "description": "Avisaron hace menos de 15 s. Lo calcula el gateway desde Redis.",
+      "description": "Avisaron hace menos de 15 s. Lo calcula el gateway desde Redis. Un tipo sin mineros vivos no se dibuja.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -682,7 +707,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (tipo) (blockchain_mineros{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (tipo) (blockchain_mineros{pod=~\"(${app:regex})-.*\"}) > 0",
           "legendFormat": "{{tipo}}",
           "range": true
         }
@@ -692,7 +717,7 @@
       "type": "timeseries",
       "id": 9,
       "title": "Hashes por segundo por tipo",
-      "description": "Potencia viva: lo que reportan los mineros (o su bench).",
+      "description": "Potencia viva: lo que reportan los mineros (o su bench). Un tipo sin mineros vivos no se dibuja.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -771,7 +796,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (tipo) (blockchain_hashes_por_segundo{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (tipo) (blockchain_hashes_por_segundo{pod=~\"(${app:regex})-.*\"}) > 0",
           "legendFormat": "{{tipo}}",
           "range": true
         }
@@ -1239,7 +1264,7 @@
       "type": "timeseries",
       "id": 21,
       "title": "Rangos por minero por minuto",
-      "description": "Rangos que el gateway le prestó a cada minero (BC-59). La GPU termina antes y pide otro: se lleva más.",
+      "description": "Rangos que el gateway le prestó a cada minero (BC-59). La GPU termina antes y pide otro: se lleva más. Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1287,7 +1312,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero) (increase(blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}[1m]))",
+          "expr": "max by (minero) (increase(blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}[1m])) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "legendFormat": "{{minero}}",
           "range": true
         }
@@ -1297,7 +1322,7 @@
       "type": "bargauge",
       "id": 22,
       "title": "Rangos por tipo",
-      "description": "Rangos prestados en el rango de tiempo del dashboard, por tipo de minero (BC-59).",
+      "description": "Rangos prestados en el rango de tiempo del dashboard, por tipo de minero (BC-59). Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1339,7 +1364,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (tipo) (max by (minero, tipo) (increase(blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}[$__range])))",
+          "expr": "sum by (tipo) (max by (minero, tipo) (increase(blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}[$__range])) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros}))",
           "legendFormat": "{{tipo}}",
           "instant": true,
           "range": false
@@ -1363,7 +1388,7 @@
       "type": "table",
       "id": 24,
       "title": "Historial por minero",
-      "description": "Lo que guarda historial:<minero> en Redis (BC-54), por minero: si está vivo, cuándo se dio de alta, cuánto tiempo estuvo conectado, los bloques que ganó, lo que cobró (coinbase y participación), los shares (en total y en la época en curso), los rangos que le prestaron y su hashrate.",
+      "description": "Lo que guarda historial:<minero> en Redis (BC-54), por minero: si está vivo, cuándo se dio de alta, cuánto tiempo estuvo conectado, los bloques que ganó, lo que cobró (coinbase y participación), los shares (en total y en la época en curso), los rangos que le prestaron y su hashrate. Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1517,7 +1542,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1528,7 +1553,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_alta{pod=~\"(${app:regex})-.*\"}) * 1000",
+          "expr": "max by (minero, tipo) (blockchain_minero_alta{pod=~\"(${app:regex})-.*\"}) * 1000 and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1539,7 +1564,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_segundos_conectado_total{pod=~\"(${app:regex})-.*\"}) / 3600",
+          "expr": "max by (minero, tipo) (blockchain_minero_segundos_conectado_total{pod=~\"(${app:regex})-.*\"}) / 3600 and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1550,7 +1575,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_bloques_total{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_bloques_total{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1561,7 +1586,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_recompensas_total{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_recompensas_total{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1572,7 +1597,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_shares_total{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_shares_total{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1583,7 +1608,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_shares_epoca{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_shares_epoca{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1594,7 +1619,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1605,7 +1630,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero, tipo) (blockchain_minero_hashes_por_segundo{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero, tipo) (blockchain_minero_hashes_por_segundo{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "format": "table",
           "instant": true,
           "range": false
@@ -1654,7 +1679,7 @@
       "type": "timeseries",
       "id": 26,
       "title": "Hashrate por minero",
-      "description": "Hashes/s de cada minero en su último keep-alive (0 si dejó de avisar).",
+      "description": "Hashes/s de cada minero en su último keep-alive (0 si dejó de avisar). Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1702,7 +1727,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero) (blockchain_minero_hashes_por_segundo{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero) (blockchain_minero_hashes_por_segundo{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "legendFormat": "{{minero}}",
           "range": true
         }
@@ -1712,7 +1737,7 @@
       "type": "timeseries",
       "id": 27,
       "title": "Recompensas acumuladas por minero",
-      "description": "Lo que cobró cada minero: coinbase de los bloques que ganó y participación por shares al cerrar cada época (BC-62, BC-63).",
+      "description": "Lo que cobró cada minero: coinbase de los bloques que ganó y participación por shares al cerrar cada época (BC-62, BC-63). Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1760,7 +1785,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero) (blockchain_minero_recompensas_total{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero) (blockchain_minero_recompensas_total{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "legendFormat": "{{minero}}",
           "range": true
         }
@@ -1770,7 +1795,7 @@
       "type": "timeseries",
       "id": 28,
       "title": "Bloques ganados por minero",
-      "description": "Bloques cuya coinbase es de ese minero.",
+      "description": "Bloques cuya coinbase es de ese minero. Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1818,7 +1843,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero) (blockchain_minero_bloques_total{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero) (blockchain_minero_bloques_total{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "legendFormat": "{{minero}}",
           "range": true
         }
@@ -1828,7 +1853,7 @@
       "type": "timeseries",
       "id": 29,
       "title": "Shares por minero en la época en curso",
-      "description": "Shares aceptados en la época (10 bloques): con esto se reparte el fondo de participación al cerrarla. Vuelve a 0 en cada época.",
+      "description": "Shares aceptados en la época (10 bloques): con esto se reparte el fondo de participación al cerrarla. Vuelve a 0 en cada época. Con «Mineros: vivos» (el selector de arriba) sólo los que avisan ahora; con «todos», también los que se fueron.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1876,7 +1901,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (minero) (blockchain_minero_shares_epoca{pod=~\"(${app:regex})-.*\"})",
+          "expr": "max by (minero) (blockchain_minero_shares_epoca{pod=~\"(${app:regex})-.*\"}) and on (minero) (max by (minero) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"}) >= ${mineros})",
           "legendFormat": "{{minero}}",
           "range": true
         }
@@ -1933,8 +1958,8 @@
     {
       "type": "timeseries",
       "id": 16,
-      "title": "CPU por pod",
-      "description": "Todo el pod (cgroup del pod, container=\"\"): la única serie con Docker como runtime (k3s); con containerd (GKE) no se suma dos veces.",
+      "title": "CPU por servicio",
+      "description": "Suma de las réplicas de cada servicio, así un pod que se reemplaza (despliegue nuevo, reinicio) no deja una serie suelta. Todo el pod (cgroup del pod, container=\"\"): la única serie con Docker como runtime (k3s); con containerd (GKE) no se suma dos veces.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1982,8 +2007,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"blockchain\", container=\"\", pod=~\"(${app:regex})-.*\"}[2m]))",
-          "legendFormat": "{{pod}}",
+          "expr": "sum by (servicio) (label_replace(rate(container_cpu_usage_seconds_total{namespace=\"blockchain\", container=\"\", pod=~\"(${app:regex})-.*\"}[2m]), \"servicio\", \"$1\", \"pod\", \"(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{5}|-[0-9]+)\"))",
+          "legendFormat": "{{servicio}}",
           "range": true
         }
       ]
@@ -1991,8 +2016,8 @@
     {
       "type": "timeseries",
       "id": 17,
-      "title": "Memoria por pod",
-      "description": "Todo el pod (cgroup del pod, container=\"\"): la única serie con Docker como runtime (k3s); con containerd (GKE) no se suma dos veces.",
+      "title": "Memoria por servicio",
+      "description": "Suma de las réplicas de cada servicio, así un pod que se reemplaza (despliegue nuevo, reinicio) no deja una serie suelta. Todo el pod (cgroup del pod, container=\"\"): la única serie con Docker como runtime (k3s); con containerd (GKE) no se suma dos veces.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2040,15 +2065,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"blockchain\", container=\"\", pod=~\"(${app:regex})-.*\"})",
-          "legendFormat": "{{pod}}",
+          "expr": "sum by (servicio) (label_replace(container_memory_working_set_bytes{namespace=\"blockchain\", container=\"\", pod=~\"(${app:regex})-.*\"}, \"servicio\", \"$1\", \"pod\", \"(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{5}|-[0-9]+)\"))",
+          "legendFormat": "{{servicio}}",
           "range": true
         }
       ]
     },
     {
       "type": "row",
-      "title": "Errores y logs",
+      "title": "Errores y eventos",
       "id": 18,
       "collapsed": false,
       "gridPos": {
@@ -2120,16 +2145,16 @@
     },
     {
       "type": "logs",
-      "id": 20,
-      "title": "Logs",
+      "id": 31,
+      "title": "Errores",
       "datasource": {
         "type": "loki",
         "uid": "loki"
       },
-      "description": "Los pods del namespace blockchain, filtrados por $app y $nivel.",
+      "description": "Líneas ERROR y CRITICAL de los servicios (también las excepciones con su traza).",
       "gridPos": {
-        "h": 14,
-        "w": 24,
+        "h": 9,
+        "w": 12,
         "x": 0,
         "y": 93
       },
@@ -2149,7 +2174,161 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{namespace=\"blockchain\", app=~\"${app:regex}\", nivel=~\"${nivel:regex}\"}"
+          "expr": "{namespace=\"blockchain\", app=~\"${app:regex}\", nivel=~\"ERROR|CRITICAL\"}"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "id": 32,
+      "title": "Advertencias",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Líneas WARNING: reconexiones a RabbitMQ, pedidos rechazados, préstamos vencidos, soluciones que no sirven, mineros que dejan de avisar.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 93
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false,
+        "showLabels": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=\"blockchain\", app=~\"${app:regex}\", nivel=\"WARNING\"}"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "id": 33,
+      "title": "Bloques y épocas",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Del NCT: cada bloque confirmado (quién lo minó y cuánto cobra), el reparto de cada época, las tareas que vencen o vuelven sin solución y las soluciones que no sirven.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 102
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false,
+        "showLabels": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=\"blockchain\", app=\"nct\"} |~ \"Génesis cargado|Bloque [0-9]+ confirmado|Época [0-9]+:|venció sin bloque|volvió sin solución|no sirve\""
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "id": 34,
+      "title": "Escalado y dificultad",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Del escalador, cuántas VMs CPU pide y por qué; del TrP, el prefijo y la fragmentación de cada tarea, con el motivo.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 102
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false,
+        "showLabels": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=\"blockchain\", app=~\"escalador|trp\"} |~ \"VMs: [0-9]+ →|VMs simuladas|tofu apply|Apagado con|transacciones, prefijo\""
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 35,
+      "title": "Todos los logs",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 111
+      },
+      "panels": [
+        {
+          "type": "logs",
+          "id": 20,
+          "title": "Todos los logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "description": "Los pods del namespace blockchain, filtrados por $app y $nivel. Incluye Redis y RabbitMQ (nivel UNK).",
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 112
+          },
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none",
+            "prettifyLogMessage": false,
+            "showLabels": false
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "{namespace=\"blockchain\", app=~\"${app:regex}\", nivel=~\"${nivel:regex}\"}"
+            }
+          ]
         }
       ]
     }

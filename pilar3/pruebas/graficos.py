@@ -9,6 +9,7 @@
 | prefijos | resultados/prefijos-{gpu,cpu}.csv (BC-39) | resultados/prefijos.png (grafico_prefijos.py) |
 | fragmentos | resultados/fragmentos-{gpu,cpu}.csv (BC-40) | resultados/fragmentos.png |
 | gpu | resultados/gpu-ciclos-{muestras,eventos,bloques}.csv (BC-41) | resultados/gpu-ciclos.png |
+| desempeno | prefijos-*, fragmentos-gpu y potencia.csv (BC-39, 40, 59) y bulks/resultados.csv (BC-38) | resultados/desempeno.png |
 
 Si falta el CSV de uno, lo saltea y lo avisa: se rehace cada gráfico al repetir su prueba.
 """
@@ -189,7 +190,88 @@ def gpu():
     guardar(fig, "gpu-ciclos.png")
 
 
-GRAFICOS = {"bulks": bulks, "prefijos": prefijos, "fragmentos": fragmentos, "gpu": gpu}
+# La potencia (suma de los bench) de cada corrida de BC-39 y BC-40, como la anota su README: el CSV no la guarda.
+# potencia.csv (BC-59) sí la trae por fila.
+POTENCIA_PREFIJOS = {"gpu": 3.01e9, "cpu": 3.8e6}   # RTX 4060 + T4; 3 VMs e2-highcpu-2
+POTENCIA_FRAGMENTOS = 5.43e9                        # RTX 4060 + 2 T4
+TX_POR_CAJA = 100                                   # el NCT, por bloque
+
+
+def desempeno():
+    """Comparativo entre pruebas: el tiempo por bloque contra lo que debería tardar sólo minar (BC-39, BC-40 y
+    BC-59) y las transacciones por segundo confirmadas contra el techo que pone ese tiempo (BC-38)."""
+    grupos = []  # (nombre, color, marcador, [(teórico, medido)])
+    for tipo, color, nombre in (("gpu", AZUL, "prefijo 1 a 8, 2 GPU"), ("cpu", NARANJA, "prefijo 1 a 8, 3 VMs CPU")):
+        por = defaultdict(list)
+        for f in leer(RESULTADOS / f"prefijos-{tipo}.csv"):
+            if f["segundos"]:
+                por[int(f["prefijo"])].append(float(f["segundos"]))
+        grupos.append((f"BC-39: {nombre}", color, "o",
+                       [(16 ** p / POTENCIA_PREFIJOS[tipo], statistics.mean(s)) for p, s in sorted(por.items())]))
+    # La columna potencia es la que calculó cada criterio; minan todos, así que cuenta la de la suma.
+    filas = leer(RESULTADOS / "potencia.csv")
+    total = max(float(f["potencia"]) for f in filas if f["criterio"] == "suma")
+    por = defaultdict(list)
+    for f in filas:
+        por[int(f["prefijo"])].append(float(f["segundos"]))
+    grupos.append(("BC-59: los 4 criterios de potencia, 3 GPU y 2 CPU", VIOLETA, "^",
+                   [(16 ** p / total, statistics.mean(s)) for p, s in sorted(por.items())]))
+    por = defaultdict(list)
+    for f in leer(RESULTADOS / "fragmentos-gpu.csv"):
+        if f["segundos"]:
+            por[(int(f["porcentaje"]), int(f["prefijo"]))].append(float(f["segundos"]))
+    grupos.append(("BC-40: prefijo 9, del 1 % al 50 %, 3 GPU", VERDE, "s",
+                   [(16 ** p / POTENCIA_FRAGMENTOS, statistics.mean(s)) for (_, p), s in sorted(por.items())]))
+
+    # El piso: los bloques en que minar lleva menos de 50 ms, o sea lo que tarda todo lo demás.
+    piso = statistics.median(s for tipo in ("gpu", "cpu") for f in leer(RESULTADOS / f"prefijos-{tipo}.csv")
+                             if f["segundos"] and 16 ** int(f["prefijo"]) / POTENCIA_PREFIJOS[tipo] < 0.05
+                             for s in [float(f["segundos"])])
+
+    fig, (izq, der) = plt.subplots(1, 2, figsize=(13, 5.4), dpi=150)
+    fig.patch.set_facecolor(FONDO)
+    x = [10 ** (e / 10) for e in range(-90, 41)]
+    izq.plot(x, x, color=GRIS, linestyle=":", linewidth=1, label="sólo minar (16^p / potencia)")
+    izq.plot(x, [piso + v for v in x], color=TEXTO_2, linewidth=1, label=f"piso del sistema ({piso:.2f} s) + minar".replace(".", ","))
+    for nombre, color, marcador, pares in grupos:
+        izq.plot([t for t, _ in pares], [m for _, m in pares], color=color, marker=marcador, linewidth=1.2,
+                 markersize=6, label=nombre)
+    izq.annotate("prefijo 8 en CPU: la solución está\ndentro de las 2^32 (ver BC-39)", (1130, 340),
+                 textcoords="offset points", xytext=(-150, 18), fontsize=7.5, color=TEXTO_2,
+                 arrowprops={"arrowstyle": "-", "color": GRIS})
+    izq.set_xscale("log")
+    izq.set_yscale("log")
+    izq.set_xlim(1e-9, 1e4)
+    izq.set_ylim(0.2, 3000)
+    estilo(izq, "Tiempo por bloque: medido contra lo que tarda sólo minar", "Segundos de minado esperados",
+           "Segundos por bloque (media)")
+    izq.grid(axis="x", color=GRILLA, linewidth=0.8)
+    izq.legend(frameon=False, fontsize=7.5, loc="upper left")
+
+    filas = [f for f in leer(AQUI / "bulks" / "resultados.csv") if f["completa"] == "si"]
+    por = defaultdict(list)
+    for f in filas:
+        por[int(f["tamano"])].append(int(f["tamano"]) / float(f["segundos_confirmacion"]))
+    tamanos = sorted(por)
+    for t in tamanos:
+        der.scatter([t] * len(por[t]), por[t], color=AZUL, alpha=0.35, s=20, linewidths=0)
+    der.plot(tamanos, [statistics.mean(por[t]) for t in tamanos], color=AZUL, marker="o", linewidth=2,
+             label="BC-38: confirmadas por segundo (media)")
+    techo = TX_POR_CAJA / piso
+    der.axhline(techo, color=NARANJA, linestyle="--", linewidth=1.2)
+    der.text(1.2, techo * 1.12, f"techo: {TX_POR_CAJA} tx por bloque / {piso:.2f} s = {techo:.0f} tx/s".replace(".", ","),
+             color=NARANJA, fontsize=8)
+    der.text(1.2, 0.012, "hasta 1.000: el bulk entra en una ventana del NCT (30 s)", color=TEXTO_2, fontsize=8)
+    der.set_xscale("log")
+    der.set_yscale("log")
+    der.set_ylim(0.01, 400)
+    estilo(der, "Transacciones confirmadas por segundo, según el tamaño del bulk", "Transacciones del bulk",
+           "tx/s")
+    der.legend(frameon=False, fontsize=8, loc="upper left")
+    guardar(fig, "desempeno.png")
+
+
+GRAFICOS = {"bulks": bulks, "prefijos": prefijos, "fragmentos": fragmentos, "gpu": gpu, "desempeno": desempeno}
 
 
 def main():

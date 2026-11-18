@@ -56,6 +56,9 @@ spec:
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
             - name: REDISCLI_AUTH     # redis-cli la toma de acá: no queda en los argumentos de las probes
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+            # BC-70: ~80 % del límite del contenedor. Lleno, rechaza escrituras con error en vez de
+            # pasarse del límite y que lo mate el OOM (con fork y réplica, en bucle).
+            - { name: REDIS_MAXMEMORY, value: "800mb" }
           volumeMounts:
             - { name: scripts, mountPath: /scripts }
             - { name: config, mountPath: /config }
@@ -71,7 +74,7 @@ spec:
             - { name: config, mountPath: /config }
           resources:
             requests: { cpu: 50m, memory: 64Mi }
-            limits: { memory: 512Mi }
+            limits: { memory: 1Gi }    # ~300k tx:* (bulks de 100.000) ocupan ~500 MB: con 512Mi lo mataba el OOM
           readinessProbe:
             exec:
               command: ["sh", "-c", "redis-cli ping | grep -q PONG"]

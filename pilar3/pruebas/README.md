@@ -5,6 +5,8 @@
 | [`bulks/`](bulks/README.md) | BC-38: bulks de 1 a 100.000 transacciones con k6 |
 | [`prefijos.py`](prefijos.py) y `grafico_prefijos.py` | BC-39: prefijo de 1 a 8 caracteres |
 | [`fragmentos.py`](fragmentos.py) | BC-40: fragmentación del pool del 1 % al 50 % |
+| [`gpu_ciclos.py`](gpu_ciclos.py) | BC-41: entrada y salida de GPU (ciclos sale la GPU → VM CPU → vuelve la GPU → VM borrada) |
+| [`graficos.py`](graficos.py) | BC-42: los gráficos comparativos de todas las pruebas, desde sus CSV |
 | [`dificultad.py`](dificultad.py) y `grafico_dificultad.py` | BC-60: ajuste de dificultad (convergencia y caída sin GPU) |
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
@@ -52,25 +54,38 @@ Los scripts [`bulks/correr.py`](bulks/correr.py) y [`bulks/bulk.js`](bulks/bulk.
 [`prefijos.py`](prefijos.py) fija el prefijo del TrP (`PREFIJO_BASE=n`, `AJUSTAR_PREFIJO=0`), manda una transacción por bloque y toma de los logs del NCT el tiempo desde que publica la tarea hasta que confirma el bloque (si la tarea vuelve sin solución, desde la primera publicación). Al terminar deja el TrP como estaba.
 
 ```bash
-pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api http://<traefik> --salida resultados/prefijos-gpu.csv
-pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api http://<traefik> --salida resultados/prefijos-cpu.csv --tipo cpu --maximo 600
+# GPU: sólo mineros GPU vivos
+pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api https://<ingreso> --salida pilar3/pruebas/resultados/prefijos-gpu.csv
+# CPU: sin GPU vivas (la del k3s en 0 réplicas, Colab cortado) y 3 VMs fijas
+GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token) PROYECTO=<proyecto> pilar3/pruebas/preparar.sh fijar-vms 3
+pilar2/.venv/bin/python pilar3/pruebas/prefijos.py --api https://<ingreso> --salida pilar3/pruebas/resultados/prefijos-cpu.csv --tipo cpu --maximo 600
+pilar3/pruebas/preparar.sh restaurar   # el escalador borra las VMs cuando vuelve la GPU
 python pilar3/pruebas/grafico_prefijos.py
 ```
 
-13/11, 5 bloques por largo: GPU con la RTX 4060 del k3s; CPU con 3 VMs e2-highcpu-2 (el escalador con `PREFIJO_BASE=8` durante la corrida, para que pida el máximo).
+**18/11, en GKE con la v0.2.0** (contrato v2: firmas, coinbase y shares), 5 bloques por largo, `ESPACIO_NONCES = 2^32` y 10 % por rango:
+- **GPU:** la RTX 4060 del k3s (`minero-gpu-0`, bench 1,95 GH/s) y una T4 de Colab (1,06 GH/s): 3,0 GH/s en total.
+- **CPU:** 3 VMs e2-highcpu-2 (`minero-cpu-0..2`, bench 1,25-1,29 MH/s cada una): 3,8 MH/s en total.
 
 ![Tiempo por bloque según el prefijo](resultados/prefijos.png)
 
-| Prefijo | 1 GPU | 3 VMs CPU |
-|---|---|---|
-| 1 a 5 | 1,3 a 1,7 s | 0,8 a 1,5 s |
-| 6 | 1,8 s | 7,3 s |
-| 7 | 2,3 s | 72 s |
-| 8 | 9,4 s | sin bloque en 600 s |
+| Prefijo | 2 GPU: media (mín. a máx.) | 3 VMs CPU: media (mín. a máx.) | Sólo minar 16^p: GPU / CPU |
+|---|---|---|---|
+| 1 a 5 | 0,8 a 1,2 s (0,2 a 2,4) | 0,7 a 1,6 s (0,1 a 2,4) | < 1 ms / < 0,3 s |
+| 6 | 0,9 s (0,4 a 1,7) | 5,0 s (3,8 a 5,9) | 6 ms / 4,4 s |
+| 7 | 1,8 s (0,5 a 2,9) | 123 s (22 a 169) | 0,1 s / 70 s |
+| 8 | 5,8 s (1,3 a 11), 4 rearmados | 340 s (140 a 565), 0 rearmados | 1,4 s / 1.130 s |
 
-- Hasta 5 caracteres no se mide el minado sino el resto del sistema (RabbitMQ, TrP, sondeo del minero, confirmación en Redis).
-- Con CPU se ve el ×16 por carácter desde el 6; con 8 harían falta ~17 min y el NCT vence la tarea a los 10 (`TAREA_VENCE`).
-- Con 8 caracteres hacen falta 16⁸ = 2³² intentos, el mismo tamaño que `ESPACIO_NONCES`: 3 de 8 tareas no tuvieron solución (e⁻¹ ≈ 37 %) y el NCT las rearmó con otro timestamp.
+Datos: [`prefijos-gpu.csv`](resultados/prefijos-gpu.csv) y [`prefijos-cpu.csv`](resultados/prefijos-cpu.csv), con sus logs.
+
+- **Hasta 5 caracteres (GPU hasta 7) no se mide el minado sino el resto del sistema:** publicar la tarea, prestar los rangos, el sondeo del minero, verificar y confirmar en Redis. Es ~1 s, con o sin GPU.
+- **Con CPU se ve el ×16 por carácter desde el 6:** 5 s → 123 s → 340 s. Con GPU recién se nota en el 8.
+- **Con 8 caracteres hacen falta 16⁸ = 2³² intentos, el mismo tamaño que `ESPACIO_NONCES`.**
+  - Una tarea no tiene solución con probabilidad e⁻¹ ≈ 37 %: la GPU recorre las 2³² en ~1,4 s y el NCT la rearma con otro timestamp. Hubo 4 rearmados en 9 tareas, y por eso la media (5,8 s) es mayor que lo que tarda en minar.
+  - Con CPU no hubo ninguna sin solución en 5 (probabilidad 0,63⁵ ≈ 10 %). Si hubiera habido una, recorrer las 2³² le lleva ~19 min y el NCT la vence a los 10 (`TAREA_VENCE_SEGUNDOS`).
+  - Cuando la tarea tiene solución, está dentro de las 2³² y se encuentra antes que el promedio sin tope: se espera 0,42 × 2³² intentos, ~470 s con 3,8 MH/s. Por eso con CPU la media medida (340 s) queda por debajo de los 1.130 s de 16⁸ / potencia.
+- El tiempo hasta encontrar el nonce es exponencial: con 5 bloques la dispersión es grande (con CPU, prefijo 7, de 22 a 169 s).
+- **Contra el 13/11** (v1, 1 RTX y 3 VMs; los CSV viejos quedan en el historial de git): la GPU con prefijo 8 bajó de 9,4 a 5,8 s con la segunda placa; el prefijo 8 con CPU, que entonces no salió en 600 s, ahora salió 5 de 5. Hasta el 7 los tiempos son del mismo orden: la v2 (firmas, coinbase y shares) no agregó una demora que se note.
 
 ## Fragmentación del 1 % al 50 % (BC-40)
 
@@ -90,6 +105,69 @@ pilar2/.venv/bin/python pilar3/pruebas/fragmentos.py --api http://<traefik> --sa
 - `prestados_hasta_ganar - 1` es el trabajo desperdiciado, contado en rangos y no en hashes: de un rango cortado no se sabe cuánto se llegó a minar.
 - Con `ESPACIO_NONCES = 2^32`, un rango del 1 % tiene ~43 M de nonces. Con prefijo 6 (~16 M intentos), en CPU la solución cae casi siempre en el primer rango que agarra cada minero, así que no se ve la sobrecarga de los rangos chicos. Para verla: GPU con prefijo 7 u 8, o un `--espacio` más chico. Con eso sube la probabilidad de una tarea sin solución, e^(−espacio/16^prefijo).
 - En CPU conviene `preparar.sh fijar-vms N` con N ≥ 3: con 50 % hay sólo 2 rangos y se ve un minero sin trabajo.
+
+## Entrada y salida de GPU (BC-41)
+
+[`gpu_ciclos.py`](gpu_ciclos.py) apaga el minero GPU del k3s (`kubectl scale --replicas=0`), mide cómo el sistema pasa a una VM CPU y lo vuelve a prender. Cada 5 s anota los mineros vivos por tipo, las VMs `minero-cpu-*` (gcloud), los pods del escalador y la alerta `SinMinerosGPU` (Prometheus). Mientras no hay GPU, manda una transferencia de alice cada vez que se confirma la anterior: siempre hay trabajo. Al borrarse la VM deja de mandar y mide cuánto tarda KEDA en apagar el escalador.
+
+```bash
+# Sólo los GPU del StatefulSet vivos (Colab cortado), sin VMs y con el escalador en manos de KEDA
+pilar2/.venv/bin/python pilar3/pruebas/gpu_ciclos.py --api https://<ingreso> --ciclos 3 \
+    --proyecto <proyecto> --salida pilar3/pruebas/resultados/gpu-ciclos
+python pilar3/pruebas/graficos.py gpu
+```
+
+**18/11, en GKE con la v0.2.0**, 3 ciclos. La RTX 4060 del k3s como única GPU. El escalador con sus valores normales: `PREFIJO_BASE=6`, 60 s por bloque, sube tras 30 s sin GPU y baja tras 120 s. Datos: [`gpu-ciclos-eventos.csv`](resultados/gpu-ciclos-eventos.csv), [`-muestras.csv`](resultados/gpu-ciclos-muestras.csv) y [`-bloques.csv`](resultados/gpu-ciclos-bloques.csv), con su log.
+
+![Línea de tiempo de los 3 ciclos](resultados/gpu-ciclos.png)
+
+| Sale la GPU (t = 0) | Ciclo 1 | Ciclo 2 | Ciclo 3 | Por qué |
+|---|---|---|---|---|
+| El gateway la da por muerta | 17 s | 17 s | 24 s | Sin keepalive en 15 s (`vivo_segundos`), más el período de muestreo |
+| KEDA prende el escalador | 29 s | 48 s | 30 s | Trigger «tx en cajas» o «rangos sin tomar», con `pollingInterval` 15 s |
+| Alerta `SinMinerosGPU` pendiente → disparada | 36 → 97 s | 48 → 108 s | 36 → 92 s | `for: 1m` |
+| VM creada → corriendo | 67 → 73 s | 84 → 90 s | 67 → 80 s | El escalador espera 30 s sin GPU (`ESPERA_SUBIR_SEGUNDOS`) y aplica |
+| Minero CPU vivo (después de su bench) | 117 s | 126 s | 116 s | Arranque de COS, bajar la imagen y la tarea modelo (2^24 hashes, ~13 s en CPU) |
+| **Primer bloque minado por CPU** | **128 s** | **138 s** | **128 s** | |
+
+| Vuelve la GPU (t = 0) | Ciclo 1 | Ciclo 2 | Ciclo 3 | Por qué |
+|---|---|---|---|---|
+| GPU viva | 12 s | 13 s | 18 s | Arranque del pod, `hello` y bench |
+| Alerta apagada | 24 s | 32 s | 23 s | |
+| Primer bloque minado por GPU | 6 s | 131 s | 66 s | Con prefijo 1-2 la CPU también gana bloques |
+| Minero CPU dado por muerto | 155 s | 161 s | 161 s | 120 s con GPU (`ESPERA_BAJAR_SEGUNDOS`) + `tofu destroy` |
+| **VM borrada** | **192 s** | **187 s** | **196 s** | |
+| Escalador apagado (desde que dejan de llegar transacciones) | 175 s | 192 s | 189 s | `cooldownPeriod` 180 s de KEDA |
+
+Capturas de Grafana del mismo período (horario de Argentina, 02:36 a 03:03):
+
+![Mineros vivos por tipo](resultados/gpu-ciclos-mineros-por-tipo.png)
+
+![VMs CPU](resultados/gpu-ciclos-vms-cpu.png)
+
+- **Sin GPU, la red tarda ~2 minutos en volver a minar**, y casi todo es arrancar la VM: los 30 s que el escalador espera para no oscilar, ~10 s del `tofu apply` hasta la VM corriendo y ~45 s hasta que el minero arranca y hace su bench. Los tres ciclos dan parecido (10 a 20 s de diferencia, sobre todo por el sondeo de KEDA cada 15 s): el escalador no se traba ni pide VMs de más.
+- **Al volver la GPU, la VM vive ~3 minutos más:** los 120 s de espera antes de bajar y el `destroy`. El escalador sigue prendido otros 3 minutos (`cooldownPeriod`) después de que no queda trabajo. Al final no quedó ninguna VM ni clave de minero CPU aprobada: el escalador las da de baja al borrarlas.
+- **Cuánto baja el prefijo.** Si al armar una tarea no hay ningún minero vivo, el TrP elige 1 (`largo_prefijo`): el primero que llegue lo resuelve enseguida.
+  - En el ciclo 1 la tarea se armó antes de que la GPU se diera por muerta y quedó en 6.
+  - En los ciclos 2 y 3 bajó a 1, y después **sube de a 1 cada 5 bloques** (`VENTANA_AJUSTE`, `AJUSTE_MAXIMO=1`): pasada la prueba seguía en 2, aunque ya estaba la GPU.
+  
+  Es lo que pide BC-60 (no saltar de golpe), pero deja varios bloques con dificultad mínima. Mejora posible: que al volver a haber mineros el ajuste arranque desde el techo por potencia y no desde el último prefijo.
+
+## Gráficos comparativos (BC-42)
+
+[`graficos.py`](graficos.py) rehace los gráficos desde los CSV de cada prueba, así se pueden repetir: `python pilar3/pruebas/graficos.py` (todos) o `graficos.py bulks gpu` (algunos). Si falta el CSV de uno, lo saltea.
+
+| Gráfico | Datos | Imagen |
+|---|---|---|
+| Bulks (BC-38): respuesta HTTP p50/p95/p99 y tiempo hasta confirmar contra el tamaño | `bulks/resultados.csv` | [`bulks.png`](resultados/bulks.png) |
+| Prefijo (BC-39): tiempo por bloque contra el largo, GPU y CPU | `resultados/prefijos-{gpu,cpu}.csv` | [`prefijos.png`](resultados/prefijos.png) |
+| Fragmentación (BC-40): tiempo por bloque y rangos prestados contra el % | `resultados/fragmentos-{gpu,cpu}.csv` | `fragmentos.png` (falta la corrida) |
+| Entrada y salida de GPU (BC-41): línea de tiempo de cada ciclo | `resultados/gpu-ciclos-*.csv` | [`gpu-ciclos.png`](resultados/gpu-ciclos.png) |
+
+![Bulks](resultados/bulks.png)
+
+- **Respuesta HTTP:** crece lineal con el lote hasta 1.000, porque el backend confirma cada transacción en RabbitMQ (`confirm_delivery`) de a una. Desde 10.000 los lotes son de 1.000 y la latencia por lote se mantiene en ~10 s.
+- **Confirmación:** hasta 1.000 transacciones manda la ventana de 30 s del NCT (todo entra en un bloque). Desde 10.000 son 100 por bloque (`TX_POR_CAJA`) y el tiempo crece lineal: 76 a 94 tx/s confirmadas.
 
 ## Criterio de potencia (BC-59)
 

@@ -98,7 +98,7 @@ def elegir_prefijo_con_motivo(redis, ajustes, ahora):
     juntada según el criterio (BC-59). Sin ajuste, la potencia es None porque no se mira."""
     if not ajustes.ajustar:
         return "0" * ajustes.prefijo_base, "fijo", None
-    nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=100)]
+    nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN)]
     potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos, ajustes.criterio)
     hashes = redis.lrange(contrato.CADENA, -(ajustes.ventana_ajuste + 1), -1) if hasattr(redis, "lrange") else []
     bloques = [b for b in (redis.hgetall(contrato.BLOQUE.format(h)) for h in hashes) if b]

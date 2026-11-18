@@ -361,7 +361,7 @@ class Gateway:
 
     def mineros_vivos(self):
         """{tipo: (cantidad, hashes/s)} de los nodo:* con un aviso de hace menos de minero_vivo."""
-        claves = list(self.redis.scan_iter(match=contrato.NODOS, count=100))
+        claves = list(self.redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
         tuberia = self.redis.pipeline(transaction=False)
         for clave in claves:
             tuberia.hmget(clave, "tipo", "ultimo_aviso", "hashes_por_segundo", "bench")
@@ -374,7 +374,7 @@ class Gateway:
 
     def rangos_por_minero(self):
         """[(alias, tipo, rangos prestados)] de cada nodo:*; sin alias, el principio de la cuenta (BC-59)."""
-        claves = list(self.redis.scan_iter(match=contrato.NODOS, count=100))
+        claves = list(self.redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
         cuentas = [clave.split(":", 1)[1] for clave in claves]
         tuberia = self.redis.pipeline(transaction=False)
         for clave, cuenta in zip(claves, cuentas):

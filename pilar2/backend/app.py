@@ -278,7 +278,7 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     @app.get("/api/mineros")
     def mineros():
         """Cada nodo:<id> que escribe el gateway, con si está vivo y su saldo (incluye lo que cobró)."""
-        claves = sorted(redis.scan_iter(match=contrato.NODOS, count=100))
+        claves = sorted(redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
         ids = [clave.split(":", 1)[1] for clave in claves]
         tuberia = redis.pipeline(transaction=False)
         for clave in claves:

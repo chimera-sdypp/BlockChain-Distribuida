@@ -26,6 +26,9 @@ from .busqueda import Buscador
 log = logging.getLogger("minero_cpu")
 
 ESPERA_APROBACION = 30  # segundos entre intentos mientras el organizador no aprueba la cuenta
+# Una GPU hace la tarea modelo en ~10 ms, y la primera vuelta la encuentra con el reloj bajo (salía 3 veces menos).
+# Si una vuelta dura menos que esto, se calienta la placa este tiempo y se mide una tanda de al menos este tiempo.
+MEDIR_AL_MENOS = 0.5
 
 
 class ClaveRechazada(Exception):
@@ -120,12 +123,23 @@ class Minero:
             log.info("Registrado en el gateway")
             return
         log.info("Minero nuevo: resuelvo la tarea modelo (%d nonces)", respuesta["hasta"] - respuesta["desde"] + 1)
-        inicio = time.monotonic()
-        self.buscador.buscar(respuesta["bloque"], respuesta["desde"], respuesta["hasta"], respuesta["prefijo"])
-        segundos = time.monotonic() - inicio
-        hps = round((respuesta["hasta"] - respuesta["desde"] + 1) / segundos)
+        segundos, vueltas = self._tarea_modelo(respuesta), 1
+        if segundos < MEDIR_AL_MENOS:
+            fin = time.monotonic() + MEDIR_AL_MENOS
+            while time.monotonic() < fin:
+                self._tarea_modelo(respuesta)
+            segundos, vueltas = 0.0, 0
+            while segundos < MEDIR_AL_MENOS:
+                segundos, vueltas = segundos + self._tarea_modelo(respuesta), vueltas + 1
+        hps = round(vueltas * (respuesta["hasta"] - respuesta["desde"] + 1) / segundos)
         self._insistir("POST", "/bench", {"minero": self.cuenta, "segundos": round(segundos, 3), "hashes_por_segundo": hps})
         log.info("Bench: %.2f s, %d hashes/s", segundos, hps)
+
+    def _tarea_modelo(self, tarea):
+        """Los segundos que tarda una vuelta de la tarea modelo."""
+        inicio = time.monotonic()
+        self.buscador.buscar(tarea["bloque"], tarea["desde"], tarea["hasta"], tarea["prefijo"])
+        return time.monotonic() - inicio
 
     # --- Un ciclo: pedir, minar, devolver --------------------------------------------------
     def un_rango(self):

@@ -41,6 +41,11 @@ def aprobar(redis, nombre, tipo="minero"):
     redis.hset("cuentas", CUENTA[nombre], json.dumps({"tipo": tipo, "nombre": nombre, "alta": 1793836800}))
 
 
+def presentado(redis, nombre):
+    """Como si `nombre` ya hubiera hecho el /hello y el /bench."""
+    redis.hset(f"nodo:{CUENTA[nombre]}", mapping={"tipo": "cpu", "placa": "prueba", "alias": nombre, "bench": 1_000_000})
+
+
 @pytest.fixture
 def redis():
     if os.environ.get("INTEGRACION") != "1":

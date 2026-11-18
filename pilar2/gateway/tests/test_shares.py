@@ -7,7 +7,7 @@ from prometheus_client import REGISTRY
 
 from comun import contrato
 from comun.tests.claves import CUENTA
-from gateway.tests.test_keepalive import aviso
+from gateway.tests.test_keepalive import aviso, ya_presentados  # noqa: F401 (fixture autouse)
 from gateway.tests.test_rangos import TAREA, publicar_rangos, rango, sacar, texto
 
 PREFIJO, HASTA = "000", 99_999  # shares con «00»: uno de cada 256 hashes, unos 390 en el rango

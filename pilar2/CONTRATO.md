@@ -83,7 +83,7 @@ Reemplazan a `MINER_TOKEN` (BC-57). Cada pedido al gateway lleva:
 
 - `firmar_pedido` arma los encabezados y `verificar_pedido` los controla.
 - Si la hora está corrida más de 30 s (`VENTANA_PEDIDO`), se rechaza: un pedido grabado no se puede volver a mandar después.
-- El `minero` del cuerpo tiene que ser el de `X-Minero`. Firma mala: 401; minero no aprobado en `cuentas`: 403, y queda pedido en `altas:pendientes` con el `alias` de su `/hello`.
+- El `minero` del cuerpo tiene que ser el de `X-Minero`. Firma mala: 401; minero no aprobado en `cuentas`: 403, y queda pedido en `altas:pendientes` con el `alias` de su `/hello` (si lo anotó antes otro pedido, el `/hello` le corrige el nombre). Ante un 403 el minero repite sólo el `/hello` hasta que lo aprueben.
 - El panel del organizador usa lo mismo, con `X-Organizador` en vez de `X-Minero` (`quien=ORGANIZADOR`).
 
 ## Altas
@@ -138,11 +138,11 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 
 | Pedido | Envía el minero | Contesta el gateway |
 |---|---|---|
-| `POST /hello` | `{minero, tipo: gpu \| cpu, placa}` | 200 `{registrado: true}`; si es nuevo, 200 con la tarea modelo |
+| `POST /hello` | `{minero, tipo: gpu \| cpu, placa, alias}` | 200 `{registrado: true}`; si es nuevo, 200 con la tarea modelo |
 | `POST /bench` | `{minero, segundos, hashes_por_segundo}` | 204 |
 | `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo |
 | `POST /results` | lo mismo que `resultados`, más `shares` (lista de nonces) | 202 `{shares: los que sumó}` |
-| `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` (cada 5 s) | 200 `{cortar: true \| false, shares?}` |
+| `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` (cada 5 s) | 200 `{cortar: true \| false, shares?, presentarse?}`; `presentarse: true` si su `nodo:<id>` no tiene bench (p. ej. se reinició la cadena): el minero repite `/hello` y `/bench` antes del próximo rango |
 
 ## Claves de Redis
 

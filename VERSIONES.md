@@ -1,8 +1,13 @@
 # Versiones
 
-Versión actual: **0.3.0** (18/11/2026)
+Versión actual: **0.4.0** (18/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.4.0 — 18/11/2026
+
+- Los mineros se vuelven a presentar si el gateway los pierde (por ejemplo, al reiniciar la cadena): ante un 403 insisten sólo con el `/hello`, el keep-alive contesta `presentarse: true` si el nodo no tiene bench, y el `/hello` le pone el alias a un alta pendiente (#60, BC-71).
+- Pruebas: fragmentación del 1 % al 50 % en GKE con 3 GPU (#61, BC-40). Análisis de desempeño y escalabilidad que cruza todas las pruebas, con un gráfico comparativo (#62, BC-42).
 
 ## 0.3.0 — 18/11/2026
 

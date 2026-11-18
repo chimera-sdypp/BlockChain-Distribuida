@@ -25,6 +25,9 @@ ESTADOS_TAREA = ("en_curso", "confirmada", "descartada", "sin_solucion", "rechaz
 COMPROMETIDO = "comprometido"  # cuenta → lo que tiene en transacciones validadas que todavía no entraron en un bloque
 TX, BLOQUE, TAREA, NODO = "tx:{}", "bloque:{}", "tarea:{}", "nodo:{}"
 NODOS = "nodo:*"  # para SCAN: los mineros son pocos
+# COUNT de esos SCAN: cuenta claves recorridas, no encontradas; con 100 y los tx:* de un bulk grande
+# (~150.000 claves) eran ~1.500 idas a Redis por SCAN y /metrics tardaba más que la probe del gateway.
+NODOS_POR_SCAN = 10_000
 # Campos de nodo:<id> (los escribe el gateway): bench y hashes_por_segundo en hashes/s, ultimo_aviso en segundos Unix.
 CAMPOS_NODO = ("tipo", "placa", "bench", "hashes_por_segundo", "ultimo_aviso")
 ESTADOS_TX = ("recibida", "pendiente", "confirmada", "rechazada")

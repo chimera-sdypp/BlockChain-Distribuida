@@ -178,10 +178,12 @@ return 0
 # con 2 réplicas nunca entran dos bloques sobre la misma punta, y una solución repetida no guarda
 # nada dos veces.
 # Los saldos salen de las transacciones del bloque: una transferencia le resta al origen y le suma
-# al destino; una de emisión (coinbase, participación o carga) sólo le suma al destino. La coinbase y
-# la participación no tienen tx:<id> hasta acá: se crea confirmada. Se anota el historial (BC-54).
+# al destino; una de emisión (coinbase, participación o carga) sólo le suma al destino. Se anota el
+# historial (BC-54). Cada tx:<id> queda como puntero, {estado: confirmada, bloque} (BC-70): su
+# contenido ya está en el bloque. La coinbase y la participación no tenían tx:<id>: nacen así.
 # KEYS: tarea:<id>, cadena, cajas, saldos, comprometido, tarea:actual, bloque:<hash>.
-# ARGV: id_tarea, block_hash, n campos, campo, valor…, (id, origen, destino, monto, timestamp)…
+# ARGV: id_tarea, block_hash, n campos, campo, valor…, (id, origen, destino, monto, timestamp)…,
+#       los campos que se le sacan a tx:<id> y, último, cuántos son.
 # Devuelve {resultado, block_hash, altura}: «confirmada», «repetida» (ya estaba confirmada: con su
 # bloque, para repetir el aviso) o «descartada» (la tarea no seguía en curso, cambió la punta o
 # alguna transacción ya estaba confirmada en otro bloque).
@@ -200,28 +202,28 @@ end
 if redis.call('LINDEX', KEYS[2], -1) ~= redis.call('HGET', KEYS[1], 'previous_hash') then return descartar() end
 local n = tonumber(ARGV[3])
 local primera = 4 + 2 * n
-for i = primera, #ARGV, 5 do
+local k = tonumber(ARGV[#ARGV])  -- los campos que se le sacan a tx:<id>, y su cantidad al final
+local ultima = #ARGV - k - 1
+local copiados = {unpack(ARGV, ultima + 1, #ARGV - 1)}
+for i = primera, ultima, 5 do
   if redis.call('HGET', 'tx:' .. ARGV[i], 'estado') == 'confirmada' then return descartar() end
 end
 local altura = redis.call('LLEN', KEYS[2])
 for i = 4, 3 + 2 * n, 2 do redis.call('HSET', KEYS[7], ARGV[i], ARGV[i + 1]) end
 redis.call('HSET', KEYS[7], 'altura', altura)
 redis.call('RPUSH', KEYS[2], ARGV[2])
-for i = primera, #ARGV, 5 do
+for i = primera, ultima, 5 do
   local id, origen, destino, monto, timestamp = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3], ARGV[i + 4]
   local clave = 'tx:' .. id
   redis.call('HINCRBY', KEYS[4], destino, monto)
   if origen == 'emision' then
-    if redis.call('EXISTS', clave) == 0 then
-      redis.call('HSET', clave, 'origen', origen, 'destino', destino, 'monto', monto, 'nonce', 0,
-                 'timestamp', timestamp, 'firma', '')
-    end
     if string.sub(id, 1, 3) == 'cb-' then redis.call('HINCRBY', 'historial:' .. destino, 'bloques', 1) end
     if string.sub(id, 1, 6) ~= 'carga-' then redis.call('HINCRBY', 'historial:' .. destino, 'recompensas', monto) end
   else
     redis.call('HINCRBY', KEYS[4], origen, -tonumber(monto))
     redis.call('HINCRBY', KEYS[5], origen, -tonumber(monto))
   end
+  redis.call('HDEL', clave, unpack(copiados))
   redis.call('HSET', clave, 'estado', 'confirmada', 'bloque', ARGV[2])
 end
 if redis.call('LINDEX', KEYS[3], 0) == redis.call('HGET', KEYS[1], 'caja') then redis.call('LPOP', KEYS[3]) end
@@ -291,13 +293,13 @@ def datos_tarea(tarea, transacciones):
 class Nct:
     def __init__(self, redis, publicador, saldos_iniciales=None, organizador="", wait_replicas=1, wait_ms=1000,
                  ventana=VENTANA, tx_por_caja=TX_POR_CAJA, tarea_vence=TAREA_VENCE, espera_nonce=ESPERA_NONCE,
-                 fondo_epoca=contrato.FONDO_EPOCA):
+                 fondo_epoca=contrato.FONDO_EPOCA, tarea_guarda=contrato.TAREA_GUARDA):
         self.redis, self.publicador = redis, publicador
         self.saldos_iniciales = SALDOS_INICIALES if saldos_iniciales is None else saldos_iniciales
         self.organizador = organizador
         self.wait_replicas, self.wait_ms = wait_replicas, wait_ms
         self.ventana, self.tx_por_caja, self.tarea_vence = ventana, tx_por_caja, tarea_vence
-        self.espera_nonce, self.fondo_epoca = espera_nonce, fondo_epoca
+        self.espera_nonce, self.fondo_epoca, self.tarea_guarda = espera_nonce, fondo_epoca, tarea_guarda
         self._genesis = redis.register_script(LUA_GENESIS)
         self._validar = redis.register_script(LUA_VALIDAR)
         self._vencer_espera = redis.register_script(LUA_VENCER_ESPERA)
@@ -460,6 +462,7 @@ class Nct:
             if ts_vieja:
                 timestamp = max(timestamp, int(ts_vieja) + 1)
             log.info("La tarea %s venció sin bloque: se cierra y su caja se vuelve a armar", vencida)
+            self._archivar(vencida)
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "altura": altura,
             "transacciones": json.dumps(transacciones), "caja": caja, "estado": "en_curso", "publicada": time.time()})
@@ -541,6 +544,7 @@ class Nct:
                              args=[id_tarea, nueva, estado, self.tarea_vence]):
             log.info("La tarea %s ya no estaba en curso: no se rearma", id_tarea)
             return None
+        self._archivar(id_tarea)
         if not self._publicar_tarea(nueva, tarea["caja"], despues_de=int(tarea["timestamp"])):
             self.armar_si_libre()
         return estado
@@ -578,13 +582,16 @@ class Nct:
         resultado, *datos = self._consenso(
             keys=[contrato.TAREA.format(id_tarea), contrato.CADENA, contrato.CAJAS, contrato.SALDOS,
                   contrato.COMPROMETIDO, TAREA_ACTUAL, contrato.BLOQUE.format(hash_)],
-            args=[id_tarea, hash_, len(bloque), *plano(bloque), *movimientos])
+            args=[id_tarea, hash_, len(bloque), *plano(bloque), *movimientos,
+                  *contrato.CAMPOS_COPIADOS_TX, len(contrato.CAMPOS_COPIADOS_TX)])
         if resultado == "descartada":
+            self._archivar(id_tarea)
             # La caja sigue primera en `cajas`: se arma otra vez sobre la punta nueva.
             log.info("La tarea %s ya no extiende la punta, no sigue en curso o repite una transacción "
                      "confirmada: el bloque no entra", id_tarea)
             self.armar_si_libre()
             return resultado
+        self._archivar(id_tarea)
         hash_, altura = datos[0], int(datos[1])
         if resultado == "confirmada":
             BLOQUES.inc()
@@ -595,6 +602,14 @@ class Nct:
                                {"tarea": id_tarea, "block_hash": hash_, "altura": altura})
         self.armar_si_libre()
         return resultado
+
+    def _archivar(self, id_tarea):
+        """BC-70: una tarea terminada vence en `tarea_guarda` segundos, con sus conjuntos de shares y de
+        rangos sin solución. Lo que importa ya quedó en el bloque (o la caja se vuelve a armar)."""
+        tuberia = self.redis.pipeline(transaction=False)
+        for clave in (contrato.TAREA, contrato.SHARES_TAREA, contrato.TAREA_SIN_SOLUCION):
+            tuberia.expire(clave.format(id_tarea), self.tarea_guarda)
+        tuberia.execute()
 
     def _esperar_replica(self, hash_):
         """Que una réplica de Redis tenga el bloque antes de anunciarlo (WAIT). Si no llega a tiempo,
@@ -655,7 +670,8 @@ def main():
               ventana=config.entero("VENTANA_SEGUNDOS", VENTANA), tx_por_caja=config.entero("TX_POR_CAJA", TX_POR_CAJA),
               tarea_vence=config.entero("TAREA_VENCE_SEGUNDOS", TAREA_VENCE),
               espera_nonce=config.entero("ESPERA_NONCE_SEGUNDOS", ESPERA_NONCE),
-              fondo_epoca=config.entero("FONDO_EPOCA", contrato.FONDO_EPOCA))
+              fondo_epoca=config.entero("FONDO_EPOCA", contrato.FONDO_EPOCA),
+              tarea_guarda=config.entero("TAREA_GUARDA_SEGUNDOS", contrato.TAREA_GUARDA))
     nct.cargar_genesis()
     servicio.servir_http(en_hilo=True)
     publicador.conectar()

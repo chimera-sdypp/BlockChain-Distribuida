@@ -1,5 +1,7 @@
 """La API del backend con Redis y RabbitMQ falsos: formato, firma, reenvíos, fallas, lote y métricas."""
 
+import json
+
 import pytest
 import redis
 from fastapi.testclient import TestClient
@@ -25,6 +27,9 @@ class RedisFalso:
         if self.falla:
             raise redis.ConnectionError("Redis caído")
         return dict(self.hashes.get(clave, {}))
+
+    def hget(self, clave, campo):
+        return self.hashes.get(clave, {}).get(campo)
 
     def delete(self, *claves):
         for clave in claves:
@@ -317,3 +322,22 @@ def test_el_lote_cuenta_la_metrica_por_transaccion():
 
     delta = {r: despues.get(r, 0) - antes.get(r, 0) for r in ("aceptada", "invalida", "error")}
     assert delta == {"aceptada": 3, "invalida": 3, "error": 2}
+
+
+def test_una_confirmada_es_un_puntero_y_se_completa_con_el_bloque():
+    """BC-70: tx:<id> confirmada guarda sólo {estado, bloque}; la respuesta es la misma de siempre."""
+    redis, tx = RedisFalso(), firmada("alice", "bob", 10)
+    redis.hashes["bloque:abc"] = {"transactions": json.dumps([{"id": "cb-1-x", "origen": "emision"}, tx])}
+    redis.hashes[f"tx:{tx['id']}"] = {"estado": "confirmada", "bloque": "abc"}
+
+    respuesta = cliente(redis).get(f"/api/transacciones/{tx['id']}")
+
+    assert respuesta.status_code == 200
+    assert respuesta.json() == {**tx, "estado": "confirmada", "bloque": "abc"}
+
+
+def test_una_pendiente_sigue_completa_en_tx():
+    redis, tx = RedisFalso(), firmada("alice", "bob", 10)
+    redis.hashes[f"tx:{tx['id']}"] = {**{k: str(v) for k, v in tx.items() if k != "id"}, "estado": "pendiente"}
+
+    assert cliente(redis).get(f"/api/transacciones/{tx['id']}").json() == {**tx, "estado": "pendiente"}

@@ -168,3 +168,41 @@ def test_confirmar_no_pisa_lo_que_escribio_el_trp(armar, redis):
 
     assert redis.hmget(f"tarea:{id_tarea}", "rangos", "prefijo") == ["10", "0"]
     assert redis.hget(f"tarea:{id_tarea}", "block_hash") == solucion["hash"]
+
+
+def test_al_confirmar_cada_tx_queda_como_puntero_al_bloque(armar, redis):
+    """BC-70: el contenido ya está en el bloque; tx:<id> guarda sólo el estado y dónde quedó."""
+    nct = armar()
+    id_tarea = tarea_en_curso(redis, nct)
+    solucion = minar(redis, id_tarea)
+
+    nct.procesar_solucion(solucion)
+
+    transacciones = json.loads(redis.hget(f"bloque:{solucion['hash']}", "transactions"))
+    assert transacciones[0]["id"].startswith("cb-") and len(transacciones) == 3
+    for tx in transacciones:  # la coinbase también: nace como puntero
+        assert redis.hgetall(f"tx:{tx['id']}") == {"estado": "confirmada", "bloque": solucion["hash"]}
+
+
+def test_una_tarea_confirmada_vence_con_sus_conjuntos(armar, redis):
+    nct = armar()
+    id_tarea = tarea_en_curso(redis, nct)
+    redis.sadd(f"tarea:{id_tarea}:shares", f"{CUENTA['minero']}:1")
+    redis.sadd(f"tarea:{id_tarea}:sin_solucion", "0")
+
+    nct.procesar_solucion(minar(redis, id_tarea))
+
+    for clave in (f"tarea:{id_tarea}", f"tarea:{id_tarea}:shares", f"tarea:{id_tarea}:sin_solucion"):
+        assert 0 < redis.ttl(clave) <= contrato.TAREA_GUARDA
+
+
+def test_una_tarea_rearmada_vence_y_la_nueva_no(armar, redis, publicador):
+    nct = armar()
+    id_tarea = tarea_en_curso(redis, nct)
+
+    nct.procesar_solucion({"tarea": id_tarea, "sin_solucion": True})
+
+    nueva = publicador.tareas()[-1]["tarea"]
+    assert nueva != id_tarea
+    assert 0 < redis.ttl(f"tarea:{id_tarea}") <= contrato.TAREA_GUARDA
+    assert redis.ttl(f"tarea:{nueva}") == -1  # sigue en curso: no vence

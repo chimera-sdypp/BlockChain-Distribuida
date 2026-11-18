@@ -39,6 +39,8 @@ dir /data
 appendonly yes
 appendfsync everysec
 save 3600 1 300 100 60 10000
+maxmemory ${REDIS_MAXMEMORY:-0}
+maxmemory-policy noeviction
 requirepass ${REDIS_CLAVE}
 masterauth ${REDIS_CLAVE}
 replica-announce-ip ${yo}

@@ -39,6 +39,11 @@ ESPERA = "espera:{}"                 # sorted set por cuenta: las que llegaron a
 EN_ESPERA = "tx:en_espera"           # sorted set: id → cuándo entró en espera (para rechazar las que no se destraban)
 SHARES = "shares:{}"                 # sorted set de la época: minero → shares aceptados (ZINCRBY)
 SHARES_TAREA = "tarea:{}:shares"     # conjunto «minero:nonce» de la tarea, para descartar los repetidos
+TAREA_SIN_SOLUCION = "tarea:{}:sin_solucion"  # conjunto con los rangos que volvieron sin solución (TrP)
+# BC-70: una tarea terminada (y sus dos conjuntos) vence a esta hora. Lo que importa quedó en el bloque.
+TAREA_GUARDA = 3600
+# BC-70: lo que se le saca a tx:<id> al confirmarla. Ya está en el bloque: queda {estado, bloque}.
+CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "motivo")
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"
 CAMPOS_HISTORIAL = ("alta", "bloques", "recompensas", "shares", "rangos", "segundos_conectado", "ultimo_aviso",
                     "hashes_por_segundo")

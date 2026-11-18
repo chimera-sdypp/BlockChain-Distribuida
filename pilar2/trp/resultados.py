@@ -16,7 +16,7 @@ log = logging.getLogger("trp")
 
 SOLUCIONES = "soluciones"
 SIN_SOLUCION = "sin_solucion"  # valor de `ganador` cuando ningún rango tuvo solución
-SIN_SOLUCION_RANGOS = "tarea:{}:sin_solucion"  # conjunto con los rangos que volvieron sin solución
+SIN_SOLUCION_RANGOS = contrato.TAREA_SIN_SOLUCION  # conjunto con los rangos que volvieron sin solución
 HASH = re.compile(r"^[0-9a-f]{32}$")
 
 RANGOS_SIN_SOLUCION = Counter("blockchain_rangos_sin_solucion", "Rangos que los mineros devolvieron sin solución")

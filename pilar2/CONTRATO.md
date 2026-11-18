@@ -151,7 +151,7 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `cadena` | lista | Los `block_hash` en orden; la posición es la altura y el último es la punta |
 | `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), su `altura` y su `duracion` (segundos reales de minado, BC-60) |
 | `saldos` | hash | cuenta → saldo |
-| `tx:<id>` | hash | origen, destino, monto, nonce, timestamp, firma, estado, motivo y bloque |
+| `tx:<id>` | hash | Hasta confirmarse: origen, destino, monto, nonce, timestamp, firma, estado y, si se rechazó, motivo. **Confirmada, sólo `estado` y `bloque`** (BC-70): el contenido ya está en `bloque:<hash>` y el backend lo lee de ahí. La coinbase y la participación nacen así |
 | `cuentas` | hash | cuenta → JSON `{tipo: usuario \| minero \| organizador, nombre, alta}` (`alta` en segundos Unix). Sólo operan las que están acá |
 | `altas:pendientes` | hash | cuenta → JSON `{tipo, nombre, pedida}`: los pedidos de alta que el organizador todavía no aprobó ni rechazó |
 | `nonces` | hash | cuenta → último nonce aceptado (pendiente o confirmado). `emision` → la última carga |
@@ -160,7 +160,7 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
 | `comprometido` | hash | cuenta → suma de sus transacciones validadas que todavía no entraron en un bloque. Lo suma el NCT al validar y lo resta al confirmar: lo disponible es `saldos − comprometido` |
 | `cajas` | lista | Cada elemento, una caja: una lista JSON de ids (`["a1…", "b2…"]`), de como mucho `TX_POR_CAJA`. La primera es la que se está minando o la próxima: el NCT la saca recién al confirmar su bloque |
-| `tarea:<id>` | hash | Lo escribe el NCT al armarla: `previous_hash`, `timestamp`, `altura`, `transacciones` (JSON, completas y en orden), `caja` (JSON con los ids), `estado` y `publicada` (segundos Unix). Lo agrega el TrP: `prefijo` (el que eligió; el NCT verifica con éste), `rangos` (cuántos) y `ganador` (JSON {minero, nonce, hash} o `sin_solucion`). Al confirmar, el NCT agrega `block_hash`. Estados: `en_curso`, `confirmada`, `descartada` (cambió la punta), `sin_solucion`, `rechazada` (no pasó la verificación) y `vencida` (venció `tarea:actual` sin bloque: se armó otra con la misma caja) |
+| `tarea:<id>` | hash | Lo escribe el NCT al armarla: `previous_hash`, `timestamp`, `altura`, `transacciones` (JSON, completas y en orden), `caja` (JSON con los ids), `estado` y `publicada` (segundos Unix). Lo agrega el TrP: `prefijo` (el que eligió; el NCT verifica con éste), `rangos` (cuántos) y `ganador` (JSON {minero, nonce, hash} o `sin_solucion`). Al confirmar, el NCT agrega `block_hash`. Estados: `en_curso`, `confirmada`, `descartada` (cambió la punta), `sin_solucion`, `rechazada` (no pasó la verificación) y `vencida` (venció `tarea:actual` sin bloque: se armó otra con la misma caja). Terminada, vence en `TAREA_GUARDA` (1 hora; BC-70), igual que sus dos conjuntos |
 | `tarea:<id>:sin_solucion` | conjunto | Los rangos que volvieron sin solución (lo maneja el TrP) |
 | `tarea:<id>:shares` | conjunto | `<minero>:<nonce>` de los shares aceptados de la tarea, para descartar los repetidos (gateway) |
 | `shares:<época>` | sorted set | minero → shares aceptados en la época (`ZINCRBY`, gateway) |

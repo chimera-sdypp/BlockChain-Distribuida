@@ -153,6 +153,22 @@ Capturas de Grafana del mismo período (horario de Argentina, 02:36 a 03:03):
   
   Es lo que pide BC-60 (no saltar de golpe), pero deja varios bloques con dificultad mínima. Mejora posible: que al volver a haber mineros el ajuste arranque desde el techo por potencia y no desde el último prefijo.
 
+## Gráficos comparativos (BC-42)
+
+[`graficos.py`](graficos.py) rehace los gráficos desde los CSV de cada prueba, así se pueden repetir: `python pilar3/pruebas/graficos.py` (todos) o `graficos.py bulks gpu` (algunos). Si falta el CSV de uno, lo saltea.
+
+| Gráfico | Datos | Imagen |
+|---|---|---|
+| Bulks (BC-38): respuesta HTTP p50/p95/p99 y tiempo hasta confirmar contra el tamaño | `bulks/resultados.csv` | [`bulks.png`](resultados/bulks.png) |
+| Prefijo (BC-39): tiempo por bloque contra el largo, GPU y CPU | `resultados/prefijos-{gpu,cpu}.csv` | [`prefijos.png`](resultados/prefijos.png) |
+| Fragmentación (BC-40): tiempo por bloque y rangos prestados contra el % | `resultados/fragmentos-{gpu,cpu}.csv` | `fragmentos.png` (falta la corrida) |
+| Entrada y salida de GPU (BC-41): línea de tiempo de cada ciclo | `resultados/gpu-ciclos-*.csv` | [`gpu-ciclos.png`](resultados/gpu-ciclos.png) |
+
+![Bulks](resultados/bulks.png)
+
+- **Respuesta HTTP:** crece lineal con el lote hasta 1.000, porque el backend confirma cada transacción en RabbitMQ (`confirm_delivery`) de a una. Desde 10.000 los lotes son de 1.000 y la latencia por lote se mantiene en ~10 s.
+- **Confirmación:** hasta 1.000 transacciones manda la ventana de 30 s del NCT (todo entra en un bloque). Desde 10.000 son 100 por bloque (`TX_POR_CAJA`) y el tiempo crece lineal: 76 a 94 tx/s confirmadas.
+
 ## Criterio de potencia (BC-59)
 
 El TrP elige el largo p del prefijo con la potencia de los mineros vivos: el mayor p con 16^p ≤ potencia × T (`SEGUNDOS_POR_BLOQUE`), hasta `PREFIJO_BASE`; desde BC-60 ese es el techo del ajuste por tiempo (ver [el README del TrP](../../pilar2/trp/README.md)). La potencia es la **suma** de sus `bench`. `CRITERIO_POTENCIA` permite, sólo para esta prueba, juntarlos con el promedio, el mínimo o el máximo.

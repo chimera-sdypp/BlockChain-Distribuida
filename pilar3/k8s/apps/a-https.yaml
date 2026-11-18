@@ -1,0 +1,11 @@
+# Redirige a HTTPS lo que entra por HTTP al Ingress de la app (ingreso-https.yaml). Lo que ya vino por
+# HTTPS pasa sin cambios. La validación de Let's Encrypt no pasa por acá: cert-manager usa su propio
+# Ingress temporal, que tiene más prioridad (su regla es más larga).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: a-https
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true

@@ -91,4 +91,4 @@ if [[ "$REPLICAS" -gt 0 ]]; then
     done
 fi
 kubectl -n "$NAMESPACE" get pods -l app=minero-gpu -o wide
-echo "Listo. Para ver que se registraron en el gateway: BACKEND_URL=http://<IP de Traefik> ./verificar.sh"
+echo "Listo. Para ver que se registraron en el gateway: GATEWAY_URL=http://<IP del gateway>:8081 ./verificar.sh"

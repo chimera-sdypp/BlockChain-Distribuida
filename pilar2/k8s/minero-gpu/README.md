@@ -6,7 +6,7 @@ El [minero GPU](../../minero_gpu/) corre en el k3s de la PC de un integrante (RT
 |---|---|
 | `minero-gpu.yaml` | El StatefulSet: una GPU (`nvidia.com/gpu: 1`) por pod, con `runtimeClassName: nvidia`. El alias de cada minero es el nombre del pod (`minero-gpu-0`, `-1`…) y su clave sale de ese nombre y de la semilla del Secret: un pod que se reinicia vuelve con la misma cuenta |
 | `desplegar.sh` | Crea el namespace y el Secret con la semilla (sólo la primera vez), aplica el StatefulSet con la URL del gateway y la cantidad de réplicas, espera a que estén listos y muestra la cuenta de cada pod para aprobarla |
-| `verificar.sh` | Lista los mineros que ve el gateway (`/api/mineros` del backend) y comprueba cuántos GPU están vivos |
+| `verificar.sh` | Lista los mineros que ve el gateway (el `GET /mineros` del gateway) y comprueba cuántos GPU están vivos |
 
 ## 1. Preparar el k3s (una vez)
 
@@ -41,7 +41,7 @@ pilar2/k8s/aprobar.sh <cuenta> minero minero-gpu-0
 
 ```bash
 kubectl -n mineros-gpu logs minero-gpu-0 --tail=20              # su cuenta, bench, rangos tomados y shares
-BACKEND_URL=http://<IP de Traefik> pilar2/k8s/minero-gpu/verificar.sh
+GATEWAY_URL=http://<IP del gateway>:8081 pilar2/k8s/minero-gpu/verificar.sh
 ```
 
 Cada pod tiene que aparecer como `gpu`, vivo y con su bench. `verificar.sh` termina con código 0 si hay al menos un GPU vivo (o los que se le pidan: `verificar.sh 2`).
@@ -52,7 +52,7 @@ Que entre o salga una GPU es cambiar las réplicas:
 
 ```bash
 kubectl -n mineros-gpu scale statefulset minero-gpu --replicas=0   # sale la GPU
-BACKEND_URL=... pilar2/k8s/minero-gpu/verificar.sh 0                # código 0 cuando ya no queda ninguna viva
+GATEWAY_URL=... pilar2/k8s/minero-gpu/verificar.sh 0                # código 0 cuando ya no queda ninguna viva
 kubectl -n mineros-gpu scale statefulset minero-gpu --replicas=1   # vuelve, con la misma cuenta
 ```
 

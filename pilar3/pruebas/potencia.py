@@ -5,7 +5,7 @@ Dos modos:
 - Normal: el TrP de BC-59 ajusta el prefijo (AJUSTAR_PREFIJO=1) con CRITERIO_POTENCIA, hasta
   PREFIJO_BASE, y el criterio, el prefijo y la potencia salen de su log.
 - --emular: para un TrP sin CRITERIO_POTENCIA (el de main). Lee el bench de los mineros vivos de
-  /api/mineros, calcula con trp/particion.py el prefijo que elegiría cada criterio y lo fija
+  /mineros del gateway, calcula con trp/particion.py el prefijo que elegiría cada criterio y lo fija
   (PREFIJO_BASE=p, AJUSTAR_PREFIJO=0). Mide lo mismo: cuánto tarda el bloque con ese prefijo, minando todos.
 
 Por bloque, el tiempo sale de los logs del NCT, igual que en prefijos.py (BC-39). Para comparar con la
@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from fragmentos import env_trp, fijar_trp, logs, nombres_mineros, tareas_del_bloque, un_bloque
-from prefijos import api, vivos
+from prefijos import api, gateway_url, lista_mineros, vivos
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pilar2"))
 
@@ -72,11 +72,11 @@ def analizar(desde, block_hash, nombres):
     return {**fila, "prefijo": len(partida.group(2)), "potencia": round(potencia)}, partida.group(3)
 
 
-def prefijos_emulados(base, segundos, tope, vivo):
+def prefijos_emulados(gateway, segundos, tope, vivo):
     """{criterio: (prefijo, potencia)} con el bench de los mineros vivos, como lo haría el TrP de BC-59."""
     ahora = time.time()
     nodos = [{"bench": str(m.get("bench") or 0), "ultimo_aviso": str(m.get("ultimo_aviso") or 0)}
-             for m in api(base, "/api/mineros") if m.get("vivo")]
+             for m in lista_mineros(gateway) if m.get("vivo")]
     resultado = {}
     for criterio in CRITERIOS:
         potencia = potencia_viva(nodos, ahora, vivo, criterio)
@@ -87,6 +87,7 @@ def prefijos_emulados(base, segundos, tope, vivo):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--api", required=True, help="URL de Traefik (frontend y API)")
+    p.add_argument("--gateway", help="URL del gateway, que lista los mineros (GET /mineros); por defecto GATEWAY_URL")
     p.add_argument("--salida", required=True, help="CSV de resultados (se agregan filas)")
     p.add_argument("--criterios", default=",".join(CRITERIOS), help="CRITERIO_POTENCIA a probar, separados por coma")
     p.add_argument("--emular", action="store_true",
@@ -105,8 +106,9 @@ def main():
     if not set(criterios) <= set(CRITERIOS):
         sys.exit(f"los criterios son {', '.join(CRITERIOS)}")
     base = args.api.rstrip("/")
+    gateway = gateway_url(args.gateway)
 
-    gpus, cpus = vivos(base)
+    gpus, cpus = vivos(gateway)
     if (gpus, cpus) != (args.gpus, args.cpus):
         sys.exit(f"tienen que estar vivos {args.gpus} GPU y {args.cpus} CPU: hay {gpus} GPU y {cpus} CPU")
 
@@ -116,7 +118,7 @@ def main():
     emulados = None
     if args.emular:
         segundos = int(env_trp("SEGUNDOS_POR_BLOQUE") or 60)
-        emulados = prefijos_emulados(base, segundos, args.tope, args.vivo)
+        emulados = prefijos_emulados(gateway, segundos, args.tope, args.vivo)
         print(f"== emulando con {segundos} s por bloque: " + ", ".join(
             f"{c} → prefijo {pre} ({pot / 1e6:,.1f} MH/s)" for c, (pre, pot) in emulados.items()), flush=True)
 
@@ -147,13 +149,13 @@ def main():
                     if args.emular:
                         if not block_hash.startswith("0" * prefijo):
                             sys.exit(f"el bloque {block_hash} no tiene el prefijo de {prefijo}: ¿el TrP tomó el cambio?")
-                        medido, _ = del_nct(desde, block_hash, nombres_mineros(base))
+                        medido, _ = del_nct(desde, block_hash, nombres_mineros(gateway))
                         medido.update(prefijo=prefijo, potencia=round(potencia))
                     else:
-                        medido, aplicado = analizar(desde, block_hash, nombres_mineros(base))
+                        medido, aplicado = analizar(desde, block_hash, nombres_mineros(gateway))
                         if aplicado != criterio:
                             sys.exit(f"el TrP usó el criterio {aplicado}, no {criterio}: ¿tomó el cambio?")
-                    gpus, cpus = vivos(base)
+                    gpus, cpus = vivos(gateway)
                     escritor.writerow({**fila, **medido, "gpus_vivas": gpus, "cpus_vivas": cpus})
                     archivo.flush()
                     print(f"   bloque {numero}: prefijo {medido['prefijo']}, {medido['segundos']:7.2f} s "

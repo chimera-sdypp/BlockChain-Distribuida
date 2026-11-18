@@ -35,13 +35,19 @@ url_publica() {
     if [ -n "$nombre" ]; then echo "https://$nombre"; else echo "http://$(ip_publica)"; fi
 }
 
+# El gateway, que lista los mineros (GET /mineros; salieron de la API de la app, BC-54): GATEWAY_URL o su LoadBalancer.
+url_gateway() {
+    if [ -n "${GATEWAY_URL:-}" ]; then echo "${GATEWAY_URL%/}"; return; fi
+    echo "http://$(k get svc gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):8081"
+}
+
 # Valor de una variable de entorno del contenedor principal de un Deployment (vacío si no está).
 env_de() {
     k get deploy "$1" -o jsonpath="{.spec.template.spec.containers[?(@.name=='$1')].env[?(@.name=='$2')].value}"
 }
 
 mineros_cpu_vivos() {   # cuántas VMs nuestras (alias minero-cpu-*) avisaron hace poco
-    curl -fsS --max-time 10 "$1/api/mineros" | python3 -c '
+    curl -fsS --max-time 10 "$1/mineros" | python3 -c '
 import json, sys
 print(sum(1 for m in json.load(sys.stdin) if m.get("vivo") and str(m.get("alias") or "").startswith("minero-cpu-")))'
 }
@@ -78,20 +84,20 @@ estado() {
     echo "TrP:       PREFIJO_BASE=$(env_de trp PREFIJO_BASE) AJUSTAR_PREFIJO=$(env_de trp AJUSTAR_PREFIJO) FRAGMENTO_PORCENTAJE=$(env_de trp FRAGMENTO_PORCENTAJE) CRITERIO_POTENCIA=$(env_de trp CRITERIO_POTENCIA)   (vacío: el valor por defecto del TrP)"
     echo "Escalador: pausado en KEDA=$(k get scaledobject escalador -o jsonpath='{.metadata.annotations.autoscaling\.keda\.sh/paused-replicas}' 2>/dev/null || true)   (vacío: lo maneja KEDA)"
     echo "NCT:       SALDOS_INICIALES=$(env_de nct SALDOS_INICIALES)"
-    python3 - "$base" <<'EOF'
+    python3 - "$base" "$(url_gateway)" <<'EOF'
 import json, sys, urllib.request
 
-base = sys.argv[1]
-def get(ruta):
-    with urllib.request.urlopen(base + ruta, timeout=10) as r:
+base, gateway = sys.argv[1], sys.argv[2]
+def get(ruta, de=None):
+    with urllib.request.urlopen((de or base) + ruta, timeout=10) as r:
         return json.load(r)
 
 try:
     punta = get("/api/bloques?limite=1")
     saldos = get("/api/saldos")
-    mineros = get("/api/mineros")
+    mineros = get("/mineros", gateway)
 except OSError as error:
-    sys.exit(f"No responde {base}: {error}")
+    sys.exit(f"No responden {base} o {gateway}: {error}")
 if punta:
     print(f"Cadena:    altura {punta[0]['altura']}, prefijo del último bloque «{punta[0].get('prefijo', '')}»")
 print("Saldos:    " + ", ".join(f"{u}={saldos.get(u, 0)}" for u in ("alice", "bob", "carol")))
@@ -173,7 +179,7 @@ fijar_vms() {
     claves=$(claves_vms "$cantidad")
     TF_VAR_claves=$claves TF_VAR_proyecto=$PROYECTO tofu -chdir="$RAIZ/pilar3/vms/instancias" apply -input=false -auto-approve -var "cantidad=$cantidad"
 
-    url=$(url_publica)
+    url=$(url_gateway)
     echo "Esperando $cantidad minero(s) CPU vivo(s) (las VMs tardan unos minutos en arrancar)"
     for i in $(seq 1 60); do
         [ "$(mineros_cpu_vivos "$url")" -ge "$cantidad" ] && { echo "Listo: $cantidad VM(s)"; return; }

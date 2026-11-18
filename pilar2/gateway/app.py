@@ -73,6 +73,41 @@ end
 return nuevos
 """
 
+# Historial de un minero (BC-54), en cada /hello y /keepalive. Suma a `segundos_conectado` el tiempo desde
+# el aviso anterior, sólo si fue hace menos de `vivo` (si no, estuvo desconectado y ese hueco no cuenta).
+# Anota el aviso, el hashrate y, la primera vez, el alta. Devuelve 1 si el minero se (re)conecta.
+# KEYS: historial:<minero>, mineros:conectados. ARGV: minero, ahora, vivo, hashes/s ('' = no cambia), alta ('' = no).
+LUA_AVISO = """
+local ahora, ult = tonumber(ARGV[2]), tonumber(redis.call('HGET', KEYS[1], 'ultimo_aviso'))
+local volvio = redis.call('HGET', KEYS[1], 'conectado') ~= '1' and 1 or 0
+if ult and ahora >= ult and ahora - ult <= tonumber(ARGV[3]) then
+  if ahora > ult then redis.call('HINCRBY', KEYS[1], 'segundos_conectado', ahora - ult) end
+else
+  volvio = 1
+end
+if not ult or ahora > ult then redis.call('HSET', KEYS[1], 'ultimo_aviso', ahora) end
+redis.call('HSET', KEYS[1], 'conectado', '1')
+redis.call('SADD', KEYS[2], ARGV[1])
+if ARGV[4] ~= '' then redis.call('HSET', KEYS[1], 'hashes_por_segundo', ARGV[4]) end
+if ARGV[5] ~= '' then redis.call('HSETNX', KEYS[1], 'alta', ARGV[5]) end
+return volvio
+"""
+
+# Da por desconectado a un minero que dejó de avisar: lo hace un solo pod, y devuelve los segundos que lleva
+# conectado en total (o -1 si sigue vivo o ya lo había dado otro pod).
+# KEYS: historial:<minero>, mineros:conectados. ARGV: minero, ahora, vivo.
+LUA_DESCONECTAR = """
+if redis.call('HGET', KEYS[1], 'conectado') ~= '1' then
+  redis.call('SREM', KEYS[2], ARGV[1])
+  return -1
+end
+local ult = tonumber(redis.call('HGET', KEYS[1], 'ultimo_aviso') or '0')
+if tonumber(ARGV[2]) - ult <= tonumber(ARGV[3]) then return -1 end
+redis.call('HSET', KEYS[1], 'conectado', '0')
+redis.call('SREM', KEYS[2], ARGV[1])
+return tonumber(redis.call('HGET', KEYS[1], 'segundos_conectado') or '0')
+"""
+
 # Renueva un préstamo sólo si es de este minero: un minero lento no le estira el préstamo a otro.
 # KEYS: prestamos, prestamo:<miembro>. ARGV: miembro, minero, vencimiento nuevo.
 LUA_RENOVAR = """
@@ -113,6 +148,8 @@ class Gateway:
         self._renovar = redis.register_script(LUA_RENOVAR)
         self._reclamar = redis.register_script(LUA_RECLAMAR)
         self._sumar_shares = redis.register_script(LUA_SHARES)
+        self._aviso = redis.register_script(LUA_AVISO)
+        self._desconectar = redis.register_script(LUA_DESCONECTAR)
         self.altas = Altas(redis)
         self._lock = threading.Lock()
         self._tareas, self._textos = OrderedDict(), OrderedDict()
@@ -158,9 +195,12 @@ class Gateway:
                 or datos.get("tipo") not in TIPOS or not isinstance(datos.get("placa"), str):
             return 400, {"error": "hace falta {minero (el de X-Minero), tipo: gpu | cpu, placa}"}
         nodo = contrato.NODO.format(minero)
-        alias = json.loads(self.redis.hget(contrato.CUENTAS, minero) or "{}").get("nombre") or minero[:12]
+        cuenta = json.loads(self.redis.hget(contrato.CUENTAS, minero) or "{}")
+        alias = cuenta.get("nombre") or minero[:12]
+        ahora = int(time.time())
         self.redis.hset(nodo, mapping={"tipo": datos["tipo"], "placa": datos["placa"][:100], "alias": alias,
-                                       "ultimo_aviso": int(time.time())})
+                                       "ultimo_aviso": ahora})
+        self.avisar(minero, alias, ahora, alta=cuenta.get("alta") or ahora)
         if self.redis.hexists(nodo, "bench"):
             return 200, {"registrado": True}
         log.info("Minero nuevo %s (%s, %s, %s): le toca la tarea modelo", alias, datos["tipo"], datos["placa"], minero)
@@ -326,11 +366,14 @@ class Gateway:
                                           and es_entero(rango.get("rango")))):
             return 400, {"error": "hace falta {minero, hashes_por_segundo, rango: {tarea, rango} | null, shares?}"}
         nodo = contrato.NODO.format(minero)
+        ahora, hps = int(time.time()), int(datos["hashes_por_segundo"])
         tuberia = self.redis.pipeline(transaction=False)
-        tuberia.hset(nodo, mapping={"hashes_por_segundo": int(datos["hashes_por_segundo"]),
-                                    "ultimo_aviso": int(time.time())})
+        tuberia.hset(nodo, mapping={"hashes_por_segundo": hps, "ultimo_aviso": ahora})
         tuberia.hexists(nodo, "bench")
-        respuesta = {} if tuberia.execute()[1] else {"presentarse": True}
+        tuberia.hget(nodo, "alias")
+        _, con_bench, alias = tuberia.execute()
+        respuesta = {} if con_bench else {"presentarse": True}
+        self.avisar(minero, alias or minero[:12], ahora, hps=hps)
         if rango is None:
             return 200, {"cortar": False, **respuesta}
         if "shares" in datos:
@@ -344,6 +387,31 @@ class Gateway:
         self._renovar(keys=[contrato.PRESTAMOS, PRESTAMO.format(miembro)],
                       args=[miembro, minero, time.time() + self.lease])
         return 200, {"cortar": False, **respuesta}
+
+    # ── Historial: conexiones y desconexiones (BC-54) ──
+
+    def avisar(self, minero, alias, ahora, hps="", alta=""):
+        """Anota el aviso en `historial:<minero>` (tiempo conectado, hashrate y alta) y deja en el log quién entra."""
+        try:
+            if self._aviso(keys=[contrato.HISTORIAL.format(minero), contrato.CONECTADOS],
+                           args=[minero, ahora, self.minero_vivo, hps, alta]):
+                log.info("Minero conectado: %s (%s)", alias, minero)
+        except redislib.RedisError:
+            log.exception("No se pudo anotar el aviso de %s en su historial", alias)
+
+    def revisar_desconectados(self, ahora=None):
+        """Da por desconectados a los mineros que dejaron de avisar y lo deja en el log. Devuelve cuántos."""
+        ahora = int(ahora if ahora is not None else time.time())
+        caidos = 0
+        for minero in self.redis.smembers(contrato.CONECTADOS):
+            segundos = self._desconectar(keys=[contrato.HISTORIAL.format(minero), contrato.CONECTADOS],
+                                         args=[minero, ahora, self.minero_vivo])
+            if segundos >= 0:
+                caidos += 1
+                alias = self.redis.hget(contrato.NODO.format(minero), "alias") or minero[:12]
+                log.warning("Minero desconectado: %s (%s) dejó de avisar; lleva %.1f h conectado en total",
+                            alias, minero, segundos / 3600)
+        return caidos
 
     # ── Préstamos vencidos ──
 
@@ -383,24 +451,71 @@ class Gateway:
                 totales[tipo][1] += float(hps or bench or 0)
         return totales
 
-    def rangos_por_minero(self):
-        """[(alias, tipo, rangos prestados)] de cada nodo:*; sin alias, el principio de la cuenta (BC-59)."""
-        claves = list(self.redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
+    def lista_mineros(self):
+        """Cada nodo:<cuenta> con si está vivo, su saldo y su historial (BC-54), del más viejo al más nuevo.
+
+        Es lo que muestra GET /mineros (el listado salió de la API de la app) y lo que exponen las métricas.
+        """
+        claves = sorted(self.redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
         cuentas = [clave.split(":", 1)[1] for clave in claves]
         tuberia = self.redis.pipeline(transaction=False)
         for clave, cuenta in zip(claves, cuentas):
-            tuberia.hmget(clave, "alias", "tipo")
-            tuberia.hget(contrato.HISTORIAL.format(cuenta), "rangos")
+            tuberia.hgetall(clave)
+            tuberia.hgetall(contrato.HISTORIAL.format(cuenta))
+        tuberia.llen(contrato.CADENA)
         respuestas = tuberia.execute()
-        return [(alias or cuenta[:8], tipo or "", int(rangos or 0))
-                for cuenta, (alias, tipo), rangos in zip(cuentas, respuestas[::2], respuestas[1::2])]
+        epoca = contrato.epoca(respuestas[-1])
+        saldos = self.redis.hmget(contrato.SALDOS, cuentas) if cuentas else []
+        shares = self.redis.zrange(contrato.SHARES.format(epoca), 0, -1, withscores=True)
+        shares_epoca = {minero: int(cantidad) for minero, cantidad in shares}
+        ahora, resultado = time.time(), []
+        for cuenta, nodo, historial, saldo in zip(cuentas, respuestas[:-1:2], respuestas[1:-1:2], saldos):
+            aviso = _numero(nodo.get("ultimo_aviso"))
+            vivo = aviso is not None and ahora - aviso < self.minero_vivo
+            resultado.append({
+                "id": cuenta, "alias": nodo.get("alias") or cuenta[:8], "tipo": nodo.get("tipo") or "",
+                "placa": nodo.get("placa"), "bench": _numero(nodo.get("bench")),
+                "hashes_por_segundo": _numero(nodo.get("hashes_por_segundo")), "ultimo_aviso": aviso, "vivo": vivo,
+                "saldo": int(saldo or 0), "alta": _numero(historial.get("alta")),
+                **{campo: _numero(historial.get(campo)) or 0
+                   for campo in ("bloques", "recompensas", "shares", "rangos", "segundos_conectado")},
+                "shares_epoca": shares_epoca.get(cuenta, 0), "epoca": epoca,
+            })
+        return resultado
+
+
+def _numero(texto):
+    """Lo que Redis guarda como texto, como entero si se puede y si no como decimal (None si no hay)."""
+    try:
+        return int(texto)
+    except (TypeError, ValueError):
+        try:
+            return float(texto)
+        except (TypeError, ValueError):
+            return None
 
 
 class ColectorMineros:
-    """Mineros vivos y hashes/s por tipo, y rangos prestados a cada minero, leídos de Redis al momento del scrape.
+    """Mineros vivos y hashes/s por tipo, y el historial de cada minero (BC-54), leídos de Redis en el scrape.
 
     Las réplicas del gateway leen el mismo Redis y exponen lo mismo: en Grafana, `max`, no `sum`.
     """
+
+    # (métrica, campo de lista_mineros, ayuda): contadores del historial, con etiquetas minero (alias) y tipo
+    CONTADORES = (
+        ("blockchain_minero_rangos", "rangos", "Rangos prestados a cada minero"),
+        ("blockchain_minero_bloques", "bloques", "Bloques que ganó cada minero"),
+        ("blockchain_minero_recompensas", "recompensas", "Lo que cobró cada minero: coinbase y participación"),
+        ("blockchain_minero_shares", "shares", "Shares aceptados de cada minero"),
+        ("blockchain_minero_segundos_conectado", "segundos_conectado", "Segundos que estuvo conectado cada minero"),
+    )
+    MEDIDAS = (
+        ("blockchain_minero_hashes_por_segundo", "Hashes/s de cada minero en su último aviso (0 si no está vivo)"),
+        ("blockchain_minero_vivo", "1 si el minero avisó hace menos de MINERO_VIVO_SEGUNDOS"),
+        ("blockchain_minero_bench", "Hashes/s de cada minero en la tarea modelo"),
+        ("blockchain_minero_alta", "Fecha de alta de cada minero (segundos Unix)"),
+        ("blockchain_minero_shares_epoca", "Shares de cada minero en la época en curso"),
+    )
 
     def __init__(self):
         self.gateway = None
@@ -408,20 +523,37 @@ class ColectorMineros:
     def collect(self):
         mineros = GaugeMetricFamily("blockchain_mineros", "Mineros vivos por tipo", labels=["tipo"])
         hashes = GaugeMetricFamily("blockchain_hashes_por_segundo", "Potencia viva por tipo", labels=["tipo"])
-        rangos = CounterMetricFamily("blockchain_minero_rangos", "Rangos prestados a cada minero",
-                                     labels=["minero", "tipo"])
+        epoca = GaugeMetricFamily("blockchain_epoca", "Época en curso (cada 10 bloques)")
+        contadores = [CounterMetricFamily(nombre, ayuda, labels=["minero", "tipo"])
+                      for nombre, _, ayuda in self.CONTADORES]
+        medidas = {nombre: GaugeMetricFamily(nombre, ayuda, labels=["minero", "tipo"]) for nombre, ayuda in self.MEDIDAS}
         if self.gateway is not None:
             try:
                 for tipo, (cantidad, hps) in self.gateway.mineros_vivos().items():
                     mineros.add_metric([tipo], cantidad)
                     hashes.add_metric([tipo], hps)
-                for alias, tipo, cantidad in self.gateway.rangos_por_minero():
-                    rangos.add_metric([alias, tipo], cantidad)
+                lista = self.gateway.lista_mineros()
+                for m in lista:
+                    etiquetas = [m["alias"], m["tipo"]]
+                    for familia, (_, campo, _) in zip(contadores, self.CONTADORES):
+                        familia.add_metric(etiquetas, m[campo])
+                    valores = {"blockchain_minero_hashes_por_segundo": m["hashes_por_segundo"] if m["vivo"] else 0,
+                               "blockchain_minero_vivo": int(m["vivo"]),
+                               "blockchain_minero_bench": m["bench"],
+                               "blockchain_minero_alta": m["alta"],
+                               "blockchain_minero_shares_epoca": m["shares_epoca"]}
+                    for nombre, valor in valores.items():
+                        if valor is not None:
+                            medidas[nombre].add_metric(etiquetas, valor or 0)
+                if lista:
+                    epoca.add_metric([], lista[0]["epoca"])
             except Exception:
                 log.exception("No se pudieron leer los mineros para /metrics")
         yield mineros
         yield hashes
-        yield rangos
+        yield epoca
+        yield from contadores
+        yield from medidas.values()
 
 
 COLECTOR = ColectorMineros()
@@ -469,6 +601,16 @@ def agregar_rutas(app, gateway):
     app.post("/keepalive")(ruta("POST", gateway.keepalive))
     app.get("/tasks/next")(ruta("GET", gateway.siguiente))
 
+    @app.get("/mineros")
+    async def mineros():
+        """Los mineros con su historial (BC-54), sin firma: lo usan las pruebas y la operación. La página de la app
+        no los muestra; en Grafana está la fila «Historial de mineros»."""
+        try:
+            return await run_in_threadpool(gateway.lista_mineros)
+        except redislib.RedisError as falla:
+            log.error("Redis no respondió al listar los mineros: %r", falla)
+            return JSONResponse({"error": "Redis no disponible"}, status_code=503)
+
 
 def revisar_siempre(gateway, cada):
     while True:
@@ -476,6 +618,10 @@ def revisar_siempre(gateway, cada):
             gateway.revisar_vencidos()
         except Exception:
             log.exception("Falló la revisión de préstamos vencidos")
+        try:
+            gateway.revisar_desconectados()
+        except Exception:
+            log.exception("Falló la revisión de mineros desconectados")
         time.sleep(cada)
 
 

@@ -1,8 +1,8 @@
 #!/bin/bash
-# Muestra los mineros que el gateway tiene registrados (nodo:<cuenta>, vía la API del backend) y
+# Muestra los mineros que el gateway tiene registrados (nodo:<cuenta>, en su GET /mineros) y
 # termina con código 0 si hay al menos MINIMO mineros GPU vivos (por defecto 1).
 #
-#   BACKEND_URL=http://<IP de Traefik> pilar2/k8s/minero-gpu/verificar.sh [MINIMO]
+#   GATEWAY_URL=http://<IP del gateway>:8081 pilar2/k8s/minero-gpu/verificar.sh [MINIMO]
 #
 # Con MINIMO=0 sirve para comprobar el apagado: termina con 0 si NO queda ningún GPU vivo.
 
@@ -10,11 +10,11 @@ set -euo pipefail
 
 MINIMO="${1:-1}"
 [[ "$MINIMO" =~ ^[0-9]+$ ]] || { echo "Error: MINIMO tiene que ser un entero >= 0" >&2; exit 1; }
-[[ -n "${BACKEND_URL:-}" ]] || { echo "Error: falta BACKEND_URL (p. ej. http://<IP del Ingress>)" >&2; exit 1; }
+[[ -n "${GATEWAY_URL:-}" ]] || { echo "Error: falta GATEWAY_URL (p. ej. http://<IP del gateway>:8081)" >&2; exit 1; }
 PYTHON="$(command -v python3 || command -v python)" || { echo "Error: hace falta Python" >&2; exit 1; }
 
-MINEROS_JSON="$(curl -fsS --max-time 10 "${BACKEND_URL%/}/api/mineros")" \
-    || { echo "Error: no respondió ${BACKEND_URL%/}/api/mineros" >&2; exit 1; }
+MINEROS_JSON="$(curl -fsS --max-time 10 "${GATEWAY_URL%/}/mineros")" \
+    || { echo "Error: no respondió ${GATEWAY_URL%/}/mineros" >&2; exit 1; }
 export MINEROS_JSON
 
 "$PYTHON" - "$MINIMO" << 'EOF'

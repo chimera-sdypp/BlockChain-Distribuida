@@ -4,7 +4,7 @@ La única puerta de los mineros al sistema. Los mineros están fuera del cluster
 
 ## API
 
-Cada pedido va **firmado con la clave del minero** (BC-57): `X-Minero` (su cuenta), `X-Tiempo` y `X-Firma` (Ed25519 sobre método, ruta, tiempo y cuerpo; ver [Pedidos firmados](../CONTRATO.md#pedidos-firmados-de-los-mineros)). Firma mala o con la hora corrida más de 30 s: 401. Cuenta que no está en `cuentas` como `minero`: 403. El `minero` del cuerpo tiene que ser el que firma: si no, 400. `/health` y `/metrics` no piden firma. No hay token compartido.
+Cada pedido va **firmado con la clave del minero** (BC-57): `X-Minero` (su cuenta), `X-Tiempo` y `X-Firma` (Ed25519 sobre método, ruta, tiempo y cuerpo; ver [Pedidos firmados](../CONTRATO.md#pedidos-firmados-de-los-mineros)). Firma mala o con la hora corrida más de 30 s: 401. Cuenta que no está en `cuentas` como `minero`: 403. El `minero` del cuerpo tiene que ser el que firma: si no, 400. `/health`, `/metrics` y `/mineros` no piden firma. No hay token compartido.
 
 | Pedido | Qué hace | Respuesta |
 |---|---|---|
@@ -12,13 +12,15 @@ Cada pedido va **firmado con la clave del minero** (BC-57): `X-Minero` (su cuent
 | `POST /bench` `{minero, segundos, hashes_por_segundo}` | Guarda `bench` (hashes/s) | 204 |
 | `GET /tasks/next` | Toma un rango de `rangos` y se lo presta a quien firma, con **su** texto (`texto_para`: su coinbase en la raíz) | 200 con el rango y `bloque`, o 204 sin trabajo |
 | `POST /results` `{tarea, rango, minero, nonce, hash, shares}` o `{…, sin_solucion: true}` | Suma los shares, lo publica en `resultados` (sin los shares) y libera el préstamo | 202 `{shares}` |
-| `POST /keepalive` `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` | Actualiza `nodo:<cuenta>`, suma los shares y renueva el préstamo | `{cortar: true \| false, shares?}` |
+| `POST /keepalive` `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` | Actualiza `nodo:<cuenta>` y el historial, suma los shares y renueva el préstamo | `{cortar: true \| false, shares?}` |
+| `GET /mineros` (sin firma) | Cada minero con su tipo, alias, bench, hashrate, si está vivo, su saldo y su historial. Lo usan las pruebas y la operación: la API de la app no lista mineros (BC-54) | 200 `[{id, alias, tipo, vivo, bench, …, bloques, recompensas, shares, segundos_conectado, alta}]` |
 
 ## El texto de cada minero y los shares
 
 - **Texto (BC-62):** el TrP publica los rangos sin texto. Al prestar uno, el gateway arma el texto de ese minero con los datos de `tarea:<id>` (los del NCT y el prefijo del TrP) y lo guarda en memoria por (tarea, minero): no recalcula la raíz en cada rango. Como cada minero mina un texto distinto, un nonce robado no le sirve a otro.
 - **Shares (BC-63):** verifica cada uno (que esté en el rango prestado y que su hash cumpla el prefijo menos un carácter) y un Lua los suma en `shares:<época>` y `historial:<minero>` sólo si la tarea sigue en curso, si el préstamo es de ese minero, sin repetidos (`tarea:<id>:shares`) y hasta 64 por préstamo.
 - **Rangos por minero (BC-59):** cada rango que presta (no el bench del `/hello` ni los de tareas cerradas, que descarta) suma 1 a `rangos` en `historial:<minero>`. Así se ve el reparto según la potencia: la GPU termina antes y pide otro, entonces se lleva más.
+- **Historial (BC-54):** en cada `/hello` y keep-alive, un Lua suma a `segundos_conectado` el tiempo desde el aviso anterior (sólo si fue hace menos de 15 s: un hueco más largo es tiempo desconectado), anota el hashrate y, la primera vez, el `alta` (la de `cuentas`). Cuando un minero se conecta, o deja de avisar más de 15 s, queda una línea en el log (`Minero conectado` / `Minero desconectado`): un solo pod la escribe. Los `bloques` y las `recompensas` los suma el NCT al confirmar.
 
 ## Préstamos
 
@@ -44,7 +46,7 @@ No hace falta suscribirse a `eventos`, y un pod que se reinicia no pierde nada.
 | `MINERO_VIVO_SEGUNDOS` | 15 | Desde cuándo un minero sin avisar deja de contar en las métricas |
 | `COLA_RANGOS` · `COLA_RESULTADOS` | `rangos` · `resultados` | Las colas (los tests usan temporales) |
 
-Métricas: `blockchain_tareas_entregadas_total`, `blockchain_prestamos_vencidos_total`, `blockchain_shares_total{resultado}` (aceptado o descartado), `blockchain_pedidos_rechazados_total{motivo}` (firma o no_aprobado), `blockchain_mineros{tipo}` y `blockchain_hashes_por_segundo{tipo}`, leídas de `nodo:*` (sólo los vivos), y `blockchain_minero_rangos_total{minero, tipo}`, de `historial:<minero>` (`minero` es el alias de `nodo:<cuenta>`, o los primeros 8 caracteres de la cuenta). Las dos réplicas reportan lo mismo de Redis, así que KEDA y Grafana tienen que usar `max`.
+Métricas: `blockchain_tareas_entregadas_total`, `blockchain_prestamos_vencidos_total`, `blockchain_shares_total{resultado}` (aceptado o descartado), `blockchain_pedidos_rechazados_total{motivo}` (firma o no_aprobado), `blockchain_mineros{tipo}` y `blockchain_hashes_por_segundo{tipo}`, leídas de `nodo:*` (sólo los vivos), y, por minero, de `historial:<minero>` y `nodo:<cuenta>`: `blockchain_minero_{rangos,bloques,recompensas,shares,segundos_conectado}_total` y `blockchain_minero_{hashes_por_segundo,vivo,bench,alta,shares_epoca}` (etiquetas `minero`, el alias o los primeros 8 caracteres de la cuenta, y `tipo`), más `blockchain_epoca`. Las dos réplicas reportan lo mismo de Redis, así que KEDA y Grafana tienen que usar `max`.
 
 ## Ejecutar y probar (desde `pilar2/`)
 

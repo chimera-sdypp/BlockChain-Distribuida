@@ -54,11 +54,13 @@ def lista_enteros(texto):
 
 
 class Api:
-    def __init__(self, base):
+    def __init__(self, base, gateway=None):
         self.base = base.rstrip("/")
+        # Los mineros salieron de la API de la app (BC-54): los lista el gateway, en GET /mineros.
+        self.gateway = (gateway or os.environ.get("GATEWAY_URL") or "").rstrip("/")
 
-    def get(self, ruta):
-        with urllib.request.urlopen(self.base + ruta, timeout=15) as respuesta:
+    def get(self, ruta, base=None):
+        with urllib.request.urlopen((base or self.base) + ruta, timeout=15) as respuesta:
             return json.load(respuesta)
 
     def altura(self):
@@ -81,7 +83,9 @@ class Api:
 
     def mineros_vivos(self):
         cuenta = {"gpu": 0, "cpu": 0}
-        for minero in self.get("/api/mineros"):
+        if not self.gateway:
+            sys.exit("Falta --gateway (o GATEWAY_URL): la URL del gateway, p. ej. http://<IP>:8081")
+        for minero in self.get("/mineros", base=self.gateway):
             if minero.get("vivo") and minero.get("tipo") in cuenta:
                 cuenta[minero["tipo"]] += 1
         return cuenta
@@ -164,6 +168,7 @@ def metrica(metricas, nombre, valor, defecto=0):
 def main():
     argumentos = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     argumentos.add_argument("--url", required=True, help="base del backend por el Ingress, p. ej. http://34.1.2.3")
+    argumentos.add_argument("--gateway", help="URL del gateway, que lista los mineros (GET /mineros); por defecto GATEWAY_URL")
     argumentos.add_argument("--tamanos", type=lista_enteros, default=lista_enteros("1,10,100,1000,10000,100000"))
     argumentos.add_argument("--repeticiones", type=int, default=3)
     argumentos.add_argument("--vus", type=int, default=10, help="usuarios virtuales de k6")
@@ -186,7 +191,7 @@ def main():
     k6 = shutil.which("k6") or sys.exit("No está k6 en el PATH (https://k6.io/docs/get-started/installation/)")
     if not 1 <= opciones.lote <= 1000:
         sys.exit("--lote tiene que estar entre 1 y 1000 (el máximo del backend)")
-    api = Api(opciones.url)
+    api = Api(opciones.url, opciones.gateway)
     try:
         necesario, faltan = comprobar_saldos(api, opciones.origenes, max(opciones.tamanos))
     except (urllib.error.URLError, OSError) as error:

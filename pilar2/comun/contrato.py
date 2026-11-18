@@ -46,7 +46,8 @@ TAREA_GUARDA = 3600
 CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "motivo")
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"
 CAMPOS_HISTORIAL = ("alta", "bloques", "recompensas", "shares", "rangos", "segundos_conectado", "ultimo_aviso",
-                    "hashes_por_segundo")
+                    "hashes_por_segundo", "conectado")
+CONECTADOS = "mineros:conectados"    # conjunto: los mineros con conectado = 1, para darlos por desconectados
 TIPOS_CUENTA = ("usuario", "minero", "organizador")
 
 CEROS = "0" * 32

@@ -165,7 +165,8 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `tarea:<id>:shares` | conjunto | `<minero>:<nonce>` de los shares aceptados de la tarea, para descartar los repetidos (gateway) |
 | `shares:<época>` | sorted set | minero → shares aceptados en la época (`ZINCRBY`, gateway) |
 | `epoca:<n>` | hash | El detalle del reparto de la época, para la auditoría: el fondo y, por minero, shares, racha y monto (NCT, BC-63) |
-| `historial:<minero>` | hash, permanente | `alta`, `bloques`, `recompensas`, `shares`, `rangos`, `segundos_conectado`, `ultimo_aviso` y `hashes_por_segundo` (gateway y NCT, BC-54) |
+| `historial:<minero>` | hash, permanente | `alta`, `bloques`, `recompensas`, `shares`, `rangos`, `segundos_conectado`, `ultimo_aviso`, `hashes_por_segundo` y `conectado` (1 o 0) (gateway y NCT, BC-54) |
+| `mineros:conectados` | conjunto | Las cuentas con `conectado` = 1: el gateway las revisa cada 5 s para dar por desconectado al que dejó de avisar (BC-54) |
 | `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Si el NCT muere, vence y se vuelve a armar la misma caja |
 | `tarea:ultima` | string | El id de la última tarea publicada. Al publicar otra, si ésta sigue `en_curso` pasa a `vencida`: el gateway deja de prestar sus rangos y les dice «cortá» a los mineros |
 | `nodo:<cuenta>` | hash, permanente | `tipo` (`gpu` o `cpu`), `alias` (el `nombre` de `cuentas`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix) |

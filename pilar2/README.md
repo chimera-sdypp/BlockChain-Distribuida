@@ -29,7 +29,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 | `web` | `/health` (503 si RabbitMQ o Redis no responden) y `/metrics` en el puerto 8080; cada servicio suma sus rutas |
 | `rabbit` | Colas quorum durables, publicar con confirmación del broker, consumir con ack manual y reconexión sola; `avisar` y `suscribir` para los avisos de un exchange topic (cada suscriptor con su cola exclusiva) |
 | `redisdb` | Redis directo o, con `REDIS_SENTINELS`, el primario que indique Sentinel |
-| `contrato` | Validación de transacciones, el texto que se hashea, recompensa, génesis y nombres de colas y claves |
+| `contrato` | Cuentas y firmas Ed25519, transacciones firmadas, emisión, el texto de cada minero, shares, épocas, génesis y nombres de colas y claves ([CONTRATO.md](CONTRATO.md)) |
 
 ## Decisiones
 
@@ -47,7 +47,7 @@ Los números del diagrama son el recorrido de una transferencia (1 a 11); las le
 kubectl create namespace blockchain
 kubectl -n blockchain create secret generic blockchain-secretos --from-literal=RABBIT_USUARIO=blockchain \
   --from-literal=RABBIT_CLAVE="$(openssl rand -hex 16)" --from-literal=RABBIT_COOKIE="$(openssl rand -hex 32)" \
-  --from-literal=REDIS_CLAVE="$(openssl rand -hex 16)" --from-literal=MINER_TOKEN="$(openssl rand -hex 24)"
+  --from-literal=REDIS_CLAVE="$(openssl rand -hex 16)"
 k8s/imagenes.sh                      # construye las imágenes y las importa en k3s (containerd)
 kubectl apply -k k8s                 # RabbitMQ, Redis, backend, frontend, nct, trp, gateway e Ingress
 # Monitoreo (ver «Observabilidad»): la contraseña de Grafana va en un Secret, nunca en el repo
@@ -66,19 +66,23 @@ helm install keda kedacore/keda --version 2.21.0 -n keda --create-namespace
 kubectl apply -k k8s/monitoreo && kubectl apply -k k8s/escalador
 ```
 
-- La página y la API, por el Ingress: `http://localhost` (`/api` → backend; `/` y `/eventos` → frontend).
-- Los mineros, al gateway por su LoadBalancer: `GATEWAY_URL=http://localhost:8081` y el `MINER_TOKEN` del Secret. El CPU con `python -m minero_cpu`; el GPU con `python -m minero_gpu` o su imagen.
+- La página y la API, por el Ingress: `http://localhost` (`/api` → backend; `/` y `/eventos` → frontend). Las altas se piden en `/alta` y el organizador las aprueba en `/organizador`, con su clave en JWK (`python -m claves exportar`; en k3s, la de prueba `organizador` de `comun/tests/claves.py`).
+- Los mineros, al gateway por su LoadBalancer: `GATEWAY_URL=http://localhost:8081` y su clave (la generan la primera vez y muestran su cuenta). El minero queda pedido solo y el organizador lo aprueba en `/organizador` (o `k8s/aprobar.sh <cuenta> minero <alias>`). El CPU con `python -m minero_cpu`; el GPU con `python -m minero_gpu` o su imagen.
+- Las cuentas del génesis son las de prueba alice, bob y carol (`comun/tests/claves.py`: sus privadas se derivan del nombre, sirven para probar). La ráfaga de la demo: `../pilar3/pruebas/rafaga.sh http://localhost 20`.
 - 2 réplicas de cada servicio; el escalador, 0 o 1 pod según KEDA.
 
 ### Pruebas del sistema desplegado
 
-`k8s/probar.sh` prueba RabbitMQ y Redis solos. `k8s/probar_sistema.sh` corre `sistema/` contra lo desplegado, como un cliente más (el Ingress y el gateway), con un minero CPU de prueba:
+`k8s/probar.sh` prueba RabbitMQ y Redis solos. `k8s/probar_sistema.sh` corre `sistema/` contra lo desplegado, como un cliente más (el Ingress y el gateway), con un minero CPU de prueba. Las cuentas y los mineros de prueba los aprueba con `k8s/aprobar.sh` (kubectl exec en el Redis):
 
 | Prueba | Qué tiene que pasar |
 |---|---|
 | Transferencia válida | Recibida → confirmada, en un bloque que extiende la cadena; el hash se verifica desde afuera, los saldos se mueven y el minero cobra |
 | Sin saldo | Rechazada, con el motivo |
-| Doble gasto simultáneo | Dos transferencias a la vez que gastan el mismo saldo: una confirmada y una rechazada |
+| Cuenta sin aprobar | Rechazada: `cuenta no aprobada` |
+| Firma falsa o monto cambiado | 400 en el backend: nadie manda una transferencia de bob sin la clave de bob |
+| Reenvío | La misma transacción otra vez: 409, y se confirma una sola |
+| Doble gasto con el mismo nonce | Dos transacciones distintas firmadas con el mismo nonce, a la vez: una confirmada y otra `nonce repetido` |
 | Cadena íntegra | Los últimos 100 bloques encadenan, cada hash se verifica y ninguna transacción está en dos |
 | Minero muerto a mitad de un rango (`kill -9`) | A los 30 s el gateway devuelve el rango a la cola y otro minero resuelve el bloque |
 | Matar una réplica del NCT, del TrP y del gateway | Una transferencia hecha enseguida se confirma igual, y el Deployment vuelve a 2 |
@@ -103,7 +107,7 @@ kubectl -n monitoring port-forward svc/monitoreo-grafana 3000:80    # http://loc
 kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d
 ```
 
-- **Dashboard «Blockchain distribuida»:** transacciones, bloques, mineros y prefijo, reparto del trabajo, colas, VMs del escalador, CPU y memoria por pod, errores y logs. `$app` filtra por servicio y `$nivel` filtra los logs. Grafana no tiene disco: el dashboard y los datasources (`prometheus` y `loki`) vuelven a cargarse en cada arranque.
+- **Dashboard «Blockchain distribuida»:** transacciones, bloques, mineros y prefijo, reparto del trabajo (con los rangos por minero y por tipo), colas, VMs del escalador, CPU y memoria por pod, errores y logs. `$app` filtra por servicio y `$nivel` filtra los logs. Grafana no tiene disco: el dashboard y los datasources (`prometheus` y `loki`) vuelven a cargarse en cada arranque.
 - **Errores:** cada log ERROR o superior de un servicio suma a `blockchain_errores_total{servicio, tipo}` (lo hace `comun/registro`).
 - **Logs:** también los de un pod que ya no existe. En Grafana → Explore → Loki, p. ej. `{app="nct", nivel="ERROR"}`. Los de los mineros no entran (corren fuera del cluster).
 
@@ -150,23 +154,27 @@ Los servicios usan `RABBIT_HOST=rabbitmq` y `REDIS_SENTINELS=redis:26379`, más 
 
 ## TrP (`trp/`)
 
-Toma cada tarea de `tareas`, elige el prefijo, la parte en rangos de nonce y publica uno por mensaje en `rangos` (NCT.2). Guarda `bloque`, `prefijo` y `rangos` en `tarea:<id>`, y recién después hace el ack de la tarea.
+Toma cada tarea de `tareas`, elige el prefijo, la parte en rangos de nonce y publica uno por mensaje en `rangos` (NCT.2). Guarda `prefijo` y `rangos` en `tarea:<id>`, y recién después hace el ack de la tarea. Los rangos no llevan texto: el de cada minero, con su coinbase, lo arma el gateway al prestarlo (BC-62).
 
 | Variable | Por defecto | Qué es |
 |---|---|---|
 | `ESPACIO_NONCES` | 2^32 | Se buscan nonces en [0, ESPACIO − 1] |
 | `FRAGMENTO_PORCENTAJE` | 10 | Tamaño de cada rango en % del espacio (1 a 50): 1 % → 100 rangos, 50 % → 2 |
 | `PREFIJO_BASE` | 6 | Caracteres del prefijo del sistema: el máximo |
-| `SEGUNDOS_POR_BLOQUE` | 30 | Cuánto se quiere que tarde un bloque |
+| `SEGUNDOS_POR_BLOQUE` | 60 | Tiempo esperado por bloque (1 minuto, BC-60) |
+| `VENTANA_AJUSTE` | 5 | Cada cuántos bloques minados se reajusta el prefijo por tiempo |
+| `AJUSTE_MAXIMO` | 1 | Máximo de caracteres que cambia por ajuste (`±1` equivale a `×4` / `÷4`) |
+| `PREFIJO_INICIAL` | 0 | 0: arranca según potencia viva; > 0: arranca en ese largo (pruebas de convergencia) |
 | `AJUSTAR_PREFIJO` | 1 | 0: siempre el prefijo base (para la prueba de prefijos) |
 | `VIVO_SEGUNDOS` | 15 | Un minero cuenta si avisó hace menos que esto |
+| `CRITERIO_POTENCIA` | suma | Cómo se junta el `bench` de los vivos para el prefijo (`suma`, `promedio`, `minimo` o `maximo`). Fuera de la suma, sólo para la prueba de BC-59 |
 
-- **Prefijo:** con p caracteres hacen falta 16^p intentos en promedio. Con la potencia viva P (la suma de los `bench` de los mineros que avisaron hace menos de 15 s), el largo es el mayor p con 16^p ≤ P × 30 s, entre 1 y `PREFIJO_BASE`. Sin GPU baja (un minero CPU de 8,6 MH/s da 6; uno de 0,5 MH/s, 5); sin mineros vivos es 1, para que el primero que llegue lo resuelva enseguida.
+- **Prefijo (BC-21, BC-59 y BC-60):** `largo_prefijo` calcula el techo según la potencia viva P, la **suma** de los `bench` de los mineros que avisaron hace menos de 15 s (`16^p ≤ P × 60 s`, entre 1 y `PREFIJO_BASE`; sin mineros vivos, 1). Cada `VENTANA_AJUSTE` (5) bloques minados, `ajustar_por_tiempo` toma el promedio `real` de los últimos 5 bloques desde Redis (`cadena` y `bloque:<hash>`) y ajusta el largo con `redondeo(log16(esperado / real))` acotado a `±AJUSTE_MAXIMO` (`±1`, umbral ×4 como Bitcoin Core). El resultado final es `min(por_tiempo, techo)`, de modo que si se cae la GPU la dificultad baja de inmediato sin esperar 5 bloques lentos. Por qué la suma y no el promedio, el mínimo o el máximo, por qué el `bench` y cómo se reparte el trabajo según la potencia: [trp/README.md](trp/README.md).
 - Si el pod muere a mitad, la tarea vuelve a la cola y se repite entera: `tarea:<id>` queda igual y los rangos repetidos no molestan.
 
 También toma `resultados` (otra conexión, en otro hilo) y le pasa al NCT, por `soluciones`, sólo el ganador:
 
-- Gana el primer nonce **verificado** de cada tarea (el TrP recalcula el hash con el texto y el prefijo de `tarea:<id>`); los que llegan después se descartan.
+- Gana el primer nonce **verificado** de cada tarea (el TrP recalcula el hash con el texto de ese minero, `texto_para`, y el prefijo de `tarea:<id>`); los que llegan después se descartan.
 - `ganador` en `tarea:<id>` se escribe una sola vez con `HSETNX`: con 2 pods sale una sola solución. Si el pod muere antes del ack, el mensaje vuelve y se publica de nuevo la misma solución.
 - Los rangos sin solución se anotan en el conjunto `tarea:<id>:sin_solucion` (un rango repetido no cuenta dos veces). Cuando están todos, publica `{tarea, sin_solucion: true}` para que el NCT rearme el bloque.
 
@@ -176,20 +184,29 @@ Corre fuera del cluster y sólo habla con el gateway por HTTP (API en el [contra
 
 ```bash
 docker build --build-arg SERVICIO=minero_cpu -t minero-cpu .
-docker run -e GATEWAY_URL=http://<gateway>:8080 -e MINER_TOKEN=... minero-cpu
+docker run -e GATEWAY_URL=http://<gateway>:8080 -e CLAVE_PRIVADA=<64 hex> -e MINERO_ID=cpu-1 minero-cpu
 ```
 
 | Variable | Por defecto | Qué es |
 |---|---|---|
 | `GATEWAY_URL` | `http://localhost:8080` | Dónde está el gateway |
-| `MINER_TOKEN` | — (obligatoria) | Token de los mineros |
-| `MINERO_ID` | el hostname | Su id; cobra la recompensa en `saldos` |
+| `MINERO_ID` | el hostname | Su alias (para los logs y el nombre al aprobarlo); cobra en su cuenta |
+| `CLAVE_PRIVADA` | — | Su clave Ed25519 en hex (así se la pasa el escalador a las VMs) |
+| `CLAVE_SEMILLA` | — | Si no hay `CLAVE_PRIVADA`: la clave sale de sha256("<semilla>:<alias>") (las réplicas del minero GPU en k8s) |
+| `CLAVE_ARCHIVO` | `minero.clave` | Si no hay ninguna de las dos: la lee, o la genera la primera vez (permisos 600) |
 | `PROCESOS` | un proceso por núcleo | Procesos que recorren el rango (por el GIL, no hilos) |
 | `KEEPALIVE_SEGUNDOS` | 5 | Cada cuánto avisa que está vivo |
 
 - Devuelve el **menor** nonce del rango, como el minero GPU del Hit 7: los procesos toman trozos de 2^16 en orden.
+- Cada pedido va firmado con su clave (BC-57). Si su cuenta todavía no está aprobada (403), avisa y reintenta cada 30 s; si el gateway rechaza la firma (401, por ejemplo el reloj corrido), termina.
+- Junta los shares (BC-63) y los manda en cada keep-alive y en el resultado.
 - Si el keep-alive contesta `cortar`, deja el rango sin mandar resultado. Si el gateway no contesta, reintenta con espera creciente.
 - En un Ryzen 5 3600: 1,7 MH/s por núcleo y 8,6 MH/s con 12 procesos (la tarea modelo, en ~2 s).
+
+## Claves y auditoría (`claves/` y `herramientas/`)
+
+- `python -m claves`: generar, ver la pública, exportar a JWK (para el navegador), firmar y mandar una transferencia, una carga del organizador, aprobar una cuenta y la ráfaga. Ver [claves/README.md](claves/README.md).
+- `python -m herramientas.auditar`: recorre la cadena desde el génesis, verifica todo y compara los saldos con Redis. Ver [herramientas/README.md](herramientas/README.md).
 
 ## Escalador (`escalador/`)
 

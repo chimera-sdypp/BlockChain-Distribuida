@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import app as backend
 from comun import Rabbit, config, contrato, web
+from comun.tests.claves import CUENTA, Billetera, carga, firmada
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -30,7 +31,7 @@ def entorno():
                            db=BASE_PRUEBAS, decode_responses=True)
     redis.flushdb()
     app = web.crear_app("backend", {})
-    backend.agregar_rutas(app, redis, publicador, cola=cola)
+    backend.agregar_rutas(app, redis, publicador, cola=cola, organizador=CUENTA["organizador"])
     yield TestClient(app), cola, redis
     redis.flushdb()
     publicador._canal.queue_delete(cola)
@@ -49,45 +50,59 @@ def recibir(cola, cantidad, segundos=10):
 
 def test_post_deja_el_mensaje_en_la_cola_y_la_tx_recibida_en_redis(entorno):
     cliente, cola, redis = entorno
-    respuesta = cliente.post("/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 7})
+    tx = firmada("alice", "bob", 7)
+    respuesta = cliente.post("/api/transacciones", json=tx)
 
     assert respuesta.status_code == 202
     id_ = respuesta.json()["id"]
     [mensaje] = recibir(cola, 1)
-    assert mensaje["id"] == id_
-    assert (mensaje["origen"], mensaje["destino"], mensaje["monto"]) == ("alice", "bob", 7)
+    assert mensaje == tx and id_ == tx["id"]
     assert redis.hget(f"tx:{id_}", "estado") == "recibida"
+
+
+def test_dos_backends_con_la_misma_transaccion_a_la_vez_la_encolan_una_vez(entorno):
+    cliente, cola, _ = entorno
+    tx, codigos, barrera = firmada("alice", "bob", 7), [], threading.Barrier(8)
+
+    def mandar():
+        barrera.wait()
+        codigos.append(cliente.post("/api/transacciones", json=tx).status_code)
+
+    hilos = [threading.Thread(target=mandar) for _ in range(8)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join()
+    assert sorted(codigos) == [202] + [409] * 7
+    assert len(recibir(cola, 2, segundos=2)) == 1
 
 
 # ── Ticket 02: consultar una transacción y los saldos ──
 
 def test_get_de_una_transaccion_recien_recibida(entorno):
     cliente, _, _ = entorno
-    id_ = cliente.post("/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 7}).json()["id"]
+    tx = firmada("alice", "bob", 7)
+    id_ = cliente.post("/api/transacciones", json=tx).json()["id"]
 
     respuesta = cliente.get(f"/api/transacciones/{id_}")
 
     assert respuesta.status_code == 200
-    tx = respuesta.json()
-    assert {k: tx[k] for k in ("id", "origen", "destino", "monto", "estado")} == {
-        "id": id_, "origen": "alice", "destino": "bob", "monto": 7, "estado": "recibida"}
-    assert isinstance(tx["timestamp"], int)
-    assert "motivo" not in tx and "bloque" not in tx
+    assert respuesta.json() == {**tx, "estado": "recibida"}
 
 
 def test_get_muestra_el_motivo_de_una_rechazada_y_el_bloque_de_una_confirmada(entorno):
     cliente, _, redis = entorno
     # Lo que escribe el NCT (BC-24 y BC-26).
-    redis.hset("tx:r", mapping={"origen": "ana", "destino": "bob", "monto": 99, "timestamp": 1,
+    redis.hset("tx:r", mapping={"origen": "ana", "destino": "bob", "monto": 99, "nonce": 1, "timestamp": 1,
                                 "estado": "rechazada", "motivo": "saldo insuficiente"})
-    redis.hset("tx:c", mapping={"origen": "ana", "destino": "bob", "monto": 5, "timestamp": 2,
+    redis.hset("tx:c", mapping={"origen": "ana", "destino": "bob", "monto": 5, "nonce": 2, "timestamp": 2,
                                 "estado": "confirmada", "bloque": "0000abc"})
 
     rechazada = cliente.get("/api/transacciones/r").json()
     confirmada = cliente.get("/api/transacciones/c").json()
 
     assert (rechazada["estado"], rechazada["motivo"]) == ("rechazada", "saldo insuficiente")
-    assert (confirmada["estado"], confirmada["bloque"]) == ("confirmada", "0000abc")
+    assert (confirmada["estado"], confirmada["bloque"], confirmada["nonce"]) == ("confirmada", "0000abc", 2)
 
 
 def test_get_de_una_transaccion_que_no_existe_da_404(entorno):
@@ -97,11 +112,29 @@ def test_get_de_una_transaccion_que_no_existe_da_404(entorno):
 
 def test_saldos(entorno):
     cliente, _, redis = entorno
-    redis.hset("saldos", mapping={"alice": 750, "bob": 1250})
+    redis.hset("saldos", mapping={CUENTA["alice"]: 750, CUENTA["bob"]: 1250})
 
-    assert cliente.get("/api/saldos").json() == {"alice": 750, "bob": 1250}
-    assert cliente.get("/api/saldos/bob").json() == {"usuario": "bob", "saldo": 1250}
-    assert cliente.get("/api/saldos/zoe").json() == {"usuario": "zoe", "saldo": 0}
+    assert cliente.get("/api/saldos").json() == {CUENTA["alice"]: 750, CUENTA["bob"]: 1250}
+    assert cliente.get(f"/api/saldos/{CUENTA['bob']}").json() == {"usuario": CUENTA["bob"], "saldo": 1250}
+    assert cliente.get(f"/api/saldos/{CUENTA['zoe']}").json() == {"usuario": CUENTA["zoe"], "saldo": 0}
+
+
+def test_cuenta_con_su_saldo_su_nonce_y_si_esta_aprobada(entorno):
+    cliente, _, redis = entorno
+    alice = CUENTA["alice"]
+    redis.hset("saldos", alice, 750)
+    redis.hset("comprometido", alice, 50)
+    redis.hset("nonces", mapping={alice: 3, "emision": 7})
+    redis.hset("cuentas", alice, json.dumps({"tipo": "usuario", "nombre": "alice", "alta": 1793836800}))
+
+    assert cliente.get(f"/api/cuentas/{alice}").json() == {
+        "cuenta": alice, "saldo": 750, "comprometido": 50, "nonce": 3, "aprobada": True,
+        "tipo": "usuario", "nombre": "alice", "alta_pedida": False}
+    assert cliente.get(f"/api/cuentas/{CUENTA['zoe']}").json() == {
+        "cuenta": CUENTA["zoe"], "saldo": 0, "comprometido": 0, "nonce": 0, "aprobada": False,
+        "tipo": None, "nombre": None, "alta_pedida": False}
+    assert cliente.get("/api/cuentas/emision").json()["nonce"] == 7
+    assert cliente.get("/api/cuentas/alice").status_code == 400
 
 
 # ── Ticket 03: recorrer la cadena ──
@@ -113,16 +146,17 @@ def guardar_bloque(redis, bloque):
 
 
 def armar_cadena(redis, largo):
-    """Génesis más largo−1 bloques de prueba; devuelve los hashes en orden de altura."""
-    genesis = contrato.bloque_genesis({"alice": 1000, "bob": 1000}, 1793836800)
+    """Génesis más largo−1 bloques de prueba, como los arma el NCT; devuelve los hashes en orden de altura."""
+    genesis = contrato.bloque_genesis({CUENTA["alice"]: 1000, CUENTA["bob"]: 1000}, 1793836800)
     guardar_bloque(redis, genesis)
-    hashes = [genesis["block_hash"]]
+    hashes, billetera = [genesis["block_hash"]], Billetera()
     for altura in range(1, largo):
-        tx = {"id": f"tx-{altura}", "origen": "alice", "destino": "bob", "monto": altura, "timestamp": 1793836800 + altura}
-        texto = contrato.texto_bloque(hashes[-1], 1793836800 + altura, [tx])
-        bloque = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "transactions": [tx],
-                  "nonce": altura, "block_hash": contrato.hash_bloque(texto, altura),
-                  "prefijo": "0", "minero": "gpu-1", "recompensa": 10, "altura": altura}
+        tarea = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "altura": altura, "prefijo": "0",
+                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura)]}
+        transacciones = contrato.transacciones_del_bloque(tarea, CUENTA["minero"])
+        bloque = {"previous_hash": hashes[-1], "timestamp": tarea["timestamp"], "transactions": transacciones,
+                  "nonce": altura, "block_hash": contrato.hash_bloque(contrato.texto_para(tarea, CUENTA["minero"]), altura),
+                  "prefijo": "0", "altura": altura}
         guardar_bloque(redis, bloque)
         hashes.append(bloque["block_hash"])
     return hashes
@@ -138,9 +172,13 @@ def test_bloques_del_mas_nuevo_al_mas_viejo_con_altura(entorno):
     assert [b["block_hash"] for b in bloques] == hashes[::-1]
     punta = bloques[0]
     assert punta["previous_hash"] == hashes[1]
-    assert (punta["nonce"], punta["timestamp"], punta["recompensa"]) == (2, 1793836802, 10)
-    assert punta["transactions"] == [{"id": "tx-2", "origen": "alice", "destino": "bob",
-                                      "monto": 2, "timestamp": 1793836802}]
+    assert (punta["nonce"], punta["timestamp"]) == (2, 1793836802)
+    coinbase, transferencia = punta["transactions"]
+    assert coinbase == contrato.coinbase(2, CUENTA["minero"], 10, 1793836802)
+    assert (transferencia["monto"], transferencia["nonce"]) == (2, 2)
+    # El minero y la recompensa no se guardan aparte: los saca de la coinbase.
+    assert (punta["minero"], punta["recompensa"]) == (CUENTA["minero"], 10)
+    assert (bloques[2]["minero"], bloques[2]["recompensa"]) == ("", 0)  # el génesis
 
 
 def test_bloques_paginados(entorno):
@@ -182,23 +220,38 @@ def test_bloque_por_hash_con_su_altura(entorno):
 
 def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
     cliente, cola, redis = entorno
-    cuerpo = [{"origen": "alice", "destino": "bob", "monto": m} for m in range(1, 51)]
+    billetera = Billetera()
+    cuerpo = [billetera("alice", "bob", m) for m in range(1, 51)] + [carga(1, "carol", 100)]
 
     respuesta = cliente.post("/api/transacciones/lote", json=cuerpo)
 
     assert respuesta.status_code == 202
     ids = respuesta.json()["ids"]
-    mensajes = recibir(cola, 50)
+    assert ids[-1] == "carga-1"
+    mensajes = recibir(cola, 51)
     assert [m["id"] for m in mensajes] == ids
-    assert [m["monto"] for m in mensajes] == list(range(1, 51))
+    assert [m["nonce"] for m in mensajes] == list(range(1, 51)) + [1]
     assert all(redis.hget(f"tx:{id_}", "estado") == "recibida" for id_ in ids)
+
+
+def test_lote_con_una_ya_recibida_no_crea_ninguna(entorno):
+    cliente, cola, redis = entorno
+    billetera = Billetera()
+    cuerpo = [billetera("alice", "bob", m) for m in range(1, 4)]
+    assert cliente.post("/api/transacciones", json=cuerpo[2]).status_code == 202
+
+    respuesta = cliente.post("/api/transacciones/lote", json=cuerpo)
+
+    assert respuesta.status_code == 409 and set(respuesta.json()["errores"]) == {"2"}
+    assert not redis.exists(f"tx:{cuerpo[0]['id']}", f"tx:{cuerpo[1]['id']}")
+    assert len(recibir(cola, 2, segundos=2)) == 1
 
 
 # ── Pendientes y cajas (BC-28) ──
 
 def guardar_tx(redis, id_, estado, monto=1):
-    redis.hset(f"tx:{id_}", mapping={"origen": "alice", "destino": "bob", "monto": monto,
-                                     "timestamp": 1793836800, "estado": estado})
+    redis.hset(f"tx:{id_}", mapping={"origen": CUENTA["alice"], "destino": CUENTA["bob"], "monto": monto,
+                                     "nonce": 1, "timestamp": 1793836800, "estado": estado})
 
 
 def test_cajas_con_las_pendientes_y_lo_apilado(entorno):

@@ -1,6 +1,4 @@
-"""La API del backend con Redis y RabbitMQ falsos: formato, fallas, lote y métricas."""
-
-import re
+"""La API del backend con Redis y RabbitMQ falsos: formato, firma, reenvíos, fallas, lote y métricas."""
 
 import pytest
 import redis
@@ -8,7 +6,8 @@ from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
 
 from backend import app as backend
-from comun import web
+from comun import contrato, web
+from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada
 
 COLA = "transacciones-prueba"
 
@@ -33,6 +32,25 @@ class RedisFalso:
 
     def pipeline(self, transaction=True):
         return TuberiaFalsa(self)
+
+    def register_script(self, script):
+        """Sólo LUA_CREAR: las altas (BC-58) se prueban contra Redis de verdad, en test_altas.py."""
+        if script == backend.LUA_CREAR:
+            return self._crear
+        return lambda **_: pytest.fail("este Redis falso sólo sabe LUA_CREAR")
+
+    def _crear(self, keys, args):
+        """LUA_CREAR: si alguna clave ya existe devuelve sus índices (desde 1); si no, las crea todas."""
+        if self.falla:
+            raise redis.ConnectionError("Redis caído")
+        repetidas = [i + 1 for i, clave in enumerate(keys) if clave in self.hashes]
+        if repetidas:
+            return repetidas
+        n, campos = int(args[0]), args[1:]
+        for i, clave in enumerate(keys):
+            pares = campos[i * 2 * n:(i + 1) * 2 * n]
+            self.hashes[clave] = dict(zip(pares[::2], pares[1::2]))
+        return []
 
 
 class TuberiaFalsa:
@@ -60,46 +78,97 @@ class PublicadorFalso:
         self.publicados.append((cola, mensaje))
 
 
-def cliente(redis=None, publicador=None, lote_maximo=1000):
+def cliente(redis=None, publicador=None, lote_maximo=1000, organizador=CUENTA["organizador"]):
     app = web.crear_app("backend", {})
     backend.agregar_rutas(app, redis or RedisFalso(), publicador or PublicadorFalso(), cola=COLA,
-                          lote_maximo=lote_maximo)
+                          lote_maximo=lote_maximo, organizador=organizador)
     return TestClient(app)
 
 
-def test_post_valido_encola_y_queda_recibida():
+def test_post_firmado_encola_y_queda_recibida():
     redis, publicador = RedisFalso(), PublicadorFalso()
-    respuesta = cliente(redis, publicador).post(
-        "/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 10})
+    tx = firmada("alice", "bob", 10)
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=tx)
 
     assert respuesta.status_code == 202
-    id_ = respuesta.json()["id"]
-    assert re.fullmatch(r"[0-9a-f]{32}", id_)
+    assert respuesta.json() == {"id": contrato.id_transaccion(tx)}
     [(cola, mensaje)] = publicador.publicados
-    assert cola == COLA
-    assert mensaje["id"] == id_
-    assert (mensaje["origen"], mensaje["destino"], mensaje["monto"]) == ("alice", "bob", 10)
-    assert isinstance(mensaje["timestamp"], int)
-    tx = redis.hashes[f"tx:{id_}"]
-    assert tx["estado"] == "recibida"
-    assert (tx["origen"], tx["destino"], tx["monto"]) == ("alice", "bob", "10")
+    assert cola == COLA and mensaje == tx
+    guardada = redis.hashes[f"tx:{tx['id']}"]
+    assert guardada["estado"] == "recibida"
+    assert (guardada["origen"], guardada["destino"], guardada["monto"], guardada["nonce"], guardada["firma"]) == (
+        CUENTA["alice"], CUENTA["bob"], "10", "1", tx["firma"])
+
+
+def test_el_id_lo_calcula_el_backend_aunque_no_venga():
+    publicador = PublicadorFalso()
+    tx = firmada("alice", "bob", 10)
+    sin_id = {k: v for k, v in tx.items() if k != "id"}
+    assert cliente(publicador=publicador).post("/api/transacciones", json=sin_id).json() == {"id": tx["id"]}
+
+
+def test_la_misma_transaccion_reenviada_da_409_y_no_se_encola_dos_veces():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    c, tx = cliente(redis, publicador), firmada("alice", "bob", 10)
+    assert c.post("/api/transacciones", json=tx).status_code == 202
+
+    respuesta = c.post("/api/transacciones", json=tx)
+
+    assert respuesta.status_code == 409
+    assert respuesta.json() == {"error": backend.REENVIO, "id": tx["id"]}
+    assert len(publicador.publicados) == 1
+
+
+def cambiada(**cambios):
+    return {**firmada("alice", "bob", 10), **cambios}
 
 
 @pytest.mark.parametrize("cuerpo, motivo", [
-    ({"destino": "bob", "monto": 10}, "origen"),
-    ({"origen": "alice", "destino": "bob", "monto": 0}, "monto"),
-    ({"origen": "alice", "destino": "bob", "monto": 1.5}, "monto"),
-    ({"origen": "alice", "destino": "alice", "monto": 10}, "distintos"),
-    ({"origen": "genesis", "destino": "bob", "monto": 10}, "reservado"),
-    ([{"origen": "alice", "destino": "bob", "monto": 10}], "objeto"),
+    ({k: v for k, v in firmada("alice", "bob", 10).items() if k != "origen"}, "origen"),
+    (cambiada(origen="alice"), "origen"),
+    (cambiada(monto=0), "monto"),
+    (cambiada(monto=1.5), "monto"),
+    (cambiada(nonce=0), "nonce"),
+    (cambiada(firma="ab" * 64), "firma"),
+    (cambiada(monto=11), "firma"),                       # el monto se cambió después de firmar
+    (cambiada(destino=CUENTA["carol"]), "firma"),
+    (contrato.transaccion(PRIVADA["bob"], CUENTA["carol"], 10, 1) | {"origen": CUENTA["alice"]}, "firma"),
+    (cambiada(id="0" * 32), "id"),
+    (firmada("alice", "alice", 10), "distintos"),
+    ([firmada("alice", "bob", 10)], "objeto"),
 ])
-def test_formato_invalido_da_400_con_el_motivo_y_no_encola(cuerpo, motivo):
+def test_formato_o_firma_invalidos_dan_400_con_el_motivo_y_no_encola(cuerpo, motivo):
     redis, publicador = RedisFalso(), PublicadorFalso()
     respuesta = cliente(redis, publicador).post("/api/transacciones", json=cuerpo)
 
     assert respuesta.status_code == 400
-    assert any(motivo in error for error in respuesta.json()["errores"])
+    assert any(motivo in error for error in respuesta.json()["errores"]), respuesta.json()
     assert publicador.publicados == [] and redis.hashes == {}
+
+
+def test_una_carga_del_organizador_entra_con_su_id():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    tx = carga(1, "alice", 500)
+
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=tx)
+
+    assert respuesta.status_code == 202 and respuesta.json() == {"id": "carga-1"}
+    assert publicador.publicados == [(COLA, tx)]
+    assert redis.hashes["tx:carga-1"]["origen"] == contrato.EMISION
+
+
+def test_una_carga_firmada_por_otro_o_sin_organizador_da_400():
+    falsa = contrato.carga(PRIVADA["alice"], 1, CUENTA["alice"], 500, 1793836800)
+    assert cliente().post("/api/transacciones", json=falsa).status_code == 400
+    respuesta = cliente(organizador="").post("/api/transacciones", json=carga(1, "alice", 500))
+    assert respuesta.status_code == 400
+    assert "ORGANIZADOR_CLAVE" in respuesta.json()["errores"][0]
+
+
+def test_otra_carga_con_el_mismo_numero_da_409():
+    c = cliente()
+    assert c.post("/api/transacciones", json=carga(1, "alice", 500)).status_code == 202
+    assert c.post("/api/transacciones", json=carga(1, "bob", 900)).status_code == 409
 
 
 def test_json_mal_formado_da_400():
@@ -111,8 +180,7 @@ def test_json_mal_formado_da_400():
 
 def test_si_rabbitmq_falla_da_503_y_no_queda_recibida():
     redis, publicador = RedisFalso(), PublicadorFalso(falla_desde=1)
-    respuesta = cliente(redis, publicador).post(
-        "/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 10})
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=firmada("alice", "bob", 10))
 
     assert respuesta.status_code == 503
     assert redis.hashes == {}
@@ -120,8 +188,7 @@ def test_si_rabbitmq_falla_da_503_y_no_queda_recibida():
 
 def test_si_redis_falla_da_503_y_no_encola():
     redis, publicador = RedisFalso(falla=True), PublicadorFalso()
-    respuesta = cliente(redis, publicador).post(
-        "/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 10})
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=firmada("alice", "bob", 10))
 
     assert respuesta.status_code == 503
     assert publicador.publicados == []
@@ -137,17 +204,19 @@ def contadores(c):
     return valores
 
 
-def test_la_metrica_cuenta_aceptadas_invalidas_y_errores():
+def test_la_metrica_cuenta_aceptadas_invalidas_repetidas_y_errores():
     publicador = PublicadorFalso()
-    c = cliente(publicador=publicador)
+    c, billetera = cliente(publicador=publicador), Billetera()
     antes = contadores(c)
-    c.post("/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 10})
-    c.post("/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 0})
+    tx = billetera("alice", "bob", 10)
+    c.post("/api/transacciones", json=tx)
+    c.post("/api/transacciones", json=tx)
+    c.post("/api/transacciones", json=cambiada(monto=0))
     publicador.falla_desde = 1
-    c.post("/api/transacciones", json={"origen": "alice", "destino": "bob", "monto": 10})
+    c.post("/api/transacciones", json=billetera("alice", "bob", 10))
     despues = contadores(c)
 
-    for resultado in ("aceptada", "invalida", "error"):
+    for resultado in ("aceptada", "invalida", "repetida", "error"):
         assert despues[resultado] - antes.get(resultado, 0) == 1, resultado
 
 
@@ -158,32 +227,57 @@ def test_si_redis_falla_una_consulta_da_503():
 
 # ── Ticket 04: lote de transacciones ──
 
-def lote(*montos):
-    return [{"origen": "alice", "destino": "bob", "monto": monto} for monto in montos]
+def lote(*montos, origen="alice"):
+    billetera = Billetera()
+    return [billetera(origen, "bob", monto) for monto in montos]
 
 
 def test_lote_valido_encola_todas_en_orden():
     redis, publicador = RedisFalso(), PublicadorFalso()
-    respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=lote(1, 2, 3))
+    cuerpo = lote(1, 2, 3)
+    respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=cuerpo)
 
     assert respuesta.status_code == 202
     ids = respuesta.json()["ids"]
-    assert len(set(ids)) == 3
+    assert ids == [tx["id"] for tx in cuerpo]
     assert [m["id"] for _, m in publicador.publicados] == ids
-    assert [m["monto"] for _, m in publicador.publicados] == [1, 2, 3]
+    assert [m["nonce"] for _, m in publicador.publicados] == [1, 2, 3]
     assert all(redis.hashes[f"tx:{id_}"]["estado"] == "recibida" for id_ in ids)
 
 
 def test_lote_con_una_invalida_se_rechaza_entero_con_los_errores_por_indice():
     redis, publicador = RedisFalso(), PublicadorFalso()
-    cuerpo = lote(1, 0, 3) + [{"origen": "alice", "destino": "alice", "monto": 1}]
+    cuerpo = lote(1, 2, 3)
+    cuerpo[1] = {**cuerpo[1], "monto": 99}              # firma que ya no corresponde
+    cuerpo.append(firmada("alice", "alice", 1, nonce=4))
     respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=cuerpo)
 
     assert respuesta.status_code == 400
     errores = respuesta.json()["errores"]
     assert set(errores) == {"1", "3"}
-    assert any("monto" in e for e in errores["1"]) and any("distintos" in e for e in errores["3"])
+    assert any("firma" in e for e in errores["1"]) and any("distintos" in e for e in errores["3"])
     assert publicador.publicados == [] and redis.hashes == {}
+
+
+def test_lote_con_una_repetida_da_409_y_no_entra_ninguna():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    c = cliente(redis, publicador)
+    cuerpo = lote(1, 2, 3)
+    assert c.post("/api/transacciones", json=cuerpo[1]).status_code == 202
+
+    respuesta = c.post("/api/transacciones/lote", json=cuerpo)
+
+    assert respuesta.status_code == 409
+    assert respuesta.json() == {"errores": {"1": [backend.REENVIO]}}
+    assert len(publicador.publicados) == 1 and set(redis.hashes) == {f"tx:{cuerpo[1]['id']}"}
+
+
+def test_lote_con_la_misma_transaccion_dos_veces_da_409():
+    publicador = PublicadorFalso()
+    tx = firmada("alice", "bob", 1)
+    respuesta = cliente(publicador=publicador).post("/api/transacciones/lote", json=[tx, tx])
+    assert respuesta.status_code == 409 and respuesta.json() == {"errores": {"1": [backend.REENVIO]}}
+    assert publicador.publicados == []
 
 
 @pytest.mark.parametrize("cuerpo", [[], {"origen": "alice"}, "texto"])
@@ -213,10 +307,12 @@ def test_el_lote_cuenta_la_metrica_por_transaccion():
     publicador = PublicadorFalso()
     c = cliente(publicador=publicador)
     antes = contadores(c)
-    c.post("/api/transacciones/lote", json=lote(1, 2))           # 2 aceptadas
-    c.post("/api/transacciones/lote", json=lote(1, 0, 3))        # 3 inválidas: el lote entero no entra
+    c.post("/api/transacciones/lote", json=lote(1, 2))                   # 2 aceptadas
+    invalido = lote(1, 2, 3, origen="bob")
+    invalido[1]["monto"] = 0
+    c.post("/api/transacciones/lote", json=invalido)                     # 3 inválidas: el lote entero no entra
     publicador.falla_desde = 4
-    c.post("/api/transacciones/lote", json=lote(1, 2, 3))        # 1 aceptada y 2 con error
+    c.post("/api/transacciones/lote", json=lote(1, 2, 3, origen="carol"))  # 1 aceptada y 2 con error
     despues = contadores(c)
 
     delta = {r: despues.get(r, 0) - antes.get(r, 0) for r in ("aceptada", "invalida", "error")}

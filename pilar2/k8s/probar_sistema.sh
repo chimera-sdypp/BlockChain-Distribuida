@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Pruebas del sistema desplegado en k3s (BC-30 y BC-37): el recorrido de una transferencia, las caídas
 # y el monitoreo. Desde pilar2/, con todo levantado (ver README): k8s/probar_sistema.sh [-k filtro de pytest]
+# Las cuentas y los mineros de prueba se aprueban con k8s/aprobar.sh (kubectl exec en el Redis del cluster).
+# Con los mineros GPU apagados (minero-gpu en 0): si no, se llevan todos los rangos y test_fallas no tiene víctima.
 set -euo pipefail
 export NAMESPACE=${NAMESPACE:-blockchain}
 export SISTEMA_URL=${SISTEMA_URL:-http://localhost}        # el Ingress de Traefik
 export GATEWAY_URL=${GATEWAY_URL:-http://localhost:8081}    # el LoadBalancer del gateway
-MINER_TOKEN=$(kubectl -n "$NAMESPACE" get secret blockchain-secretos -o jsonpath='{.data.MINER_TOKEN}' | base64 -d)
-export MINER_TOKEN
 
 # Monitoreo (namespace monitoring): si no vienen las URLs, abre los port-forwards y los cierra al salir.
 reenviar() {  # variable, servicio, puerto local, puerto del Service

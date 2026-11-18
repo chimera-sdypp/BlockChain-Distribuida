@@ -1,56 +1,124 @@
-"""Ticket 02: token, /hello, /bench y las métricas de mineros."""
+"""Ticket 02 y BC-57: pedidos firmados, mineros aprobados, /hello, /bench y las métricas de mineros."""
 
+import json
 import time
 
 import pytest
 from prometheus_client import REGISTRY
 
 from comun import contrato
+from comun.tests.claves import CUENTA
+from gateway.tests.conftest import aprobar
 
 
-def test_sin_token_o_con_uno_malo_da_401(cliente):
-    hola = {"minero": "gpu-1", "tipo": "gpu", "placa": "RTX 4060"}
-    assert cliente.post("/hello", json=hola, headers={"Authorization": ""}).status_code == 401
-    assert cliente.post("/hello", json=hola, headers={"Authorization": "Bearer otro"}).status_code == 401
+def hola(cuenta=None):
+    return {"minero": cuenta or CUENTA["minero"], "tipo": "gpu", "placa": "RTX 4060"}
 
 
-def test_health_y_metrics_no_piden_token(cliente):
-    assert cliente.get("/health", headers={"Authorization": ""}).status_code == 200
-    assert cliente.get("/metrics", headers={"Authorization": ""}).status_code == 200
+def test_sin_firma_da_401(cliente):
+    respuesta = cliente.cliente.post("/hello", json=hola())
+    assert respuesta.status_code == 401 and "X-Minero" in respuesta.json()["error"]
+
+
+def test_con_la_firma_de_otra_clave_da_401(cliente, otro):
+    cuerpo = json.dumps(hola()).encode()
+    firma = contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo)
+    firma["X-Minero"] = CUENTA["minero"]  # dice ser «minero», pero firma con la clave de «minero2»
+    assert cliente.cliente.post("/hello", content=cuerpo, headers=firma).status_code == 401
+
+
+def test_un_cuerpo_cambiado_despues_de_firmar_da_401(cliente):
+    cuerpo = json.dumps(hola()).encode()
+    firma = contrato.firmar_pedido(cliente.privada, "POST", "/hello", cuerpo)
+    otro = json.dumps({**hola(), "tipo": "cpu"}).encode()
+    assert cliente.cliente.post("/hello", content=otro, headers=firma).status_code == 401
+
+
+def test_un_pedido_grabado_y_mandado_40_segundos_despues_da_401(cliente):
+    respuesta = cliente.post("/hello", hola(), tiempo=int(time.time()) - 40)
+    assert respuesta.status_code == 401 and "X-Tiempo" in respuesta.json()["error"]
+
+
+def test_un_minero_sin_aprobar_da_403(armar, redis):
+    _, cliente = armar("intruso")
+    respuesta = cliente.post("/hello", hola(CUENTA["intruso"]))
+    assert respuesta.status_code == 403 and "aprobar" in respuesta.json()["error"]
+    aprobar(redis, "intruso", tipo="usuario")  # un usuario no es un minero
+    assert cliente.post("/hello", hola(CUENTA["intruso"])).status_code == 403
+
+
+def test_un_minero_sin_aprobar_queda_pedido_con_su_alias(armar, redis):
+    """BC-58: la firma ya demuestra que tiene la privada, así que el organizador lo ve en el panel."""
+    _, cliente = armar("intruso")
+    assert cliente.post("/hello", {**hola(CUENTA["intruso"]), "alias": "gpu-intruso"}).status_code == 403
+    pedido = json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))
+    assert pedido["tipo"] == "minero" and pedido["nombre"] == "gpu-intruso"
+    assert cliente.get("/tasks/next").status_code == 403  # reintentar no lo duplica ni le cambia el alias
+    assert redis.hlen("altas:pendientes") == 1
+    assert json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["nombre"] == "gpu-intruso"
+
+
+def test_un_minero_sin_alias_queda_pedido_con_el_principio_de_la_cuenta(armar, redis):
+    _, cliente = armar("intruso")
+    cliente.post("/hello", {**hola(CUENTA["intruso"]), "alias": "no vale"})
+    assert json.loads(redis.hget("altas:pendientes", CUENTA["intruso"]))["nombre"] == CUENTA["intruso"][:12]
+
+
+def test_una_firma_mala_no_deja_pedido(cliente, otro, redis):
+    cuerpo = json.dumps(hola()).encode()
+    firma = {**contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo), "X-Minero": CUENTA["intruso"]}
+    assert cliente.cliente.post("/hello", content=cuerpo, headers=firma).status_code == 401
+    assert not redis.exists("altas:pendientes")
+
+
+def test_el_minero_del_cuerpo_tiene_que_ser_el_que_firma(cliente):
+    assert cliente.post("/hello", hola(CUENTA["minero2"])).status_code == 400
+
+
+def test_health_y_metrics_no_piden_firma(cliente):
+    assert cliente.cliente.get("/health").status_code == 200
+    assert cliente.cliente.get("/metrics").status_code == 200
 
 
 def test_un_minero_nuevo_recibe_la_tarea_modelo(cliente, redis):
-    respuesta = cliente.post("/hello", json={"minero": "gpu-1", "tipo": "gpu", "placa": "RTX 4060"})
+    respuesta = cliente.post("/hello", hola())
 
     assert respuesta.status_code == 200
     assert respuesta.json() == contrato.BENCH
-    nodo = redis.hgetall("nodo:gpu-1")
-    assert (nodo["tipo"], nodo["placa"]) == ("gpu", "RTX 4060")
+    nodo = redis.hgetall(f"nodo:{CUENTA['minero']}")
+    # El alias sale de `cuentas`, que escribió el organizador, no de lo que diga el minero.
+    assert (nodo["tipo"], nodo["placa"], nodo["alias"]) == ("gpu", "RTX 4060", "minero")
     assert abs(int(nodo["ultimo_aviso"]) - time.time()) < 5
 
 
 def test_despues_del_bench_queda_registrado(cliente, redis):
-    cliente.post("/hello", json={"minero": "cpu-1", "tipo": "cpu", "placa": "Ryzen 5"})
+    cliente.post("/hello", hola())
 
-    respuesta = cliente.post("/bench", json={"minero": "cpu-1", "segundos": 15.2, "hashes_por_segundo": 1100000})
+    respuesta = cliente.post("/bench", {"minero": CUENTA["minero"], "segundos": 15.2, "hashes_por_segundo": 1100000})
 
     assert respuesta.status_code == 204
-    assert redis.hget("nodo:cpu-1", "bench") == "1100000"
-    assert cliente.post("/hello", json={"minero": "cpu-1", "tipo": "cpu", "placa": "Ryzen 5"}).json() == {"registrado": True}
+    assert redis.hget(f"nodo:{CUENTA['minero']}", "bench") == "1100000"
+    assert cliente.post("/hello", hola()).json() == {"registrado": True}
 
 
-@pytest.mark.parametrize("hola", [
-    {"minero": "gpu:1", "tipo": "gpu", "placa": "x"},
-    {"minero": "gpu-1", "tipo": "tpu", "placa": "x"},
+@pytest.mark.parametrize("malo", [
+    {"minero": CUENTA["minero"], "tipo": "tpu", "placa": "x"},
     {"tipo": "gpu", "placa": "x"},
     ["no", "es", "un", "objeto"],
 ])
-def test_hello_invalido_da_400(cliente, hola):
-    assert cliente.post("/hello", json=hola).status_code == 400
+def test_hello_invalido_da_400(cliente, malo):
+    assert cliente.post("/hello", malo).status_code == 400
 
 
 def test_bench_invalido_da_400(cliente):
-    assert cliente.post("/bench", json={"minero": "gpu-1", "hashes_por_segundo": -1}).status_code == 400
+    assert cliente.post("/bench", {"minero": CUENTA["minero"], "hashes_por_segundo": -1}).status_code == 400
+
+
+def test_cuenta_los_pedidos_rechazados(armar, redis):
+    _, cliente = armar("intruso")
+    antes = REGISTRY.get_sample_value("blockchain_pedidos_rechazados_total", {"motivo": "no_aprobado"}) or 0
+    cliente.post("/hello", hola(CUENTA["intruso"]))
+    assert REGISTRY.get_sample_value("blockchain_pedidos_rechazados_total", {"motivo": "no_aprobado"}) == antes + 1
 
 
 def test_las_metricas_cuentan_los_mineros_vivos_por_tipo(armar, redis):

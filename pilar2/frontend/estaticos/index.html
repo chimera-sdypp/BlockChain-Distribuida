@@ -4,77 +4,29 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Blockchain distribuida</title>
-<style>
-  :root {
-    --fondo: #f6f7f9; --panel: #ffffff; --texto: #1c2430; --suave: #5d6878; --borde: #dde2e8;
-    --acento: #2f6fdf; --ok: #1f8a4c; --alerta: #b7791f; --error: #c0392b;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --fondo: #12161c; --panel: #1a2029; --texto: #e4e8ee; --suave: #95a0b0; --borde: #2b3340;
-      --acento: #6c9cf0; --ok: #4cc27f; --alerta: #e0a84a; --error: #ef6b5e;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--fondo); color: var(--texto);
-         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  h1 { font-size: 1.3rem; margin: 0; }
-  h2 { font-size: 1rem; margin: 0 0 12px; }
-  section { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; padding: 16px; }
-  .estado { font-size: .85rem; color: var(--suave); display: inline-flex; align-items: center; gap: 6px; }
-  .estado::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--alerta); }
-  .estado.vivo::before { background: var(--ok); }
-  .mono { font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
-  .suave { color: var(--suave); }
-  .vacio { color: var(--suave); font-style: italic; }
-  ul.lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  details { border: 1px solid var(--borde); border-radius: 8px; padding: 8px 12px; }
-  details.nuevo { border-color: var(--acento); }
-  summary { cursor: pointer; display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
-  summary .altura { font-weight: 600; min-width: 3ch; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 10px 0 0; }
-  dt { color: var(--suave); }
-  dd { margin: 0; }
-  table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: 8px; }
-  th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--borde); }
-  th { color: var(--suave); font-weight: 500; }
-  td.num, th.num { text-align: right; }
-  form { display: grid; grid-template-columns: 1fr 1fr 8rem auto; gap: 8px; align-items: end; }
-  @media (max-width: 560px) { form { grid-template-columns: 1fr 1fr; } }
-  label { display: grid; gap: 4px; font-size: .85rem; color: var(--suave); }
-  input { font: inherit; color: var(--texto); background: var(--fondo); border: 1px solid var(--borde);
-          border-radius: 6px; padding: 6px 8px; width: 100%; min-width: 0; }
-  button { font: inherit; color: #fff; background: var(--acento); border: 0; border-radius: 6px;
-           padding: 7px 14px; cursor: pointer; }
-  button:disabled { opacity: .6; cursor: wait; }
-  .mensaje { margin: 10px 0 0; font-size: .9rem; }
-  .mensaje.error { color: var(--error); }
-  .chip { display: inline-block; font-size: .78rem; padding: 1px 8px; border-radius: 999px;
-          border: 1px solid currentColor; white-space: nowrap; }
-  .chip.recibida { color: var(--suave); }
-  .chip.pendiente { color: var(--alerta); }
-  .chip.confirmada { color: var(--ok); }
-  .chip.rechazada { color: var(--error); }
-  .tx { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
-</style>
+<link rel="stylesheet" href="/estilos.css">
 </head>
 <body>
 <main>
   <header>
     <h1>Blockchain distribuida</h1>
-    <span id="conexion" class="estado">conectando…</span>
+    <nav><a href="/alta">Pedir el alta</a> <span id="conexion" class="estado">conectando…</span></nav>
   </header>
 
   <section aria-labelledby="t-transferir">
     <h2 id="t-transferir">Transferir</h2>
-    <form id="formulario" autocomplete="off">
-      <label>Origen <input name="origen" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label>
-      <label>Destino <input name="destino" required maxlength="32" pattern="[A-Za-z0-9_-]+"></label>
+    <!-- La clave privada no sale nunca del navegador: se importa como CryptoKey no exportable y se firma acá. -->
+    <form id="form-clave" autocomplete="off">
+      <label><span>Tu clave privada (el archivo <span class="mono">.jwk</span> que bajaste al pedir el alta, o el JWK de <span class="mono">python -m claves exportar</span>)</span>
+        <textarea name="jwk" required spellcheck="false" placeholder='{"kty":"OKP","crv":"Ed25519","d":"…","x":"…"}'></textarea></label>
+      <button type="submit">Usar esta clave</button>
+    </form>
+    <div id="mi-cuenta" class="cuenta" hidden></div>
+    <form id="formulario" autocomplete="off" hidden>
+      <label>Destino (su cuenta) <input name="destino" required minlength="64" maxlength="64" pattern="[0-9a-f]{64}"
+             spellcheck="false" class="mono"></label>
       <label>Monto <input name="monto" required type="number" min="1" step="1"></label>
-      <button type="submit">Enviar</button>
+      <button type="submit">Firmar y enviar</button>
     </form>
     <p id="mensaje" class="mensaje" hidden></p>
     <h2 style="margin-top:16px">Mis transferencias</h2>
@@ -98,28 +50,14 @@
   </section>
 </main>
 
+<script src="/comun.js"></script>
 <script>
 "use strict";
 const BLOQUES_VISIBLES = 20;
 
-const $ = (id) => document.getElementById(id);
-const corto = (hash) => hash ? `${hash.slice(0, 10)}…` : "—";
-const hora = (segundos) => new Date(segundos * 1000).toLocaleString();
-
-function el(etiqueta, atributos = {}, ...hijos) {
-  const nodo = document.createElement(etiqueta);
-  for (const [clave, valor] of Object.entries(atributos)) {
-    if (clave === "clase") nodo.className = valor; else nodo.setAttribute(clave, valor);
-  }
-  for (const hijo of hijos) nodo.append(hijo);
-  return nodo;
-}
-
-async function api(ruta, opciones) {
-  const respuesta = await fetch(ruta, opciones);
-  const cuerpo = await respuesta.json().catch(() => ({}));
-  return { ok: respuesta.ok, status: respuesta.status, cuerpo };
-}
+// Las transacciones de emisión (origen «emision») crean plata: génesis, coinbase, carga y participación.
+const TIPOS_EMISION = [["genesis-", "génesis"], ["cb-", "recompensa"], ["carga-", "carga"], ["part-", "participación"]];
+const tipoDe = (tx) => tx.origen !== "emision" ? "" : (TIPOS_EMISION.find(([p]) => tx.id.startsWith(p)) || ["", "emisión"])[1];
 
 // ── Cadena ──
 
@@ -127,20 +65,22 @@ let bloques = [];  // del más nuevo al más viejo
 
 function vistaBloque(bloque, nuevo = false) {
   const filas = bloque.transactions.map((tx) => el("tr", {},
-    el("td", { clase: "mono" }, tx.origen), el("td", { clase: "mono" }, tx.destino),
+    el("td", { clase: "mono", title: tx.origen }, tipoDe(tx) ? el("span", { clase: "chip recompensa" }, tipoDe(tx)) : cuentaCorta(tx.origen)),
+    el("td", { clase: "mono", title: tx.destino }, cuentaCorta(tx.destino)),
     el("td", { clase: "num" }, String(tx.monto))));
   return el("li", {}, el("details", nuevo ? { clase: "nuevo" } : {},
     el("summary", {},
       el("span", { clase: "altura" }, `#${bloque.altura}`),
       el("span", { clase: "mono" }, corto(bloque.block_hash)),
       el("span", { clase: "suave" }, `${bloque.transactions.length} tx`),
-      el("span", { clase: "suave" }, bloque.minero ? `minó ${bloque.minero}` : "génesis")),
+      el("span", { clase: "suave" }, bloque.minero ? `minó ${cuentaCorta(bloque.minero)}` : "génesis")),
     el("dl", {},
       el("dt", {}, "hash"), el("dd", { clase: "mono" }, bloque.block_hash),
       el("dt", {}, "anterior"), el("dd", { clase: "mono" }, bloque.previous_hash),
       el("dt", {}, "nonce"), el("dd", { clase: "mono" }, String(bloque.nonce)),
       el("dt", {}, "prefijo"), el("dd", { clase: "mono" }, bloque.prefijo || "—"),
-      el("dt", {}, "recompensa"), el("dd", {}, String(bloque.recompensa)),
+      el("dt", {}, "minero"), el("dd", { clase: "mono" }, bloque.minero || "—"),
+      el("dt", {}, "recompensa"), el("dd", {}, `${bloque.recompensa} (la coinbase, adentro del hash)`),
       el("dt", {}, "hora"), el("dd", {}, hora(bloque.timestamp))),
     el("table", {},
       el("thead", {}, el("tr", {}, el("th", {}, "origen"), el("th", {}, "destino"), el("th", { clase: "num" }, "monto"))),
@@ -186,7 +126,7 @@ const cerrada = (tx) => tx.estado === "confirmada" || tx.estado === "rechazada";
 function pintarMias() {
   $("mias").replaceChildren(...(mias.length ? mias.map((tx) => el("li", { clase: "tx" },
     el("span", { clase: `chip ${tx.estado}` }, tx.estado),
-    el("span", {}, `${tx.origen} → ${tx.destino}: ${tx.monto}`),
+    el("span", { clase: "mono" }, `${cuentaCorta(tx.origen)} → ${cuentaCorta(tx.destino)}: ${tx.monto}`),
     el("span", { clase: "mono suave" }, corto(tx.id)),
     tx.motivo ? el("span", { clase: "suave" }, tx.motivo) : "",
     tx.bloque ? el("span", { clase: "suave" }, `en el bloque ${corto(tx.bloque)}`) : ""))
@@ -243,26 +183,68 @@ function mostrarMensaje(texto, error = false) {
   p.hidden = !texto;
 }
 
+// ── Firmar en el navegador (BC-56): WebCrypto Ed25519, la privada no sale de acá ──
+
+let firmante = null;  // {clave: CryptoKey sólo para firmar, cuenta: hex, ultimoNonce}
+
+
+async function cargarCuenta() {
+  if (!firmante) return;
+  const { ok, cuerpo } = await api(`/api/cuentas/${firmante.cuenta}`);
+  const caja = $("mi-cuenta");
+  caja.hidden = false;
+  if (!ok) { caja.replaceChildren(el("span", { clase: "suave" }, "No se pudo leer tu cuenta.")); return; }
+  firmante.ultimoNonce = Math.max(firmante.ultimoNonce, cuerpo.nonce);
+  caja.replaceChildren(
+    el("span", {}, "Tu cuenta"), el("span", { clase: "mono" }, firmante.cuenta),
+    el("span", {}, `saldo ${cuerpo.saldo - cuerpo.comprometido} disponible (${cuerpo.saldo} confirmado)`),
+    el("span", { clase: "suave" }, `próximo nonce ${firmante.ultimoNonce + 1}`),
+    cuerpo.aprobada ? "" : el("span", { clase: "chip rechazada" },
+      cuerpo.alta_pedida ? "sin aprobar: el organizador todavía no aprobó tu pedido" : "sin aprobar: pedí el alta en /alta"));
+}
+
+$("form-clave").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  try {
+    firmante = { ...await importarClave(new FormData(evento.target).get("jwk")), ultimoNonce: 0 };
+    evento.target.reset();
+    evento.target.hidden = true;
+    $("formulario").hidden = false;
+    mostrarMensaje("");
+    await cargarCuenta();
+  } catch (error) {
+    mostrarMensaje(`No se pudo usar la clave: ${error.message}. ${AVISO_NAVEGADOR}`, true);
+  }
+});
+
+async function firmada(destino, monto) {
+  const tx = { origen: firmante.cuenta, destino, monto, nonce: firmante.ultimoNonce + 1,
+               timestamp: Math.floor(Date.now() / 1000) };
+  return { ...tx, firma: await firmar(firmante.clave, mensajeTransaccion(tx)) };
+}
+
 $("formulario").addEventListener("submit", async (evento) => {
   evento.preventDefault();
   const formulario = evento.target;
   const datos = Object.fromEntries(new FormData(formulario));
-  const tx = { origen: datos.origen.trim(), destino: datos.destino.trim(), monto: Number(datos.monto) };
   const boton = formulario.querySelector("button");
   boton.disabled = true;
   try {
+    const tx = await firmada(datos.destino.trim(), Number(datos.monto));
     const { ok, status, cuerpo } = await api("/api/transacciones", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
     if (ok) {
+      firmante.ultimoNonce = tx.nonce;
       mias = [{ ...tx, id: cuerpo.id, estado: "recibida" }, ...mias].slice(0, MIAS_MAXIMO);
       guardarIds();
       pintarMias();
       const adelantado = avisosSinDueño.get(cuerpo.id);
       if (adelantado) { avisosSinDueño.delete(cuerpo.id); estadoDeTransaccion(adelantado); }
-      mostrarMensaje(`Recibida: ${cuerpo.id}`);
+      mostrarMensaje(`Firmada y recibida: ${cuerpo.id} (nonce ${tx.nonce})`);
       formulario.reset();
-    } else if (status === 400) {
-      mostrarMensaje([].concat(cuerpo.errores || "datos inválidos").join(" · "), true);
+      cargarCuenta();
+    } else if (status === 400 || status === 409) {
+      mostrarMensaje([].concat(cuerpo.errores || cuerpo.error || "datos inválidos").join(" · "), true);
     } else {
       mostrarMensaje("El sistema no pudo recibirla ahora; probá de nuevo en un momento.", true);
     }
@@ -286,7 +268,7 @@ async function cargarCajas() {
   const resto = cuerpo.total_pendientes - cuerpo.pendientes.length;
   $("pendientes").replaceChildren(...cuerpo.pendientes.map((tx) => el("li", { clase: "tx" },
     el("span", { clase: "chip pendiente" }, "pendiente"),
-    el("span", {}, `${tx.origen} → ${tx.destino}: ${tx.monto}`),
+    el("span", { clase: "mono" }, `${tipoDe(tx) || cuentaCorta(tx.origen)} → ${cuentaCorta(tx.destino)}: ${tx.monto}`),
     el("span", { clase: "mono suave" }, corto(tx.id)))),
     ...(resto > 0 ? [el("li", { clase: "suave" }, `y ${resto} más`)] : []));
 }
@@ -314,14 +296,14 @@ async function cargarMineros() {
     el("thead", {}, el("tr", {}, ...["minero", "tipo", "placa", "bench", "ahora", "saldo"]
       .map((t, i) => el("th", i >= 3 ? { clase: "num" } : {}, t)))),
     el("tbody", {}, ...vivos.map((m) => el("tr", {},
-      el("td", { clase: "mono" }, m.id), el("td", {}, m.tipo ?? "—"), el("td", {}, m.placa ?? "—"),
+      el("td", { clase: "mono", title: m.id }, m.alias || corto(m.id)), el("td", {}, m.tipo ?? "—"), el("td", {}, m.placa ?? "—"),
       el("td", { clase: "num" }, velocidad(m.bench)), el("td", { clase: "num" }, velocidad(m.hashes_por_segundo)),
       el("td", { clase: "num" }, String(m.saldo)))))), ...pie);
 }
 
 // ── Todo junto ──
 
-const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas, cargarMineros];
+const alConfirmarBloque = [bloqueConfirmado, actualizarAbiertas, cargarCajas, cargarMineros, cargarCuenta];
 
 function recargarTodo() {
   return Promise.all([cargarCadena(), cargarMias(), cargarCajas(), cargarMineros()]);

@@ -7,12 +7,16 @@ La página del sistema: hacer transferencias y ver la cadena en vivo. El servici
 | Ruta | Qué devuelve |
 |---|---|
 | `GET /` | La página: un HTML con JS y CSS, sin frameworks ni build |
+| `GET /alta` | «Pedir el alta» (BC-58): genera el par en el navegador, baja la privada (JWK para un usuario, hex para un minero) y manda a `POST /api/altas` la pública con su firma |
+| `GET /organizador` | El panel del organizador: pedidos pendientes (aprobar, con saldo inicial, o rechazar), cuentas aprobadas (dar de baja) y cargas de saldo. Se entra con el JWK del organizador; cada pedido va firmado con `X-Organizador` |
+| `GET /comun.js` · `GET /estilos.css` | Lo que comparten las tres páginas: firmar con WebCrypto, llamar a la API y los estilos |
 | `GET /eventos` | SSE: cada aviso de `eventos` como `event: <clave>` y `data: <JSON>`, más un comentario de keep-alive cada 15 s |
 | `GET /health` · `GET /metrics` | Los de `comun/` (sólo RabbitMQ), más `blockchain_sse_clientes` y `blockchain_eventos_reenviados_total{evento}` |
 
 - Cada pod se suscribe a `bloque.confirmado` y `transaccion.estado` con su propia cola exclusiva (`Rabbit.suscribir`). Así cada navegador recibe todos los avisos, esté conectado al pod que esté.
 - La página tiene cuatro paneles:
-  1. **Transferir y «mis transferencias»:** las últimas 20 de este navegador, en `localStorage`.
+  1. **Transferir y «mis transferencias»:** se importa la clave privada (el JWK de `python -m claves exportar`) como `CryptoKey` no exportable, y cada transferencia se firma en el navegador con WebCrypto Ed25519 (Chrome 137, Firefox 129, Safari 17): la privada no sale nunca del navegador ni se guarda. El nonce sale de `/api/cuentas/<cuenta>`. Las últimas 20 transferencias de este navegador quedan en `localStorage` (sólo los ids).
+  - La cadena muestra la coinbase, las cargas y los pagos de participación como transacciones de emisión.
   2. **Esperando bloque:** `/api/cajas`.
   3. **Mineros vivos:** `/api/mineros`.
   4. **Cadena:** `/api/bloques`.

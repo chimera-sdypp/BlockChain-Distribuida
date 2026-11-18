@@ -12,7 +12,7 @@ data "google_service_account" "escalador" {
 }
 
 # ---------------------------------------------------------------- Cuenta de las VMs
-# Sólo puede bajar la imagen, leer el MINER_TOKEN y escribir logs.
+# Sólo puede bajar la imagen y escribir logs. La clave del minero le llega por metadata (BC-57).
 resource "google_service_account" "minero" {
   account_id   = "minero-cpu"
   display_name = "VMs minero-cpu"
@@ -23,12 +23,6 @@ resource "google_project_iam_member" "minero" {
   project  = var.proyecto
   role     = each.value
   member   = "serviceAccount:${google_service_account.minero.email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "minero_token" {
-  secret_id = "miner-token" # creado por bootstrap/
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.minero.email}"
 }
 
 # ---------------------------------------------------------------- Firewall
@@ -82,7 +76,6 @@ resource "google_compute_instance_template" "minero" {
     startup-script = templatefile("${path.module}/arrancar.sh", {
       imagen      = var.imagen
       gateway_url = var.gateway_url
-      proyecto    = var.proyecto
       registro    = split("/", var.imagen)[0]
     })
   }

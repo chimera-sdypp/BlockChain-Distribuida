@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import GATEWAY_URL, TOKEN, esperar, kubectl, nuevo_usuario, pods, transferir
+from .conftest import GATEWAY_URL, esperar, kubectl, minero_aprobado, nuevo_usuario, pods, transferir
 from . import test_recorrido
 
 PILAR2 = Path(__file__).parents[1]
@@ -30,9 +30,9 @@ def logs_gateway():
 def test_minero_muerto_a_mitad_de_un_rango(minero, tmp_path):
     """El préstamo vence a los 30 s, el gateway devuelve el rango a la cola y otro resuelve el bloque."""
     minero.parar()  # que el rango lo tome la víctima
-    victima = nuevo_usuario("victima")
+    privada, victima = minero_aprobado("victima")
     salida = tmp_path / "victima.log"
-    entorno = dict(os.environ, GATEWAY_URL=GATEWAY_URL, MINER_TOKEN=TOKEN, MINERO_ID=victima, PROCESOS="1",
+    entorno = dict(os.environ, GATEWAY_URL=GATEWAY_URL, CLAVE_PRIVADA=privada, MINERO_ID="victima", PROCESOS="1",
                    LOGS_DIR=str(tmp_path))
     with salida.open("w") as archivo:
         proceso = subprocess.Popen([sys.executable, "-m", "minero_cpu"], cwd=PILAR2, env=entorno,

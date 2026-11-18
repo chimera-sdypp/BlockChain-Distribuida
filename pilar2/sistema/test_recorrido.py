@@ -1,20 +1,23 @@
-"""El recorrido de una transferencia por los pasos 1 a 11 del diagrama del Pilar 2."""
+"""El recorrido de una transferencia por los pasos 1 a 11 del diagrama del Pilar 2, con el contrato v2."""
 
 import threading
 
 from comun import contrato
 
-from .conftest import api, bloques, esperar, nuevo_usuario, saldo, transferir
+from .conftest import api, bloques, esperar, firmada, nuevo_usuario, saldo, transferir
 
 
 def verificar_bloque(bloque):
-    """NCT.3, otra vez desde afuera: el hash sale del texto y el nonce, y cumple el prefijo."""
-    texto = contrato.texto_bloque(bloque["previous_hash"], bloque["timestamp"], bloque["transactions"])
+    """NCT.3, otra vez desde afuera: el hash sale del texto (con la coinbase en la raíz) y el nonce, y cumple el prefijo."""
+    texto = contrato._texto(bloque["previous_hash"], bloque["timestamp"], bloque["transactions"])
     assert contrato.hash_bloque(texto, bloque["nonce"]) == bloque["block_hash"]
     assert contrato.cumple(bloque["block_hash"], bloque["prefijo"])
+    coinbase = bloque["transactions"][0]
+    assert coinbase == contrato.coinbase(bloque["altura"], bloque["minero"], contrato.recompensa(bloque["prefijo"]),
+                                         bloque["timestamp"])
 
 
-def test_transferencia_valida_termina_en_un_bloque_encadenado(minero):
+def test_transferencia_firmada_termina_en_un_bloque_encadenado(minero):
     origen, destino = "alice", nuevo_usuario("destino")
     antes = saldo(origen)
     id_ = transferir(origen, destino, 7)                                   # pasos 1 y 2
@@ -28,33 +31,56 @@ def test_transferencia_valida_termina_en_un_bloque_encadenado(minero):
     codigo, anterior = api("GET", f"/api/bloques/{bloque['previous_hash']}")
     assert codigo == 200 and anterior["altura"] == bloque["altura"] - 1   # extiende la cadena
     assert saldo(origen) == antes - 7 and saldo(destino) == 7
-    assert saldo(bloque["minero"]) >= contrato.recompensa(bloque["prefijo"])  # cobró la recompensa
+    assert saldo(bloque["minero"]) >= contrato.recompensa(bloque["prefijo"])  # cobró su coinbase
 
 
 def test_sin_saldo_queda_rechazada(minero):
-    pobre = nuevo_usuario("pobre")
+    pobre = nuevo_usuario("pobre", aprobada=True)
     tx, _ = esperar(transferir(pobre, "bob", 1))
     assert tx["estado"] == "rechazada" and tx["motivo"] == "saldo insuficiente"
     assert saldo(pobre) == 0
 
 
-def test_doble_gasto_simultaneo_una_se_rechaza(minero):
-    usuario = nuevo_usuario("doble")
+def test_una_cuenta_sin_aprobar_no_puede_transferir(minero):
+    sin_aprobar = nuevo_usuario("sin-aprobar")
+    tx, _ = esperar(transferir(sin_aprobar, "bob", 1))
+    assert tx["estado"] == "rechazada" and tx["motivo"] == "cuenta no aprobada"
+
+
+def test_una_firma_falsa_o_un_monto_cambiado_no_entran():
+    """Nadie puede mandar una transferencia de bob sin la clave de bob."""
+    tx = firmada("bob", "alice", 5, nonce=10**9)
+    for trucha in ({**tx, "firma": "ab" * 64}, {**tx, "monto": 500}, {**tx, "origen": firmada("carol", "alice", 5, nonce=1)["origen"]}):
+        codigo, cuerpo = api("POST", "/api/transacciones", {k: v for k, v in trucha.items() if k != "id"})
+        assert codigo == 400 and any("firma" in e for e in cuerpo["errores"]), cuerpo
+
+
+def test_reenviar_una_transaccion_da_409(minero):
+    tx = firmada("alice", nuevo_usuario("reenvio"), 1)
+    assert api("POST", "/api/transacciones", tx)[0] == 202
+    codigo, cuerpo = api("POST", "/api/transacciones", tx)
+    assert codigo == 409 and cuerpo["id"] == tx["id"]
+    assert esperar(tx["id"])[0]["estado"] == "confirmada"
+
+
+def test_doble_gasto_con_el_mismo_nonce_entra_una(minero):
+    usuario = nuevo_usuario("doble", aprobada=True)
     tx, _ = esperar(transferir("alice", usuario, 10))
     assert tx["estado"] == "confirmada"
-    ids, barrera = [], threading.Barrier(2)
+    # Dos transacciones distintas firmadas con el mismo nonce, a la vez: una se rechaza.
+    gastos, ids, barrera = [firmada(usuario, d, 10, nonce=1) for d in ("bob", "carol")], [], threading.Barrier(2)
 
-    def gastar():
+    def gastar(tx_):
         barrera.wait()
-        ids.append(transferir(usuario, "bob", 10))
+        ids.append(api("POST", "/api/transacciones", tx_)[1]["id"])
 
-    hilos = [threading.Thread(target=gastar) for _ in range(2)]
+    hilos = [threading.Thread(target=gastar, args=(g,)) for g in gastos]
     for hilo in hilos:
         hilo.start()
     for hilo in hilos:
         hilo.join()
-    estados = sorted(esperar(id_)[0]["estado"] for id_ in ids)
-    assert estados == ["confirmada", "rechazada"]
+    cerradas = sorted((t["estado"], t.get("motivo", "")) for t in (esperar(id_)[0] for id_ in ids))
+    assert cerradas == [("confirmada", ""), ("rechazada", "nonce repetido")]
     assert saldo(usuario) == 0
 
 

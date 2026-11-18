@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 
 from comun import contrato
+from comun.tests.claves import CUENTA, PRIVADA
 from minero_cpu.minero import Gateway, Minero
-from minero_cpu.tests.test_minero import TOKEN, GatewayFalso
+from minero_cpu.tests.test_minero import GatewayFalso, shares_esperados
 from minero_gpu.busqueda import BuscadorGPU, ErrorGPU
 
 VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
+PREFIJO = VECTOR["tarea"]["prefijo"]
 FALSO = Path(__file__).with_name("minar_falso.py")
 
 
@@ -43,7 +45,8 @@ def test_el_menor_nonce_aunque_cruce_trozos(falso):
 
 
 def test_vector_de_prueba(falso):
-    assert falso.buscar(VECTOR["texto"], 0, 200_000, VECTOR["prefijo"]) == (VECTOR["nonce"], False)
+    assert falso.buscar(VECTOR["texto"], 50_000, 60_000, PREFIJO) == (VECTOR["nonce"], False)
+    assert falso.shares.tomar() == shares_esperados(VECTOR["texto"], 50_000, VECTOR["nonce"], PREFIJO)
 
 
 def test_sin_solucion_recorre_todos_los_trozos(falso):
@@ -54,7 +57,7 @@ def test_sin_solucion_recorre_todos_los_trozos(falso):
 def test_cortar_entre_trozos(falso):
     threading.Timer(0.2, falso.cortar).start()
     assert falso.buscar("x", 0, 10**9, "f" * 32) == (None, True)
-    assert falso.buscar(VECTOR["texto"], 0, 2000, VECTOR["prefijo"]) == (VECTOR["nonce"], False)
+    assert falso.buscar(VECTOR["texto"], 54_000, 55_000, PREFIJO) == (VECTOR["nonce"], False)
 
 
 def test_si_el_binario_muere_avisa(falso):
@@ -71,16 +74,19 @@ def test_binario_que_no_arranca(tmp_path):
 
 
 def test_se_presenta_como_gpu_y_devuelve_el_nonce(falso):
-    gateway = GatewayFalso([{"tarea": "t1", "rango": 0, "bloque": VECTOR["texto"], "desde": 0, "hasta": 4999,
-                             "prefijo": VECTOR["prefijo"]}], bench=dict(contrato.BENCH, hasta=2999))
-    minero = Minero(Gateway(gateway.url, TOKEN), "cpu-prueba", buscador=falso, tipo="gpu", placa=falso.placa)
+    gateway = GatewayFalso([{"tarea": "t1", "rango": 0, "bloque": VECTOR["texto"], "desde": 53_000, "hasta": 57_999,
+                             "prefijo": PREFIJO}], bench=dict(contrato.BENCH, hasta=2999))
+    minero = Minero(Gateway(gateway.url, PRIVADA["minero"]), "gpu-prueba", buscador=falso, tipo="gpu",
+                    placa=falso.placa)
     try:
         minero.presentarse()
-        assert gateway.de("/hello")[0] == {"minero": "cpu-prueba", "tipo": "gpu", "placa": "GPU de mentira"}
+        assert gateway.de("/hello")[0] == {"minero": CUENTA["minero"], "tipo": "gpu", "placa": "GPU de mentira",
+                                            "alias": "gpu-prueba"}
         assert gateway.de("/bench")[0]["hashes_por_segundo"] > 0
         assert minero.un_rango()
-        assert gateway.de("/results")[0] == {"tarea": "t1", "rango": 0, "minero": "cpu-prueba",
-                                             "nonce": VECTOR["nonce"], "hash": VECTOR["block_hash"]}
+        assert gateway.de("/results")[0] == {"tarea": "t1", "rango": 0, "minero": CUENTA["minero"],
+                                             "nonce": VECTOR["nonce"], "hash": VECTOR["block_hash"],
+                                             "shares": shares_esperados(VECTOR["texto"], 53_000, VECTOR["nonce"], PREFIJO)}
     finally:
         minero.detenido.set()
         gateway.cerrar()
@@ -88,12 +94,26 @@ def test_se_presenta_como_gpu_y_devuelve_el_nonce(falso):
 
 # --- Con el binario CUDA de verdad (MINAR=ruta/al/minar) ------------------------------------
 @pytest.mark.skipif(not os.environ.get("MINAR"), reason="MINAR=<binario compilado> para correrlo en una GPU")
-@pytest.mark.parametrize("largo", [0, 1, 55, 56, 63, 64, 120, 121, 1000, 6000])
+@pytest.mark.parametrize("largo", [0, 1, 55, 56, 63, 64, 77, 120, 121, 1000, 6000])
 def test_gpu_de_verdad_coincide_con_python(largo):
     buscador = BuscadorGPU(os.environ["MINAR"])
     try:
         bloque = ("tx;" * 3000)[:largo]
         for desde, hasta in ((0, 5000), (10**12, 10**12 + 5000)):
-            assert buscador.buscar(bloque, desde, hasta, "00") == (menor_nonce(bloque, desde, hasta, "00"), False)
+            nonce = menor_nonce(bloque, desde, hasta, "000")
+            assert buscador.buscar(bloque, desde, hasta, "000") == (nonce, False)
+            # Los shares («00»): todos los del rango hasta la solución, en orden (son menos que el tope).
+            esperados = shares_esperados(bloque, desde, nonce if nonce is not None else hasta, "000")
+            assert sorted(buscador.shares.tomar()) == esperados[:contrato.SHARES_POR_RANGO]
+    finally:
+        buscador.cerrar()
+
+
+@pytest.mark.skipif(not os.environ.get("MINAR"), reason="MINAR=<binario compilado> para correrlo en una GPU")
+def test_gpu_de_verdad_con_el_vector_de_prueba():
+    buscador = BuscadorGPU(os.environ["MINAR"])
+    try:
+        assert buscador.buscar(VECTOR["texto"], 0, 10**6, PREFIJO) == (VECTOR["nonce"], False)
+        assert sorted(buscador.shares.tomar()) == shares_esperados(VECTOR["texto"], 0, VECTOR["nonce"], PREFIJO)
     finally:
         buscador.cerrar()

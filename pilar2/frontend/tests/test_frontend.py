@@ -117,3 +117,17 @@ def test_la_metrica_de_clientes_sube_y_baja(servidor):
     while difusor.clientes() and time.monotonic() < limite:
         time.sleep(0.05)
     assert difusor.clientes() == 0
+
+
+@pytest.mark.parametrize("ruta, tipo, texto", [
+    ("/alta", "text/html", "/api/altas"),
+    ("/organizador", "text/html", "X-Organizador"),
+    ("/comun.js", "text/javascript", "pedidoFirmado"),
+    ("/estilos.css", "text/css", "--acento"),
+])
+def test_las_paginas_del_alta_y_del_organizador_se_sirven(ruta, tipo, texto):
+    """BC-58: «Pedir el alta», el panel del organizador y lo que comparten con la página principal."""
+    app, _ = armar()
+    respuesta = TestClient(app).get(ruta)
+    assert respuesta.status_code == 200 and respuesta.headers["content-type"].startswith(tipo)
+    assert texto in respuesta.text

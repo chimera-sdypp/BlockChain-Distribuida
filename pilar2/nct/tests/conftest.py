@@ -6,11 +6,13 @@ import pytest
 import redis as redislib
 
 from comun import config
+from comun.tests.claves import CUENTA
 from nct import app as nct
+from nct.tests import escenario
 
 BASE_PRUEBAS = 15  # una base de Redis aparte: así no se pisa la cadena de un sistema corriendo
 
-SALDOS = {"alice": 100, "bob": 50, "carol": 0}
+SALDOS = {CUENTA["alice"]: 100, CUENTA["bob"]: 50, CUENTA["carol"]: 0}
 
 
 class PublicadorFalso:
@@ -46,11 +48,17 @@ def publicador():
     return PublicadorFalso()
 
 
+@pytest.fixture(autouse=True)
+def billetera_nueva():
+    """Cada test arranca con los nonces de las cuentas de prueba en 0."""
+    escenario.BILLETERA.nonces.clear()
+
+
 @pytest.fixture
 def armar(redis, publicador):
     """Un NCT (una «réplica») sobre la misma base; se pueden armar varios."""
     def armar_nct(**ajustes):
-        opciones = dict(saldos_iniciales=SALDOS, wait_replicas=0)
+        opciones = dict(saldos_iniciales=SALDOS, organizador=CUENTA["organizador"], wait_replicas=0)
         opciones.update(ajustes)
         return nct.Nct(redis, publicador, **opciones)
     return armar_nct

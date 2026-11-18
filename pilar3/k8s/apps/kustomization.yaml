@@ -16,6 +16,7 @@ resources:
   - ../../../pilar2/k8s/ingress.yaml
   - ../../../pilar2/k8s/escalador/escalador.yaml
   - salud.yaml
+  - a-https.yaml
 
 configMapGenerator:
   - name: escalador-tofu
@@ -35,6 +36,8 @@ patches:
       kind: Deployment
   - path: escalador.yaml
   - path: gateway-ip.yaml
+  - path: nct-saldos.yaml
+  - path: ingreso-https.yaml
 
 # La cuenta de GCP del escalador (Workload Identity), sacada de gcp.env.
 replacements:

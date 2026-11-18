@@ -26,22 +26,21 @@ resource "google_artifact_registry_repository" "imagenes" {
   depends_on    = [google_project_service.apis]
 }
 
-# El MINER_TOKEN de las VMs minero-cpu. Acá sólo el secreto vacío: el valor se carga con gcloud
-# (pilar3/README.md) para que no quede en el state.
-resource "google_secret_manager_secret" "miner_token" {
-  secret_id = "miner-token"
-  replication {
-    auto {}
-  }
-  depends_on = [google_project_service.apis]
-}
-
 # IP pública fija del gateway de mineros: vive acá y no en infra/ para que sobreviva a un destroy
 # del cluster (los mineros de afuera la tienen configurada). El Service la toma en el Pipeline 3.
 resource "google_compute_address" "gateway" {
   name        = "gateway"
   region      = var.region
   description = "IP fija del gateway de mineros (LoadBalancer en GKE)"
+  depends_on  = [google_project_service.apis]
+}
+
+# IP pública fija de Traefik (las páginas y la API): el nombre de DuckDNS apunta acá y el certificado
+# de Let's Encrypt es para ese nombre, así que tiene que sobrevivir a un destroy del cluster.
+resource "google_compute_address" "ingreso" {
+  name        = "ingreso"
+  region      = var.region
+  description = "IP fija de Traefik (las paginas y la API, con HTTPS)"
   depends_on  = [google_project_service.apis]
 }
 

@@ -1,17 +1,44 @@
-"""Lo común de los tests del gateway: Redis real (base 15), colas temporales y un cliente HTTP."""
+"""Lo común de los tests del gateway: Redis real (base 15), colas temporales y mineros que firman sus pedidos."""
 
+import json
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 import redis as redislib
 from fastapi.testclient import TestClient
 
-from comun import Rabbit, config, web
+from comun import Rabbit, config, contrato, web
+from comun.tests.claves import CUENTA, PRIVADA
 from gateway import app as gateway
 
 BASE_PRUEBAS = 15
-TOKEN = "token-de-prueba"
+VECTOR = json.loads((Path(__file__).parents[2] / "comun" / "vector_prueba.json").read_text())
+
+
+class Minero:
+    """Un cliente HTTP que firma cada pedido con la clave de prueba de `nombre`, como los mineros (BC-57)."""
+
+    def __init__(self, cliente, nombre):
+        self.cliente, self.nombre = cliente, nombre
+        self.cuenta, self.privada = CUENTA[nombre], PRIVADA[nombre]
+
+    def pedir(self, metodo, ruta, datos=None, tiempo=None, encabezados=None):
+        cuerpo = json.dumps(datos).encode() if datos is not None else b""
+        firma = contrato.firmar_pedido(self.privada, metodo, ruta, cuerpo, tiempo=tiempo)
+        return self.cliente.request(metodo, ruta, content=cuerpo,
+                                    headers={"content-type": "application/json", **firma, **(encabezados or {})})
+
+    def get(self, ruta, **opciones):
+        return self.pedir("GET", ruta, **opciones)
+
+    def post(self, ruta, datos=None, **opciones):
+        return self.pedir("POST", ruta, datos, **opciones)
+
+
+def aprobar(redis, nombre, tipo="minero"):
+    redis.hset("cuentas", CUENTA[nombre], json.dumps({"tipo": tipo, "nombre": nombre, "alta": 1793836800}))
 
 
 @pytest.fixture
@@ -22,6 +49,8 @@ def redis():
     cliente = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                              db=BASE_PRUEBAS, decode_responses=True)
     cliente.flushdb()
+    for nombre in ("minero", "minero2"):
+        aprobar(cliente, nombre)
     yield cliente
     cliente.flushdb()
 
@@ -41,19 +70,25 @@ def colas(redis):
 
 @pytest.fixture
 def armar(redis, colas):
-    """Un gateway (un «pod») sobre la misma base y las mismas colas; se pueden armar varios."""
+    """Un gateway (un «pod») sobre la misma base y las mismas colas, con el cliente de `minero`."""
     rabbit, nombres = colas
 
-    def armar_gateway(**ajustes):
-        opciones = dict(token=TOKEN, cola_rangos=nombres["rangos"], cola_resultados=nombres["resultados"])
+    def armar_gateway(nombre="minero", **ajustes):
+        opciones = dict(cola_rangos=nombres["rangos"], cola_resultados=nombres["resultados"])
         opciones.update(ajustes)
         g = gateway.Gateway(redis, rabbit, **opciones)
         app = web.crear_app("gateway", {})
         gateway.agregar_rutas(app, g)
-        return g, TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
+        return g, Minero(TestClient(app), nombre)
     return armar_gateway
 
 
 @pytest.fixture
 def cliente(armar):
     return armar()[1]
+
+
+@pytest.fixture
+def otro(armar):
+    """Otro minero aprobado, contra el mismo gateway."""
+    return armar("minero2")[1]

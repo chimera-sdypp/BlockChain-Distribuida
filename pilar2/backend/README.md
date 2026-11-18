@@ -6,18 +6,24 @@ La API por la que entran las transferencias y se consulta su estado (pasos 1 y 2
 
 | Pedido | Respuesta |
 |---|---|
-| `POST /api/transacciones` `{origen, destino, monto}` | 202 `{id}` · 400 `{errores: [...]}` · 503 `{error}` |
-| `POST /api/transacciones/lote` `[{origen, destino, monto}, ...]` | 202 `{ids}` en el mismo orden · 400 · 413 · 503 `{error, encoladas}` |
-| `GET /api/transacciones/<id>` | `{id, origen, destino, monto, timestamp, estado}`, más `motivo` (rechazada) o `bloque` (confirmada) · 404 |
-| `GET /api/bloques?limite=20&desde=<altura>` | Los bloques del más nuevo al más viejo, con `altura` y `transactions` como lista |
+| `POST /api/transacciones` `{origen, destino, monto, nonce, timestamp, firma}` | 202 `{id}` · 400 `{errores: [...]}` · 409 `{error, id}` (reenvío) · 503 `{error}` |
+| `POST /api/transacciones/lote` `[{…}, ...]` | 202 `{ids}` en el mismo orden · 400 · 409 · 413 · 503 `{error, encoladas}` |
+| `GET /api/transacciones/<id>` | `{id, origen, destino, monto, nonce, timestamp, firma, estado}`, más `motivo` (rechazada) o `bloque` (confirmada) · 404 |
+| `GET /api/cuentas/<cuenta>` | `{cuenta, saldo, comprometido, nonce, aprobada, tipo, nombre, alta_pedida}`: lo que necesita un cliente para firmar (el próximo nonce es `nonce + 1`). `emision` da la última carga |
+| `POST /api/altas` `{tipo, clave_publica, nombre, firma}` | 202 `{cuenta, estado: "pendiente"}` · 400 (firma o formato) · 409 (ya aprobada) · 429 (hay 1000 pendientes) |
+| `GET /api/organizador/altas` · `GET /api/organizador/cuentas` | Los pedidos pendientes y las cuentas aprobadas (con su saldo). Firmados por el organizador |
+| `POST /api/organizador/aprobar` `{cuenta, nombre?, carga?}` | La aprueba y, si viene `carga` (firmada por el organizador para esa cuenta, sólo a usuarios), la encola · 400 · 404 (sin pedido) |
+| `POST /api/organizador/rechazar` · `POST /api/organizador/baja` `{cuenta}` | Borra el pedido o saca la cuenta de `cuentas` · 404 |
+| `GET /api/bloques?limite=20&desde=<altura>` | Los bloques del más nuevo al más viejo, con `altura`, `transactions` como lista y `minero` y `recompensa` sacados de la coinbase |
 | `GET /api/bloques/<hash>` | El bloque con su `altura` · 404 |
 | `GET /api/saldos` · `GET /api/saldos/<usuario>` | Saldos confirmados; un usuario que no existe tiene 0 |
 | `GET /health` · `GET /metrics` | Los de `comun/`, más `blockchain_tx_recibidas_total{resultado}` (`aceptada`, `invalida`, `error`, por transacción) |
 
-- **Formato:** valida con `validar_transaccion` del [contrato](../CONTRATO.md). El saldo lo valida el NCT.
+- **Formato y firma** (BC-56): valida con `validar_transaccion_firmada` del [contrato](../CONTRATO.md) y calcula el `id` con el contenido. La misma transacción reenviada da 409 (un Lua crea `tx:<id>` sólo si no existía). Las cargas de saldo (origen `emision`) tienen que estar firmadas por `ORGANIZADOR_CLAVE`. La cuenta, el nonce y el saldo los valida el NCT.
 - **Orden:** primero guarda `tx:<id>` «recibida» y después publica (con confirmación del broker). Al revés, el NCT podría pasarla a «pendiente» y el backend pisarla con «recibida».
 - **Fallas:** si la cola no confirma, borra los `tx:<id>` que no se publicaron y contesta 503. En un lote, `encoladas` dice cuáles sí entraron: ésas no se pueden sacar y el NCT las va a procesar, así que hay que reintentar sólo las demás.
-- **Lote:** todo o nada. Si una es inválida no entra ninguna, y `errores` viene por índice.
+- **Panel del organizador** (BC-58): cada pedido a `/api/organizador/*` va firmado con la clave del organizador, como los de los mineros pero con `X-Organizador` (ver [Altas](../CONTRATO.md#altas)). Sin firma, firmado por otra clave o con la hora corrida más de 30 s: 403. Cada pedido, aprobación, rechazo, baja y carga deja una línea en el log, con la cuenta, el nombre y el monto.
+- **Lote:** todo o nada. Si una es inválida (400) o ya existía o está dos veces (409), no entra ninguna, y `errores` viene por índice.
 
 ## Configuración
 
@@ -27,13 +33,14 @@ Además de las de `comun/` (ver `.env.example`):
 |---|---|---|
 | `LOTE_MAXIMO` | 1000 | Transacciones por lote; si se pasa, 413 |
 | `COLA_TRANSACCIONES` | `transacciones` | Dónde publica (los tests usan una cola temporal) |
+| `ORGANIZADOR_CLAVE` | — | La cuenta del organizador: firma las cargas de saldo y los pedidos del panel. Sin ella, no entran cargas y el panel da 403 |
 
 ## Ejecutar (desde `pilar2/`)
 
 ```bash
 python -m backend
-curl -X POST localhost:8080/api/transacciones -H 'content-type: application/json' \
-  -d '{"origen":"alice","destino":"bob","monto":10}'          # 202 {"id": ...}
+python -m claves firmar alice.clave --destino <cuenta de bob> --monto 10 --url http://localhost:8080 --enviar
+                                                                # 202 {"id": ...}
 curl localhost:8080/api/transacciones/<id>                      # {"estado": "recibida", ...}
 ```
 

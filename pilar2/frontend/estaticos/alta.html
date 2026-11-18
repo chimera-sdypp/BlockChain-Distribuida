@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pedir el alta</title>
+<link rel="stylesheet" href="/estilos.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pedir el alta</h1>
+    <nav><a href="/">Volver a la cadena</a></nav>
+  </header>
+
+  <section aria-labelledby="t-pedir">
+    <h2 id="t-pedir">Tu cuenta nueva</h2>
+    <p class="suave">La red es privada: sólo operan las cuentas que aprueba el organizador. Acá se genera tu par de
+      claves en el navegador, se baja la privada a un archivo y se manda sólo la pública, firmada para demostrar que
+      es tuya. Guardá bien el archivo: sin él no podés usar la cuenta.</p>
+    <form id="form-alta" class="ancho" autocomplete="off">
+      <label>Tu nombre (alias) <input name="nombre" required maxlength="32" pattern="[A-Za-z0-9_.\-]{1,32}"
+             title="de 1 a 32 letras, números, «_», «.» o «-»"></label>
+      <label>Soy <select name="tipo">
+        <option value="usuario">usuario (transfiero)</option>
+        <option value="minero">minero (mino bloques)</option>
+      </select></label>
+      <button type="submit">Generar y pedir</button>
+    </form>
+    <p id="mensaje" class="mensaje" hidden></p>
+    <div id="resultado" hidden>
+      <dl>
+        <dt>cuenta</dt><dd id="cuenta" class="mono"></dd>
+        <dt>estado</dt><dd id="estado"></dd>
+        <dt>archivo</dt><dd id="archivo" class="mono"></dd>
+      </dl>
+      <p id="siguiente" class="suave"></p>
+    </div>
+  </section>
+</main>
+
+<script src="/comun.js"></script>
+<script>
+"use strict";
+let pedido = null;  // {cuenta, tipo, nombre}
+
+function mostrarMensaje(texto, error = false) {
+  $("mensaje").textContent = texto;
+  $("mensaje").classList.toggle("error", error);
+  $("mensaje").hidden = !texto;
+}
+
+async function revisarEstado() {
+  if (!pedido) return;
+  const { ok, cuerpo } = await api(`/api/cuentas/${pedido.cuenta}`);
+  if (!ok) return;
+  if (cuerpo.aprobada) {
+    $("estado").replaceChildren(el("span", { clase: "chip confirmada" }, "aprobada"),
+                                ` saldo ${cuerpo.saldo - cuerpo.comprometido}`);
+    return;
+  }
+  $("estado").replaceChildren(cuerpo.alta_pedida ? el("span", { clase: "chip pendiente" }, "esperando al organizador")
+                                                 : el("span", { clase: "chip rechazada" }, "rechazada"));
+  setTimeout(revisarEstado, 5000);
+}
+
+$("form-alta").addEventListener("submit", async (evento) => {
+  evento.preventDefault();
+  const formulario = evento.target;
+  const { nombre, tipo } = Object.fromEntries(new FormData(formulario));
+  const boton = formulario.querySelector("button");
+  boton.disabled = true;
+  try {
+    let par;
+    try {
+      par = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    } catch {
+      mostrarMensaje(`No se pudo generar la clave. ${AVISO_NAVEGADOR}`, true);
+      return;
+    }
+    const jwk = await crypto.subtle.exportKey("jwk", par.privateKey);
+    const cuenta = hex(deBase64url(jwk.x));
+    // Primero el archivo: si el pedido sale bien y la privada no quedó guardada, la cuenta no sirve.
+    // El usuario pega el JWK en «Transferir»; el minero usa la privada en hex (CLAVE_ARCHIVO).
+    const archivo = tipo === "usuario" ? `${nombre}.jwk` : `${nombre}.clave`;
+    bajarArchivo(archivo, tipo === "usuario"
+      ? JSON.stringify({ kty: "OKP", crv: "Ed25519", d: jwk.d, x: jwk.x }) + "\n"
+      : hex(deBase64url(jwk.d)) + "\n");
+    const firma = await firmar(par.privateKey, `alta:${tipo}:${cuenta}:${nombre}`);
+    const { ok, cuerpo } = await api("/api/altas", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tipo, clave_publica: cuenta, nombre, firma }) });
+    if (!ok) { mostrarMensaje(`No se pudo pedir el alta: ${errorDe(cuerpo)}`, true); return; }
+    pedido = { cuenta, tipo, nombre };
+    formulario.hidden = true;
+    mostrarMensaje("");
+    $("resultado").hidden = false;
+    $("cuenta").textContent = cuenta;
+    $("archivo").textContent = archivo;
+    $("siguiente").textContent = tipo === "usuario"
+      ? "Cuando el organizador te apruebe (y te cargue saldo), pegá el contenido del archivo en «Transferir»."
+      : `Cuando el organizador te apruebe, corré el minero con CLAVE_ARCHIVO=${archivo} MINERO_ID=${nombre} y la ` +
+        "GATEWAY_URL de la red. Un minero que arranca con su propia clave también queda pedido solo, al conectarse.";
+    revisarEstado();
+  } catch {
+    mostrarMensaje("No hay conexión con el servidor.", true);
+  } finally {
+    boton.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -32,7 +32,13 @@ spec:
             - { name: TX_POR_CAJA, value: "100" }
             - { name: TAREA_VENCE_SEGUNDOS, value: "600" }
             - { name: WAIT_REPLICAS, value: "1" }       # Redis tiene 2 réplicas: esperar a una
-            - { name: SALDOS_INICIALES, value: '{"alice": 1000, "bob": 1000, "carol": 1000}' }
+            # Las cuentas de prueba alice, bob y carol (comun/tests/claves.py: sus privadas salen de
+            # sha256("chimera-prueba-<nombre>")). En la red de verdad el génesis va vacío y el saldo entra por cargas.
+            - name: SALDOS_INICIALES
+              value: '{"0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": {"saldo": 1000, "nombre": "alice"}, "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": {"saldo": 1000, "nombre": "bob"}, "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f": {"saldo": 1000, "nombre": "carol"}}'
+            # El organizador, que firma las cargas de saldo. En k3s el de prueba; en GKE otro
+            # (pilar3/k8s/apps/nct-saldos.yaml).
+            - { name: ORGANIZADOR_CLAVE, value: "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117" }
             - name: RABBIT_USUARIO
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
             - name: RABBIT_CLAVE

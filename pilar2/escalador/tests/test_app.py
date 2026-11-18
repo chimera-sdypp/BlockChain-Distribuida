@@ -1,12 +1,13 @@
+import json
 import os
 import subprocess
 import uuid
 
 import pytest
 
-from comun import config, redisdb
-from escalador.app import SIMULADAS, Simulado, Tofu, ciclo, hay_trabajo, leer_nodos
-from escalador.decision import Ajustes, Decisor
+from comun import config, contrato, redisdb
+from escalador.app import CLAVES, SIMULADAS, ClavesVMs, Simulado, Tofu, ciclo, hay_trabajo, leer_nodos
+from escalador.decision import Ajustes, Decisor, sacar_foto
 
 AHORA = 1_800_000_000
 
@@ -82,11 +83,12 @@ def test_si_el_apply_falla_se_reintenta_en_el_proximo_ciclo():
 # --- OpenTofu, sin correrlo ------------------------------------------------------------------
 class Ejecutar:
     def __init__(self, salidas=None):
-        self.comandos, self.salidas = [], salidas or {}
+        self.comandos, self.salidas, self.entornos = [], salidas or {}, []
 
     def __call__(self, comando, **opciones):
         assert opciones["check"] and opciones["timeout"]
         self.comandos.append(comando[2:])
+        self.entornos.append(opciones.get("env"))
         salida = self.salidas.get(comando[2])
         if isinstance(salida, Exception):
             raise salida
@@ -100,6 +102,61 @@ def test_tofu_inicia_lee_y_aplica_la_cantidad():
     tofu.aplicar(3)
     assert ejecutar.comandos == [["init", "-input=false"], ["output", "-no-color", "-raw", "cantidad"],
                                  ["apply", "-auto-approve", "-input=false", "-var", "cantidad=3"]]
+
+
+class HashesFalsos:
+    """Los HSET/HGETALL/HSETNX/HDEL que usan las claves de las VMs."""
+
+    def __init__(self):
+        self.hashes = {}
+
+    def hgetall(self, clave):
+        return dict(self.hashes.get(clave, {}))
+
+    def hset(self, clave, mapping):
+        self.hashes.setdefault(clave, {}).update(mapping)
+
+    def hsetnx(self, clave, campo, valor):
+        if campo in self.hashes.setdefault(clave, {}):
+            return 0
+        self.hashes[clave][campo] = valor
+        return 1
+
+    def hdel(self, clave, campo):
+        self.hashes.get(clave, {}).pop(campo, None)
+
+
+def test_cada_vm_tiene_su_clave_aprobada_como_minero_y_se_da_de_baja_al_borrarla():
+    redis = HashesFalsos()
+    claves = ClavesVMs(redis)
+    dos = claves.preparar(2, ahora=AHORA)
+    assert sorted(dos) == ["minero-cpu-0", "minero-cpu-1"] and len(set(dos.values())) == 2
+    cuentas = {cuenta: json.loads(d) for cuenta, d in redis.hashes["cuentas"].items()}
+    assert cuentas == {contrato.clave_publica(p): {"tipo": "minero", "nombre": n, "alta": AHORA} for n, p in dos.items()}
+    # otro pod del escalador, o un apply repetido: las mismas claves
+    assert ClavesVMs(redis).preparar(3, ahora=AHORA + 60) == {**dos, "minero-cpu-2": redis.hashes[CLAVES]["minero-cpu-2"]}
+
+    assert claves.retirar(1) == ["minero-cpu-1", "minero-cpu-2"]
+    assert list(redis.hashes[CLAVES]) == ["minero-cpu-0"]
+    assert list(redis.hashes["cuentas"]) == [contrato.clave_publica(dos["minero-cpu-0"])]
+
+
+def test_tofu_le_pasa_las_claves_por_entorno_y_da_de_baja_las_que_sobran():
+    redis, ejecutar = HashesFalsos(), Ejecutar({"apply": "Apply complete!"})
+    tofu = Tofu("/tofu", claves=ClavesVMs(redis), ejecutar=ejecutar)
+    tofu.aplicar(2)
+    pasadas = json.loads(ejecutar.entornos[-1]["TF_VAR_claves"])
+    assert pasadas == redis.hashes[CLAVES] and len(pasadas) == 2
+    assert all("minero-cpu" not in parte for parte in ejecutar.comandos[-1])  # nada de claves en los argumentos
+    tofu.aplicar(0)
+    assert json.loads(ejecutar.entornos[-1]["TF_VAR_claves"]) == {} and redis.hashes[CLAVES] == {}
+
+
+def test_las_vms_propias_se_reconocen_por_el_alias_de_cuentas():
+    vm = {"tipo": "cpu", "bench": "800000", "ultimo_aviso": str(AHORA), "alias": "minero-cpu-0"}
+    ajena = {"tipo": "cpu", "bench": "5000000", "ultimo_aviso": str(AHORA), "alias": "pc-tomas"}
+    foto = sacar_foto({"a" * 64: vm, "b" * 64: ajena}, AHORA, True, ajustes())
+    assert (foto.hps_vm, foto.ajena) == (800_000, 5_000_000)
 
 
 def test_tofu_sin_state_es_cero():

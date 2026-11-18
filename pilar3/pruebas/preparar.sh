@@ -9,8 +9,10 @@
 #   preparar.sh condiciones P A F [C]  TrP con PREFIJO_BASE=P, AJUSTAR_PREFIJO=A (0 o 1),
 #                                      FRAGMENTO_PORCENTAJE=F y, si viene, CRITERIO_POTENCIA=C (suma,
 #                                      promedio, minimo o maximo; BC-59). El escalador, con el mismo PREFIJO_BASE
-#   preparar.sh fijar-vms N            pausa el escalador en KEDA y deja N VMs minero-cpu
-#                                      (necesita tofu y PROYECTO, el proyecto de GCP)
+#   preparar.sh fijar-vms N            pausa el escalador en KEDA y deja N VMs minero-cpu, cada una con su
+#                                      clave aprobada (como el escalador, BC-57)
+#                                      (necesita tofu, PROYECTO y credenciales de GCP: fuera del workflow,
+#                                      GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token))
 #   preparar.sh restaurar              TrP y escalador como en los manifiestos, y el escalador de nuevo
 #                                      en manos de KEDA (la cadena reiniciada no vuelve)
 set -euo pipefail
@@ -26,25 +28,56 @@ ip_publica() {
     kubectl -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 }
 
+# La URL del sistema: en GKE el Ingress tiene HTTPS con nombre (y redirige el HTTP); en k3s, http://<IP>.
+url_publica() {
+    local nombre
+    nombre=$(k get ingress blockchain -o jsonpath='{.spec.tls[0].hosts[0]}' 2>/dev/null || true)
+    if [ -n "$nombre" ]; then echo "https://$nombre"; else echo "http://$(ip_publica)"; fi
+}
+
 # Valor de una variable de entorno del contenedor principal de un Deployment (vacío si no está).
 env_de() {
     k get deploy "$1" -o jsonpath="{.spec.template.spec.containers[?(@.name=='$1')].env[?(@.name=='$2')].value}"
 }
 
-mineros_cpu_vivos() {   # cuántas VMs nuestras (minero-cpu-*) avisaron hace poco
-    curl -fsS --max-time 10 "http://$1/api/mineros" | python3 -c '
+mineros_cpu_vivos() {   # cuántas VMs nuestras (alias minero-cpu-*) avisaron hace poco
+    curl -fsS --max-time 10 "$1/api/mineros" | python3 -c '
 import json, sys
-print(sum(1 for m in json.load(sys.stdin) if m.get("vivo") and str(m.get("id", "")).startswith("minero-cpu-")))'
+print(sum(1 for m in json.load(sys.stdin) if m.get("vivo") and str(m.get("alias") or "").startswith("minero-cpu-")))'
+}
+
+# Lo mismo que hace el escalador antes de cada apply (ClavesVMs, BC-57): la clave de cada VM
+# minero-cpu-0..N-1 (las guardadas en escalador:claves o nuevas), aprobada como minero en `cuentas`;
+# las de las VMs que sobran, dadas de baja. Corre en un pod del TrP, que tiene el contrato y Redis.
+# Devuelve {nombre: privada} en JSON, para TF_VAR_claves.
+claves_vms() {
+    k exec -i deploy/trp -- python - "$1" <<'EOF'
+import json, sys, time
+from comun import config, contrato, redisdb
+
+CLAVES, PREFIJO = "escalador:claves", "minero-cpu-"
+cantidad, redis = int(sys.argv[1]), redisdb.conectar(config.cargar("preparar"))
+guardadas = redis.hgetall(CLAVES)
+claves = {f"{PREFIJO}{n}": guardadas.get(f"{PREFIJO}{n}") or contrato.nueva_clave()[0] for n in range(cantidad)}
+redis.hset(CLAVES, mapping=claves) if claves else None
+for nombre, privada in claves.items():
+    datos = json.dumps({"tipo": "minero", "nombre": nombre, "alta": int(time.time())})
+    redis.hsetnx(contrato.CUENTAS, contrato.clave_publica(privada), datos)
+for nombre, privada in guardadas.items():
+    if nombre.startswith(PREFIJO) and nombre[len(PREFIJO):].isdigit() and int(nombre[len(PREFIJO):]) >= cantidad:
+        redis.hdel(contrato.CUENTAS, contrato.clave_publica(privada))
+        redis.hdel(CLAVES, nombre)
+print(json.dumps(claves))
+EOF
 }
 
 estado() {
-    local ip
-    ip=$(ip_publica)
-    echo "Sistema:   http://$ip   (para correr.py: --url http://$ip)"
+    local base
+    base=$(url_publica)
+    echo "Sistema:   $base   (para correr.py: --url $base)"
     echo "TrP:       PREFIJO_BASE=$(env_de trp PREFIJO_BASE) AJUSTAR_PREFIJO=$(env_de trp AJUSTAR_PREFIJO) FRAGMENTO_PORCENTAJE=$(env_de trp FRAGMENTO_PORCENTAJE) CRITERIO_POTENCIA=$(env_de trp CRITERIO_POTENCIA)   (vacío: el valor por defecto del TrP)"
     echo "Escalador: pausado en KEDA=$(k get scaledobject escalador -o jsonpath='{.metadata.annotations.autoscaling\.keda\.sh/paused-replicas}' 2>/dev/null || true)   (vacío: lo maneja KEDA)"
     echo "NCT:       SALDOS_INICIALES=$(env_de nct SALDOS_INICIALES)"
-    local base="http://$ip"
     python3 - "$base" <<'EOF'
 import json, sys, urllib.request
 
@@ -122,7 +155,7 @@ condiciones() {
 }
 
 fijar_vms() {
-    local cantidad=${1:?falta la cantidad de VMs} ip i
+    local cantidad=${1:?falta la cantidad de VMs} url i claves
     [[ $cantidad =~ ^[0-9]+$ ]] && ((cantidad <= 10)) || { echo "::error::La cantidad de VMs va de 0 a 10"; exit 1; }
     : "${PROYECTO:?falta PROYECTO, el proyecto de GCP}"
 
@@ -136,15 +169,17 @@ fijar_vms() {
     [ -z "$(k get pods -l app=escalador -o name)" ] || { echo "::error::El escalador no se apagó en 10 minutos"; exit 1; }
 
     tofu -chdir="$RAIZ/pilar3/vms/instancias" init -input=false -reconfigure -backend-config="bucket=$PROYECTO-tfstate"
-    TF_VAR_proyecto=$PROYECTO tofu -chdir="$RAIZ/pilar3/vms/instancias" apply -input=false -auto-approve -var "cantidad=$cantidad"
+    # Sin su clave la VM arranca pero no mina (arrancar.sh). Va por entorno, no en los argumentos.
+    claves=$(claves_vms "$cantidad")
+    TF_VAR_claves=$claves TF_VAR_proyecto=$PROYECTO tofu -chdir="$RAIZ/pilar3/vms/instancias" apply -input=false -auto-approve -var "cantidad=$cantidad"
 
-    ip=$(ip_publica)
+    url=$(url_publica)
     echo "Esperando $cantidad minero(s) CPU vivo(s) (las VMs tardan unos minutos en arrancar)"
     for i in $(seq 1 60); do
-        [ "$(mineros_cpu_vivos "$ip")" -ge "$cantidad" ] && { echo "Listo: $cantidad VM(s)"; return; }
+        [ "$(mineros_cpu_vivos "$url")" -ge "$cantidad" ] && { echo "Listo: $cantidad VM(s)"; return; }
         sleep 10
     done
-    echo "::warning::A los 10 minutos hay $(mineros_cpu_vivos "$ip") de $cantidad mineros CPU vivos"
+    echo "::warning::A los 10 minutos hay $(mineros_cpu_vivos "$url") de $cantidad mineros CPU vivos"
 }
 
 # Las variables de entorno de un Deployment como las ponen los manifiestos (NOMBRE=valor por línea).
@@ -189,5 +224,5 @@ case "${1:-}" in
     condiciones) shift; condiciones "$@" ;;
     fijar-vms) shift; fijar_vms "$@" ;;
     restaurar) restaurar ;;
-    *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

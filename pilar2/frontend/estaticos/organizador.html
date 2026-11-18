@@ -20,8 +20,10 @@
       <label><span>La privada del organizador (el JWK de <span class="mono">python -m claves exportar</span>)</span>
         <textarea name="jwk" required spellcheck="false" placeholder='{"kty":"OKP","crv":"Ed25519","d":"…","x":"…"}'></textarea></label>
       <button type="submit">Entrar</button>
+      <label class="casilla"><input type="checkbox" name="recordar" checked> Recordarla en este navegador (hasta «Salir»)</label>
     </form>
     <p id="quien" class="suave" hidden></p>
+    <button id="salir" type="button" class="secundario" hidden>Salir</button>
     <p id="mensaje" class="mensaje" hidden></p>
   </section>
 
@@ -181,38 +183,97 @@ function pintarCuentas(cuentas) {
       el("td", { clase: "acciones" }, botonConfirmar("Dar de baja", "peligro", () => darDeBaja(c))))))));
 }
 
+// ── Recordar la clave (IndexedDB) ──
+// Se guarda la CryptoKey no exportable, no el JWK: después de recargar el navegador sigue firmando con ella,
+// pero ni la página ni un script pueden leer sus bytes. «Salir» la borra. Sin IndexedDB, no se recuerda.
+
+const RECUERDO = { base: "organizador", almacen: "clave", id: "organizador" };
+
+async function recuerdo(modo, operacion) {
+  const base = await new Promise((resolver, rechazar) => {
+    const pedido = indexedDB.open(RECUERDO.base, 1);
+    pedido.onupgradeneeded = () => pedido.result.createObjectStore(RECUERDO.almacen);
+    pedido.onsuccess = () => resolver(pedido.result);
+    pedido.onerror = () => rechazar(pedido.error);
+  });
+  try {
+    return await new Promise((resolver, rechazar) => {
+      const transaccion = base.transaction(RECUERDO.almacen, modo);
+      const pedido = operacion(transaccion.objectStore(RECUERDO.almacen));
+      transaccion.oncomplete = () => resolver(pedido.result);
+      transaccion.onerror = transaccion.onabort = () => rechazar(transaccion.error);
+    });
+  } finally {
+    base.close();
+  }
+}
+
+const leerRecuerdo = () => recuerdo("readonly", (almacen) => almacen.get(RECUERDO.id)).catch(() => undefined);
+const guardarRecuerdo = (datos) => recuerdo("readwrite", (almacen) => almacen.put(datos, RECUERDO.id));
+const borrarRecuerdo = () => recuerdo("readwrite", (almacen) => almacen.delete(RECUERDO.id)).catch(() => {});
+
 // ── Todo junto ──
 
+// 0 si el panel respondió; si no, el código HTTP del pedido que falló (403: no es la clave del organizador).
 async function recargar() {
   const [altas, cuentas] = await Promise.all([pedir("GET", "/api/organizador/altas"), pedir("GET", "/api/organizador/cuentas")]);
   if (!altas.ok || !cuentas.ok) {
     const fallida = altas.ok ? cuentas : altas;
     mostrarMensaje(`El panel no te dejó entrar (${fallida.status}): ${errorDe(fallida.cuerpo)}`, true);
-    return false;
+    return fallida.status;
   }
   pintarAltas(altas.cuerpo.pendientes);
   pintarCuentas(cuentas.cuerpo.cuentas);
   await actualizarCargas();
-  return true;
+  return 0;
+}
+
+// Entra con {clave, cuenta}: 0 si entró, o el código del pedido que falló.
+async function entrar({ clave, cuenta }, recordar) {
+  organizador = { clave, cuenta, ultimaCarga: 0 };
+  const fallo = await recargar();
+  if (fallo) { organizador = null; return fallo; }
+  $("form-clave").reset();
+  $("form-clave").hidden = true;
+  mostrarMensaje("");
+  if (recordar) {
+    await guardarRecuerdo({ clave, cuenta })
+      .catch(() => mostrarMensaje("Este navegador no deja recordar la clave: al recargar hay que pegarla de nuevo."));
+  }
+  $("quien").hidden = false;
+  $("quien").replaceChildren("Entraste como ", el("span", { clase: "mono" }, cuenta));
+  $("salir").hidden = false;
+  for (const seccion of document.querySelectorAll("section.panel")) seccion.hidden = false;
+  setInterval(recargar, 10_000);
+  return 0;
 }
 
 $("form-clave").addEventListener("submit", async (evento) => {
   evento.preventDefault();
+  const formulario = new FormData(evento.target);
+  let datos;
   try {
-    organizador = { ...await importarClave(new FormData(evento.target).get("jwk")), ultimaCarga: 0 };
+    datos = await importarClave(formulario.get("jwk"));
   } catch (error) {
     mostrarMensaje(`No se pudo usar la clave: ${error.message}. ${AVISO_NAVEGADOR}`, true);
     return;
   }
-  if (!await recargar()) { organizador = null; return; }
-  evento.target.reset();
-  evento.target.hidden = true;
-  mostrarMensaje("");
-  $("quien").hidden = false;
-  $("quien").replaceChildren("Entraste como ", el("span", { clase: "mono" }, organizador.cuenta));
-  for (const seccion of document.querySelectorAll("section.panel")) seccion.hidden = false;
-  setInterval(recargar, 10_000);
+  await entrar(datos, formulario.get("recordar") === "on");
 });
+
+$("salir").addEventListener("click", async () => {
+  await borrarRecuerdo();
+  location.reload();
+});
+
+// Al abrir la página: si hay una clave recordada, entra con ella. Si el backend dice que no es la del
+// organizador (401/403, p. ej. cambió ORGANIZADOR_CLAVE), se olvida; si sólo no respondió, se conserva.
+(async () => {
+  const guardada = await leerRecuerdo();
+  if (!guardada) return;
+  const fallo = await entrar(guardada, false);
+  if (fallo === 401 || fallo === 403) await borrarRecuerdo();
+})();
 
 $("form-carga").addEventListener("submit", async (evento) => {
   evento.preventDefault();

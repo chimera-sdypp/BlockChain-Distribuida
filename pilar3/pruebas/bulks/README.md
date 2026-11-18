@@ -69,4 +69,30 @@ Cada transacción de una corrida va a un destino `b38-<corrida>-<n>`: así se re
 | `bloques`, `tx_por_bloque_prom`, `tx_por_bloque_max` | En cuántos bloques entró la corrida |
 | `completa` | `si` si se confirmaron todas las aceptadas antes del timeout |
 
-Los gráficos salen de este CSV (BC-42).
+Los gráficos comparativos salen de este CSV ([BC-42](https://distribuido.atlassian.net/browse/BC-42)).
+
+## Resultados (17/11 en GKE)
+
+Corridas guardadas en [`resultados.csv`](resultados.csv) sobre `http://34.72.252.133` con condiciones fijadas en el cluster (`PREFIJO_BASE=5`, `AJUSTAR_PREFIJO=0`, `FRAGMENTO_PORCENTAJE=10`, `VENTANA_SEGUNDOS=30`, `TX_POR_CAJA=100`, `escalador` pausado en KEDA; sin reiniciar la cadena entre tamaños).
+
+- **Mineros:** `3` GPU (`minero-gpu-0` RTX 4060, `gpu-colab-tomas` Tesla T4 y `gpu-colab-mateo` Tesla T4) desde `1` hasta `1.000`; `gpu-colab-mateo` se desconectó antes de `10.000` y el resto corrió con `2` GPU (`minero-gpu-0` + `gpu-colab-tomas`), `0` CPU.
+- **Carga de k6:** `ramp-up = 0`, lotes de hasta `1000` transacciones firmadas (`alice, bob, carol` en ronda). Primero `VUS=10` (por defecto); luego `VUS=1` en `10.000` y `100.000` (con `MAX_DURACION=60m`).
+
+| Tamaño | VUs | GPUs | Rep. ok | HTTP `p50` (media / rango) | HTTP `p99` (media) | Envío HTTP (media) | Confirmación sistema | Bloques | tx/bloque | Estado |
+|---:|---:|---:|---|---:|---:|---:|---|---|---:|---|
+| `1` | 10 | 3 | 3/3 | `185,3 ms` (`182,3–188,9`) | `185,3 ms` | `0,80 s` | `23,70 s` (`23,23–24,54 s`) | `1` | `1,0` | `si` |
+| `10` | 10 | 3 | 3/3 | `241,2 ms` (`235,4–244,6`) | `241,2 ms` | `0,78 s` | `23,26 s` (`23,16–23,34 s`) | `1` | `10,0` | `si` |
+| `100` | 10 | 3 | 3/3 | `1101,2 ms` (`971,1–1243,0`) | `1101,2 ms` | `1,70 s` | `23,49 s` (`22,73–24,33 s`) | `1` | `100,0` | `si` |
+| `1.000` | 10 | 3 | 3/3 | `9,92 s` (`8,99–10,75 s`) | `9,92 s` | `10,59 s` | `24,06 s` (`21,41–26,75 s`) | `10` | `100,0` | `si` |
+| `10.000` | 10 | 2 | 0/3 | `57,64 s` (`48,87–66,74 s`) | `58,35 s` | `59,15 s` | `6667`, `1000` y `4667 / 10000` (timeout `1620 s`) | `68` / `12` / `49` | `83,3–98,0` | `no` |
+| `10.000` | 1 | 2 | 1/1 | `8,35 s` | `11,52 s` | `87,32 s` | `106,47 s` (`93,9` tx/s) | `102` | `98,0` | `si` |
+| `100.000` | 1 | 2 | 2/3* | `10,42 s` (`8,55–12,29 s`) | `15,86 s` | `1078,65 s` | `1139,54 s` y `1481,89 s` (`87,8` y `67,5` tx/s) | `1016` / `1024` | `98,4` / `97,7` | `si` |
+
+\* La 3.ª repetición de `100.000` (corrida `b5da9e`) falló al acumular ~`280k` tx en la cadena (ver abajo; no se guardó fila porque `/api/bloques` devolvió `503` antes de cerrar). Sus métricas HTTP de k6 fueron `p50 10033,6 ms`, `p95 16059,2 ms`, `p99 16727,5 ms`, `pedidos 100 (0,1/s)`, `46,0 %` fallidos.
+
+### Qué muestran las corridas
+
+- **Latencia HTTP lineal (~`10 ms/tx`):** el backend publica cada transacción del lote de a una en RabbitMQ esperando confirmación de quórum (`confirm_delivery`) bajo un `RLock` por pod (`pilar2/comun/rabbit.py`), por eso `100` tx tardan `~1,1 s` y `1.000` tx `~9,9 s` con `0 %` de errores HTTP.
+- **Piso de confirmación de `1` a `1.000` (~`23–24 s`):** mientras entren en `VENTANA_SEGUNDOS=30` del NCT, domina el ciclo de cierre de cajas; `1.000` tx (`10` bloques de `100`) termina casi igual de rápido que `1` tx.
+- **Tope 1 — Concurrencia sobre las mismas cuentas (`10.000` con `VUS=10`):** con 10 VUs en paralelo contra 2 pods de backend, los 10 lotes se serializan e intercalan durante `49–67 s` y mandan nonces altos de `alice, bob, carol` antes de que terminen los primeros lotes. Al pasar `ESPERA_NONCE = 60 s`, el NCT rechaza las adelantadas como **`nonce salteado`** (`9.184` rechazos en métricas de una réplica) y traba los nonces siguientes. Con **`--vus 1`** los lotes entran en orden y confirman `10.000/10.000` (`106,5 s`) y `100.000/100.000` (`19–25 min`) con el minado ocurriendo en paralelo al envío.
+- **Tope 2 — Límite de RAM en Redis (`512Mi`):** como la cadena no se reinició entre corridas, al llegar a ~`280k` transacciones (`~2.740` bloques) en la 3.ª repetición de `100.000`, Redis alcanzó su `limits.memory: 512Mi` (`pilar2/k8s/redis.yaml`) y cayó por **`OOMKilled` (código `137`)**, generando `network:BusyLoadingError`, `46,0 %` de lotes fallidos y `HTTP 503`. Con reinicio previo entre corridas grandes o mayor límite de memoria (el nodo `infra` tiene `8 GiB`), cada `100.000` entra completo.

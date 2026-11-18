@@ -39,9 +39,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 
 ## Todo junto en k3s
 
-![Pilar 2: qué recibe, envía y guarda cada pieza](diagrama.png)
-
-Los números del diagrama son el recorrido de una transferencia (1 a 11); las letras, cómo se levanta una VM con un minero CPU.
+![Pilar 2: las piezas y cómo se comunican](diagrama.png)
 
 ```bash
 kubectl create namespace blockchain

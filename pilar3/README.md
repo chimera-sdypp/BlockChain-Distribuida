@@ -4,6 +4,8 @@
 > y estado de cada servicio en `/salud/<servicio>`; los mineros entran por `http://<IP del gateway>:8081`.
 > Sin las variables `GCP_*` en el repo los pipelines sólo validan (`fmt` y `validate`).
 
+![Pilar 3: despliegue en Google Cloud](diagrama.png)
+
 | Carpeta | Qué es | Pipeline |
 |---|---|---|
 | `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31) y las IP fijas del gateway y de Traefik (`ingreso`) | A mano, una vez |

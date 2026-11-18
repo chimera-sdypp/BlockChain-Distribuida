@@ -7,6 +7,7 @@
 | [`fragmentos.py`](fragmentos.py) | BC-40: fragmentación del pool del 1 % al 50 % |
 | [`gpu_ciclos.py`](gpu_ciclos.py) | BC-41: entrada y salida de GPU (ciclos sale la GPU → VM CPU → vuelve la GPU → VM borrada) |
 | [`graficos.py`](graficos.py) | BC-42: los gráficos comparativos de todas las pruebas, desde sus CSV |
+| [`ANALISIS.md`](ANALISIS.md) | BC-42: el análisis de desempeño y escalabilidad que cruza todas las pruebas, con sus conclusiones |
 | [`dificultad.py`](dificultad.py) y `grafico_dificultad.py` | BC-60: ajuste de dificultad (convergencia y caída sin GPU) |
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
@@ -188,6 +189,9 @@ Capturas de Grafana del mismo período (horario de Argentina, 02:36 a 03:03):
 | Prefijo (BC-39): tiempo por bloque contra el largo, GPU y CPU | `resultados/prefijos-{gpu,cpu}.csv` | [`prefijos.png`](resultados/prefijos.png) |
 | Fragmentación (BC-40): tiempo por bloque y rangos prestados contra el % | `resultados/fragmentos-{gpu,cpu}.csv` | [`fragmentos.png`](resultados/fragmentos.png) |
 | Entrada y salida de GPU (BC-41): línea de tiempo de cada ciclo | `resultados/gpu-ciclos-*.csv` | [`gpu-ciclos.png`](resultados/gpu-ciclos.png) |
+| Comparativo: tiempo por bloque contra el minado esperado (BC-39, 40 y 59) y tx/s contra el techo (BC-38) | los anteriores y `potencia.csv` | [`desempeno.png`](resultados/desempeno.png) |
+
+El análisis que cruza todas las pruebas (cuellos de botella, cómo escala, configuración recomendada, limitaciones y conclusiones) está en [`ANALISIS.md`](ANALISIS.md).
 
 ![Bulks](resultados/bulks.png)
 

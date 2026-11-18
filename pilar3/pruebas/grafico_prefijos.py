@@ -16,8 +16,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 RESULTADOS = Path(__file__).parent / "resultados"
 FONDO, TEXTO, TEXTO_2, GRILLA = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 # (archivo, nombre, color, hashes/s del bench: para la curva de 16^p intentos sin el resto del sistema)
-SERIES = [("prefijos-gpu.csv", "1 GPU (RTX 4060)", "#2a78d6", 1.78e9),
-          ("prefijos-cpu.csv", "3 VMs CPU (e2-highcpu-2)", "#eb6834", 3 * 1.44e6)]
+# 18/11: los bench que registraron los mineros en esa corrida.
+SERIES = [("prefijos-gpu.csv", "2 GPU (RTX 4060 y T4 de Colab)", "#2a78d6", 1.95e9 + 1.06e9),
+          ("prefijos-cpu.csv", "3 VMs CPU (e2-highcpu-2)", "#eb6834", 3 * 1.27e6)]
 
 
 def leer(nombre):
@@ -42,7 +43,7 @@ def main():
         for p in largos:
             ax.scatter([p] * len(tiempos[p]), tiempos[p], s=22, color=color, alpha=0.35, linewidths=0, zorder=2)
         ax.plot(largos, medias, color=color, linewidth=2, marker="o", markersize=7,
-                markeredgecolor=FONDO, markeredgewidth=2, label=f"{nombre}: media de 5 bloques", zorder=3)
+                markeredgecolor=FONDO, markeredgewidth=2, label=f"{nombre}: media de {len(tiempos[largos[0]])} bloques", zorder=3)
         teoricos = list(range(1, 9))
         ax.plot(teoricos, [16 ** p / hps for p in teoricos], color=color, linewidth=1.2, linestyle=":",
                 label=f"{nombre}: sólo minar 16^p hashes", zorder=1)
@@ -50,7 +51,7 @@ def main():
             ax.annotate("", xy=(p, 1500), xytext=(p, 600), zorder=3,
                         arrowprops={"arrowstyle": "-|>", "color": color, "linewidth": 2})
             ax.text(p - 0.12, 600, motivo, color=TEXTO_2, fontsize=9, ha="right", va="center")
-        ax.text(largos[-1] + 0.12, medias[-1], f"{medias[-1]:.1f} s", color=TEXTO, fontsize=9, va="center")
+        ax.text(largos[-1] + 0.12, medias[-1], f"{medias[-1]:.1f} s".replace(".", ","), color=TEXTO, fontsize=9, va="center")
 
     ax.set_yscale("log")
     ax.set_ylim(1e-3, 3e3)

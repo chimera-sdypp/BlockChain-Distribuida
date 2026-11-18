@@ -108,7 +108,8 @@ def _bloque(guardado):
 
 
 def _transaccion(id_, tx):
-    """tx:<id> como lo guardan el backend y el NCT, con los tipos de verdad."""
+    """tx:<id> como lo guardan el backend y el NCT (completada con el bloque si está confirmada), con
+    los tipos de verdad."""
     resultado = {"id": id_, **tx}
     for campo in ("monto", "nonce", "timestamp"):
         if campo in resultado:
@@ -259,7 +260,18 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         tx = redis.hgetall(contrato.TX.format(id_))
         if not tx:
             return JSONResponse({"error": "no existe la transacción"}, status_code=404)
-        return _transaccion(id_, tx)
+        return _transaccion(id_, {**_del_bloque(id_, tx), **tx})
+
+    def _del_bloque(id_, tx):
+        """BC-70: una tx confirmada es sólo {estado, bloque}; su contenido se lee del bloque."""
+        if "origen" in tx or not tx.get("bloque"):
+            return {}
+        guardadas = redis.hget(contrato.BLOQUE.format(tx["bloque"]), "transactions")
+        for completa in json.loads(guardadas or "[]"):
+            if completa.get("id") == id_:
+                return {campo: completa[campo] for campo in CAMPOS_TX if campo in completa}
+        log.error("La transacción %s apunta al bloque %s, pero no está ahí", id_, tx["bloque"])
+        return {}
 
     @app.get("/api/cajas")
     def cajas():

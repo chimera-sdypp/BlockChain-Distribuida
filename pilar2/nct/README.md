@@ -52,7 +52,7 @@ Los pasos 2 a 4 pasan en **un script Lua**: así, dos réplicas que validan a la
 
 - guarda `bloque:<hash>` (con su `altura` y su `prefijo`; las transacciones empiezan por la coinbase) y lo agrega a `cadena`;
 - mueve los saldos desde las transacciones del bloque: una transferencia le resta al origen, le suma al destino y descuenta `comprometido`; una de emisión (la coinbase, la participación o una carga) sólo le suma al destino. El minero cobra `R = 10 × largo del prefijo` desde su coinbase, no desde un campo aparte;
-- pasa cada transacción a «confirmada» con su bloque (la coinbase y la participación tienen su `tx:<id>` recién ahí) y suma `bloques` y `recompensas` en `historial:<minero>`;
+- pasa cada transacción a «confirmada» con su bloque y le saca a `tx:<id>` lo que ya está en el bloque: queda `{estado, bloque}` (BC-70; la coinbase y la participación nacen así), y suma `bloques` y `recompensas` en `historial:<minero>`;
 - saca la caja de la fila y libera `tarea:actual`.
 
 Como es atómico, dos réplicas que reciben a la vez dos soluciones de la misma tarea guardan **un solo bloque**: la segunda ya no ve la tarea en curso. Una solución repetida tampoco guarda nada dos veces.
@@ -83,6 +83,7 @@ Al arrancar, si `cadena` está vacía, un Lua carga el bloque génesis (`previou
 | `VENTANA_SEGUNDOS` | 30 | Cada cuánto se cierran cajas |
 | `TX_POR_CAJA` | 100 | Transacciones por bloque, como mucho |
 | `TAREA_VENCE_SEGUNDOS` | 600 | Cuándo se libera una tarea abandonada (subirlo para prefijos largos) |
+| `TAREA_GUARDA_SEGUNDOS` | 3600 | Cuánto queda en Redis una tarea terminada, con sus conjuntos (BC-70) |
 | `WAIT_REPLICAS` · `WAIT_MS` | 1 · 1000 | Cuántas réplicas de Redis esperar antes de avisar (0 en local y en el CI) |
 
 Métricas: `blockchain_bloques_total`, `blockchain_tiempo_bloque_segundos` (desde que se publica la tarea hasta que se confirma), `blockchain_tx_pendientes`, `blockchain_tx_en_cajas` (las dos réplicas reportan lo mismo: usar `max`) `blockchain_bloques_sin_replica_total` y `blockchain_tx_rechazadas_total{motivo}`.

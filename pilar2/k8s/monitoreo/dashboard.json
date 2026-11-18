@@ -1348,6 +1348,577 @@
     },
     {
       "type": "row",
+      "title": "Historial de mineros",
+      "id": 25,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "panels": []
+    },
+    {
+      "type": "table",
+      "id": 24,
+      "title": "Historial por minero",
+      "description": "Lo que guarda historial:<minero> en Redis (BC-54), por minero: si está vivo, cuándo se dio de alta, cuánto tiempo estuvo conectado, los bloques que ganó, lo que cobró (coinbase y participación), los shares (en total y en la época en curso), los rangos que le prestaron y su hashrate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Vivo"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "sí",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "0": {
+                        "text": "no",
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Alta"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Horas conectado"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hashrate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Hs"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "minero"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Minero"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tipo"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Tipo"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Recompensas",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_vivo{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_alta{pod=~\"(${app:regex})-.*\"}) * 1000",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_segundos_conectado_total{pod=~\"(${app:regex})-.*\"}) / 3600",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_bloques_total{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_recompensas_total{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_shares_total{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_shares_epoca{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_rangos_total{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero, tipo) (blockchain_minero_hashes_por_segundo{pod=~\"(${app:regex})-.*\"})",
+          "format": "table",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "minero": 0,
+              "tipo": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #E": 6,
+              "Value #F": 7,
+              "Value #G": 8,
+              "Value #H": 9,
+              "Value #I": 10
+            },
+            "renameByName": {
+              "Value #A": "Vivo",
+              "Value #B": "Alta",
+              "Value #C": "Horas conectado",
+              "Value #D": "Bloques",
+              "Value #E": "Recompensas",
+              "Value #F": "Shares",
+              "Value #G": "Shares en la época",
+              "Value #H": "Rangos",
+              "Value #I": "Hashrate"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 26,
+      "title": "Hashrate por minero",
+      "description": "Hashes/s de cada minero en su último keep-alive (0 si dejó de avisar).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Hs",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero) (blockchain_minero_hashes_por_segundo{pod=~\"(${app:regex})-.*\"})",
+          "legendFormat": "{{minero}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 27,
+      "title": "Recompensas acumuladas por minero",
+      "description": "Lo que cobró cada minero: coinbase de los bloques que ganó y participación por shares al cerrar cada época (BC-62, BC-63).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero) (blockchain_minero_recompensas_total{pod=~\"(${app:regex})-.*\"})",
+          "legendFormat": "{{minero}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 28,
+      "title": "Bloques ganados por minero",
+      "description": "Bloques cuya coinbase es de ese minero.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 60
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero) (blockchain_minero_bloques_total{pod=~\"(${app:regex})-.*\"})",
+          "legendFormat": "{{minero}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 29,
+      "title": "Shares por minero en la época en curso",
+      "description": "Shares aceptados en la época (10 bloques): con esto se reparte el fondo de participación al cerrarla. Vuelve a 0 en cada época.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 60
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (minero) (blockchain_minero_shares_epoca{pod=~\"(${app:regex})-.*\"})",
+          "legendFormat": "{{minero}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "id": 30,
+      "title": "Altas, conexiones y desconexiones",
+      "description": "Pedidos de alta, aprobaciones, rechazos y bajas del organizador (backend), claves de las VMs (escalador) y cuándo cada minero se conecta o deja de avisar (gateway).",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false,
+        "showLabels": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=\"blockchain\", app=~\"gateway|backend|escalador\"} |~ \"Minero (conectado|desconectado)|Pedido de alta|El organizador (aprobó|rechazó|dio de baja)|Clave nueva para|su clave queda dada de baja\""
+        }
+      ]
+    },
+    {
+      "type": "row",
       "title": "Recursos",
       "id": 15,
       "collapsed": false,
@@ -1355,7 +1926,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 76
       },
       "panels": []
     },
@@ -1372,7 +1943,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -1430,7 +2001,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -1484,7 +2055,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 85
       },
       "panels": []
     },
@@ -1501,7 +2072,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 86
       },
       "fieldConfig": {
         "defaults": {
@@ -1560,7 +2131,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 93
       },
       "options": {
         "showTime": true,

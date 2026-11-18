@@ -27,7 +27,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from firmar import CUENTA, PRIVADA, contrato
-from prefijos import CONFIRMADO, PUBLICADA, api, kubectl, punta, vivos
+from prefijos import CONFIRMADO, PUBLICADA, api, gateway_url, kubectl, lista_mineros, punta, vivos
 
 VARIABLES = ["PREFIJO_BASE", "AJUSTAR_PREFIJO", "FRAGMENTO_PORCENTAJE", "ESPACIO_NONCES"]
 PARTIDA = re.compile(r"Tarea (\w+): \d+ transacciones, prefijo (0+), (\d+) rangos del (\d+) %")
@@ -136,13 +136,14 @@ def un_bloque(base, maximo, ventana):
     return None
 
 
-def nombres_mineros(base):
-    return {m["id"]: m.get("alias") or m["id"][:8] for m in api(base, "/api/mineros")}
+def nombres_mineros(gateway):
+    return {m["id"]: m.get("alias") or m["id"][:8] for m in lista_mineros(gateway)}
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--api", required=True, help="URL de Traefik (frontend y API)")
+    p.add_argument("--gateway", help="URL del gateway, que lista los mineros (GET /mineros); por defecto GATEWAY_URL")
     p.add_argument("--salida", required=True, help="CSV de resultados (se agregan filas)")
     p.add_argument("--porcentajes", default="1,5,10,25,50", help="FRAGMENTO_PORCENTAJE a probar, separados por coma")
     p.add_argument("--prefijo", type=int, default=6, help="PREFIJO_BASE fijo (sin ajuste) para todas las corridas")
@@ -159,8 +160,9 @@ def main():
     if not all(1 <= x <= 50 for x in porcentajes):
         sys.exit("los porcentajes van de 1 a 50")
     base = args.api.rstrip("/")
+    gateway = gateway_url(args.gateway)
 
-    gpus, cpus = vivos(base)
+    gpus, cpus = vivos(gateway)
     if (args.tipo == "gpu" and (not gpus or cpus)) or (args.tipo == "cpu" and (not cpus or gpus)):
         sys.exit(f"para la corrida {args.tipo} tienen que estar vivos sólo mineros {args.tipo}: hay {gpus} GPU y {cpus} CPU")
 
@@ -189,10 +191,10 @@ def main():
                     if not block_hash.startswith("0" * args.prefijo):
                         sys.exit(f"el bloque {block_hash} no tiene el prefijo de {args.prefijo}: ¿el TrP tomó el cambio?")
                     time.sleep(args.espera_logs)
-                    medido, aplicado = analizar(desde, block_hash, espacio, nombres_mineros(base))
+                    medido, aplicado = analizar(desde, block_hash, espacio, nombres_mineros(gateway))
                     if aplicado != porcentaje:
                         sys.exit(f"el TrP partió la tarea al {aplicado} %, no al {porcentaje} %: ¿tomó el cambio?")
-                    gpus, cpus = vivos(base)
+                    gpus, cpus = vivos(gateway)
                     escritor.writerow({**fila, **medido, "gpus_vivas": gpus, "cpus_vivas": cpus})
                     archivo.flush()
                     print(f"   bloque {numero}: {medido['segundos']:7.2f} s, {medido['rangos']} rangos, "

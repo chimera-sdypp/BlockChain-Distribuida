@@ -14,15 +14,14 @@ La página del sistema: hacer transferencias y ver la cadena en vivo. El servici
 | `GET /health` · `GET /metrics` | Los de `comun/` (sólo RabbitMQ), más `blockchain_sse_clientes` y `blockchain_eventos_reenviados_total{evento}` |
 
 - Cada pod se suscribe a `bloque.confirmado` y `transaccion.estado` con su propia cola exclusiva (`Rabbit.suscribir`). Así cada navegador recibe todos los avisos, esté conectado al pod que esté.
-- La página tiene cuatro paneles:
+- La página tiene tres paneles. Los mineros no están: la página es la de la blockchain, y los mineros y su historial se ven en Grafana (BC-54).
   1. **Transferir y «mis transferencias»:** se importa la clave privada (el JWK de `python -m claves exportar`) como `CryptoKey` no exportable, y cada transferencia se firma en el navegador con WebCrypto Ed25519 (Chrome 137, Firefox 129, Safari 17): la privada no sale nunca del navegador ni se guarda. El nonce sale de `/api/cuentas/<cuenta>`. Las últimas 20 transferencias de este navegador quedan en `localStorage` (sólo los ids).
   - La cadena muestra la coinbase, las cargas y los pagos de participación como transacciones de emisión.
   2. **Esperando bloque:** `/api/cajas`.
-  3. **Mineros vivos:** `/api/mineros`.
-  4. **Cadena:** `/api/bloques`.
+  3. **Cadena:** `/api/bloques`.
 - Cómo se actualiza:
   - Con `transaccion.estado`: cambia el estado de una transferencia propia.
-  - Con `bloque.confirmado`: agrega el bloque arriba, consulta las transferencias propias que siguen abiertas y recarga cajas y mineros.
+  - Con `bloque.confirmado`: agrega el bloque arriba, consulta las transferencias propias que siguen abiertas y recarga las cajas.
   - Al reconectarse el SSE: recarga todo, porque pudo haberse perdido algún aviso. No hay polling.
 
 ## Configuración

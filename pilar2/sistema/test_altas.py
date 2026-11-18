@@ -117,7 +117,8 @@ def test_un_minero_nuevo_queda_pedido_y_al_aprobarlo_empieza_a_trabajar():
         assert panel("POST", "/api/organizador/aprobar", {"cuenta": cuenta})[0] == 200
         hilo.join(timeout=90)                              # el /hello pasa y resuelve la tarea modelo
         assert not hilo.is_alive(), "el minero aprobado no terminó de presentarse"
-        mineros = {m["id"]: m for m in api("GET", "/api/mineros")[1]}
+        with urllib.request.urlopen(GATEWAY_URL.rstrip("/") + "/mineros", timeout=10) as respuesta:
+            mineros = {m["id"]: m for m in json.load(respuesta)}   # los mineros los lista el gateway (BC-54)
         assert mineros[cuenta]["alias"] == alias and mineros[cuenta]["bench"] > 0
     finally:
         nuevo.detener()

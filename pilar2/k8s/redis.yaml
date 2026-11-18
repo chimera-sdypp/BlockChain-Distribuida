@@ -71,7 +71,7 @@ spec:
             - { name: config, mountPath: /config }
           resources:
             requests: { cpu: 50m, memory: 64Mi }
-            limits: { memory: 512Mi }
+            limits: { memory: 1Gi }    # ~300k tx:* (bulks de 100.000) ocupan ~500 MB: con 512Mi lo mataba el OOM
           readinessProbe:
             exec:
               command: ["sh", "-c", "redis-cli ping | grep -q PONG"]

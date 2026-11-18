@@ -213,8 +213,7 @@ $("form-clave").addEventListener("submit", async (evento) => {
     mostrarMensaje("");
     await cargarCuenta();
   } catch (error) {
-    mostrarMensaje(`No se pudo usar la clave: ${error.message}. Este navegador necesita Ed25519 en WebCrypto ` +
-                   "(Chrome 137, Firefox 129 o Safari 17).", true);
+    mostrarMensaje(`No se pudo usar la clave: ${error.message}. ${AVISO_NAVEGADOR}`, true);
   }
 });
 

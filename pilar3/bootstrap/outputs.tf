@@ -20,3 +20,7 @@ output "GCP_REGISTRO" {
 output "GATEWAY_URL" {
   value = "http://${google_compute_address.gateway.address}:8081"
 }
+
+output "INGRESO_IP" {
+  value = google_compute_address.ingreso.address
+}

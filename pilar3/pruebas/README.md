@@ -38,6 +38,15 @@ PROYECTO=<proyecto de GCP> pilar3/pruebas/preparar.sh fijar-vms 1
 pilar3/pruebas/preparar.sh restaurar
 ```
 
+## Bulks de 1 a 100.000 transacciones (BC-38)
+
+Los scripts [`bulks/correr.py`](bulks/correr.py) y [`bulks/bulk.js`](bulks/bulk.js) mandan lotes firmados de hasta `1000` transacciones (`alice, bob, carol`) con k6 y miden tanto HTTP (`p50`, `p95`, `p99`, `req/s`, errores) como confirmación completa en bloques. Ver condiciones, tabla completa y análisis en [`bulks/README.md`](bulks/README.md#resultados-1711-en-gke) y datos en [`bulks/resultados.csv`](bulks/resultados.csv).
+
+- **17/11 en GKE** (`PREFIJO_BASE=5`, `AJUSTAR_PREFIJO=0`, `FRAGMENTO_PORCENTAJE=10`):
+  - De `1` a `1.000` (`VUS=10`, `3` GPU): `12/12` completas en `21,4–26,8 s` (domina `VENTANA_SEGUNDOS=30` del NCT; `p50` HTTP lineal de `185 ms` a `9,92 s` por `confirm_delivery` transacción por transacción en RabbitMQ).
+  - En `10.000` con `VUS=10` (`2` GPU): `0/3` completas por **`nonce salteado`** al intercalarse los 10 lotes (`49–67 s`) por encima de `ESPERA_NONCE=60 s` del NCT.
+  - Con `--vus 1` (`2` GPU): **`10.000`** (`1/1`) confirmó en `106,5 s` (`93,9` tx/s) y **`100.000`** (`2/3`) en `1139,5 s` y `1481,9 s` (`1016` y `1024` bloques, envío y minado en paralelo). La 3.ª de `100.000` cayó (`46 %` fallidos / `503`) al alcanzar Redis su `limits.memory: 512Mi` (`OOMKilled`) tras ~`280k` transacciones acumuladas sin reiniciar la cadena.
+
 ## Prefijo de 1 a 8 caracteres (BC-39)
 
 [`prefijos.py`](prefijos.py) fija el prefijo del TrP (`PREFIJO_BASE=n`, `AJUSTAR_PREFIJO=0`), manda una transacción por bloque y toma de los logs del NCT el tiempo desde que publica la tarea hasta que confirma el bloque (si la tarea vuelve sin solución, desde la primera publicación). Al terminar deja el TrP como estaba.

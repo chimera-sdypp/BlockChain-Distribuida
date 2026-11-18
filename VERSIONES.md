@@ -1,8 +1,14 @@
 # Versiones
 
-Versión actual: **0.2.0** (18/11/2026)
+Versión actual: **0.3.0** (18/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.3.0 — 18/11/2026
+
+- Redis sin copias: una transacción confirmada queda en `tx:<id>` como puntero a su bloque, las tareas terminadas vencen a la hora y Redis tiene `maxmemory` (#58, BC-70). Límite de memoria de Redis a 1Gi (#56).
+- Pruebas: prefijo de 1 a 8 rehecho con la v0.2.0 (#55, BC-39), entrada y salida de GPU en 3 ciclos (#57, BC-41) y `graficos.py` con los gráficos comparativos (#57, BC-42).
+- Arreglo: `preparar.sh fijar-vms` con la clave de cada VM, el alias y HTTPS del contrato v2 (#55).
 
 ## 0.2.0 — 18/11/2026
 

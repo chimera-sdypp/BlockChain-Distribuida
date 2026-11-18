@@ -137,14 +137,18 @@ class Gateway:
 
     def pedir_alta(self, minero, cuerpo):
         """Un minero firmado y sin aprobar queda en `altas:pendientes` (BC-58): la firma ya demuestra que
-        tiene la privada. El alias sale del /hello (`alias`); si no viene, el principio de la cuenta."""
+        tiene la privada. El alias sale del /hello (`alias`); si no viene, el principio de la cuenta.
+
+        Si el pedido lo anotó antes un keep-alive (sin alias), el /hello le pone el alias (BC-71).
+        """
         try:
             alias = json.loads(cuerpo).get("alias") if cuerpo else None
         except (ValueError, AttributeError):
             alias = None
-        alias = alias if contrato.nombre_valido(alias) else minero[:12]
-        if self.altas.pedir(minero, "minero", alias) == "nueva":
-            log.info("Pedido de alta de %s (minero): %s", alias, minero)
+        con_alias = contrato.nombre_valido(alias)
+        resultado = self.altas.pedir(minero, "minero", alias if con_alias else minero[:12], renombrar=con_alias)
+        if resultado in ("nueva", "renombrada"):
+            log.info("Pedido de alta de %s (minero): %s", alias if con_alias else minero[:12], minero)
 
     # ── Registro ──
 
@@ -310,18 +314,25 @@ class Gateway:
     # ── Keep-alive ──
 
     def keepalive(self, minero, datos):
-        """POST /keepalive: el minero sigue vivo; suma los shares que trae, renueva su préstamo o le dice que corte."""
+        """POST /keepalive: el minero sigue vivo; suma los shares que trae, renueva su préstamo o le dice que corte.
+
+        Si su `nodo:<id>` no tiene bench (la cadena se reinició, o se cortó antes de mandarlo), la respuesta
+        lleva `presentarse: true` para que repita el /hello y el bench (BC-71).
+        """
         rango = datos.get("rango") if isinstance(datos, dict) else None
         if not isinstance(datos, dict) or datos.get("minero") != minero \
                 or not es_numero(datos.get("hashes_por_segundo")) or not shares_validos(datos.get("shares")) \
                 or not (rango is None or (isinstance(rango, dict) and isinstance(rango.get("tarea"), str)
                                           and es_entero(rango.get("rango")))):
             return 400, {"error": "hace falta {minero, hashes_por_segundo, rango: {tarea, rango} | null, shares?}"}
-        self.redis.hset(contrato.NODO.format(minero), mapping={
-            "hashes_por_segundo": int(datos["hashes_por_segundo"]), "ultimo_aviso": int(time.time())})
+        nodo = contrato.NODO.format(minero)
+        tuberia = self.redis.pipeline(transaction=False)
+        tuberia.hset(nodo, mapping={"hashes_por_segundo": int(datos["hashes_por_segundo"]),
+                                    "ultimo_aviso": int(time.time())})
+        tuberia.hexists(nodo, "bench")
+        respuesta = {} if tuberia.execute()[1] else {"presentarse": True}
         if rango is None:
-            return 200, {"cortar": False}
-        respuesta = {}
+            return 200, {"cortar": False, **respuesta}
         if "shares" in datos:
             respuesta["shares"] = self.aceptar_shares(minero, rango["tarea"], rango["rango"], datos["shares"])
         miembro = f"{rango['tarea']}:{rango['rango']}"

@@ -46,6 +46,11 @@ TAREA_GUARDA = 3600
 CAJA_ARMADA = "caja:armada"          # hash {caja, desde}: cuándo se armó por primera vez la caja que se está minando
 PREFIJO_REFERENCIA = "prefijo:referencia"  # hash {potencia, altura, prefijo, cuando}: el último recálculo por potencia
 EMERGENCIA_SEGUNDOS = 240            # sin bloque en este tiempo, la tarea vence y se rearma con un carácter menos
+# BC-74: lo que mide el gateway en vez de creerle al minero.
+PRESTAMO_DE = "prestamo_de:{}"       # minero → su préstamo vivo (<tarea>:<rango>): uno a la vez
+MEDICION = "medicion:{}"             # lista: los últimos préstamos de cada minero (JSON con trabajo, segundos y shares)
+MEDICION_PRESTAMOS = 20              # cuántos préstamos entran en la medición
+MEDICION_SHARES_MINIMOS = 20         # shares esperados (según su bench) para que la medición cuente
 # BC-70: lo que se le saca a tx:<id> al confirmarla. Ya está en el bloque: queda {estado, bloque}.
 CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "motivo")
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"
@@ -289,6 +294,22 @@ def bloque_genesis(saldos, timestamp):
     texto = _texto(CEROS, timestamp, transacciones)
     return {"previous_hash": CEROS, "timestamp": timestamp, "transactions": transacciones, "nonce": 0,
             "block_hash": hash_bloque(texto, 0), "prefijo": "", "minero": "", "recompensa": 0, "altura": 0}
+
+
+def potencia_efectiva(nodo):
+    """Los hashes/s con que cuenta el sistema para un minero (BC-74): su `bench`, salvo que el gateway haya medido
+    menos. `nodo` es nodo:<cuenta> como lo devuelve Redis (todo texto).
+
+    - `medido_estado` = "medido": min(bench, medido). Un bench inflado no sirve; uno que no mina mide 0.
+    - "cota" (sus préstamos llegan al tope de shares: sólo se sabe que es al menos eso) o sin medición: el bench.
+    """
+    try:
+        bench = float(nodo.get("bench") or 0)
+        if nodo.get("medido_estado") == "medido":
+            return min(bench, float(nodo.get("medido") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+    return bench
 
 
 # ── Shares y épocas (v2) ──

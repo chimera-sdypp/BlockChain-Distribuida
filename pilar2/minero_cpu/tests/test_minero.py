@@ -380,3 +380,15 @@ def test_el_minero_compara_los_shares_aceptados_con_los_publicados_al_cerrar_la_
     assert minero.contados_de_menos == [(1, 5, 3)] and minero.aceptados == {}
     assert minero.gateway.pedidos == ["/epocas/0", "/epocas/1"]
     minero.buscador.cerrar()
+
+
+def test_si_el_gateway_no_contesta_la_epoca_el_minero_sigue():
+    """La consulta de la época es un control: un gateway caído no puede frenar el trabajo."""
+    class Caido(GatewayDeEpocas):
+        def pedir(self, metodo, ruta, cuerpo=None):
+            raise OSError("conexión rechazada")
+    minero = Minero(Caido({}), "prueba", procesos=1)
+    minero._sumar_aceptados({"altura": 3}, {"shares": 2})
+    minero.revisar_epocas(1)
+    assert minero.aceptados == {0: 2}  # queda para la próxima
+    minero.buscador.cerrar()

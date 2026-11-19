@@ -130,7 +130,12 @@ class Minero:
         with self._lock:
             cerradas = sorted(e for e in self.aceptados if e < epoca_actual)
         for epoca in cerradas:
-            codigo, publicada = self.gateway.pedir("GET", f"/epocas/{epoca}")
+            try:
+                codigo, publicada = self.gateway.pedir("GET", f"/epocas/{epoca}")
+            except (urllib.error.URLError, OSError, ClaveRechazada) as error:
+                # Es un control, no el trabajo: si el gateway no contesta, se pregunta con el próximo rango.
+                log.debug("No pude preguntar por la época %d: %r", epoca, error)
+                return
             if codigo != 200 or not publicada or not publicada.get("publicada"):
                 continue
             with self._lock:

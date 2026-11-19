@@ -30,6 +30,7 @@ if [[ -z $archivo ]]; then
 fi
 
 if [[ $tipo == baja ]]; then
-    exec "$PYTHON" -m claves baja "$archivo" --cuenta "$cuenta" --motivo "aprobar.sh" --url "$URL"
+    "$PYTHON" -m claves baja "$archivo" --cuenta "$cuenta" --motivo "aprobar.sh" --url "$URL"
+    exit
 fi
-exec "$PYTHON" -m claves aprobar "$archivo" --cuenta "$cuenta" --tipo "$tipo" --nombre "$nombre" --url "$URL"
+"$PYTHON" -m claves aprobar "$archivo" --cuenta "$cuenta" --tipo "$tipo" --nombre "$nombre" --url "$URL"

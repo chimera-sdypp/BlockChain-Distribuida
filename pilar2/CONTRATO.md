@@ -294,6 +294,20 @@ T=$(python3 -c "import json; v = json.load(open('pilar2/comun/vector_prueba.json
 pilar1/hit4/md5 "$T"    # 0000c33250af265699b3c0721aad3d1b (lo mismo da md5sum y Python)
 ```
 
+## Modelo de confianza: el operador de la nube (BC-85)
+
+| El operador intenta | Lo que lo frena | Quién lo nota |
+|---|---|---|
+| Inventar saldo o aprobar una cuenta escribiendo en Redis | El estado sale de la cadena: el NCT arma cada bloque contra ella y corrige el caché cada 60 s | El NCT (log y `blockchain_estado_divergencias_total`) |
+| Editar un bloque guardado | El hash no sale del texto | Cualquier nodo que lo baje |
+| Reescribir la historia (sacar una transferencia y reminar) | Los nodos guardan su copia | Los nodos (`conflicto`) y los validadores, que no firman |
+| Agregar un bloque inválido | Los nodos verifican cada bloque entero | Los nodos (`rechazado`); no se finaliza |
+| Pagar de más una época | La raíz de la lista de shares queda en `shares-<e>` | Los nodos y cada minero |
+| Mostrarle otra cadena a una billetera | Rama de Merkle y atestaciones firmadas de varios nodos | La billetera |
+| Deshacer lo finalizado | 2 de 3 validadores; firmar dos bloques en una altura da 409 y deja la prueba | `/api/finalidad` (`dobles`) |
+
+Lo que sigue pudiendo, a propósito: no incluir las transacciones de alguien (censura), elegir el prefijo, apagar el sistema (los datos sobreviven en los nodos) y agregar bloques no finalizados. El organizador puede todo lo que permiten las reglas, a la vista en la cadena. Probado con [`pilar3/pruebas/operador.py`](../pilar3/pruebas/operador.py).
+
 ## Herramientas
 
 - **Claves** ([`claves/`](claves/)): la billetera de línea de comandos (BC-55, BC-78). Cualquiera: `generar | publica | exportar | alta | saldo | transferir | firmar | rafaga`. El organizador: `pendientes | aprobar | baja | cargar | permiso | rechazar | reactivar`. Nada pasa por una página de la nube.

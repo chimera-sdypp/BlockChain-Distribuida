@@ -1,0 +1,28 @@
+19:38:31 Minero honesto-operador (honesto) arrancó: 9290d6412065
+19:38:34 Validadores: ['16306df4b92d', 'e1dec886c1b6', '246b3fabd9d1'] (sus altas van a la cadena)
+19:38:43 ── saldo ──
+19:39:11 [OK] saldo: gastar el saldo inventado → 202 → rechazada (8fd6cdb3583e3ee1c1e291b6292ab81b: el origen no tiene saldo (tiene 1000, gasta 501000))
+19:39:11 [OK] saldo: el NCT corrige el caché desde la cadena → saldo 1000 (antes 1000), 1 línea(s) «Caché distinto»
+19:39:11 [OK] saldo: los nodos siguen sin rechazar nada → rechazado: [None, None]
+19:39:11 ── alta ──
+19:40:10 [OK] alta: transferir con un alta escrita a mano → 202 → rechazada (e79ba807c78843c5dcc7737dc4cbb818: el origen no tiene un alta en la cadena (cuenta no aprobada))
+19:40:10 [OK] alta: la revisión saca la cuenta de `cuentas` → aprobada: False
+19:40:10 ── editado ──
+19:40:14 [OK] editado: un nodo nuevo baja la cadena con el bloque 2 editado → altura 1, rechazado 2: el hash no sale del texto (raíz de transacciones y de estado) y el nonce
+19:40:15 ── reescrita ──
+19:40:20 Bloque 56 reemplazado: 00000003cc73fc17c4859a32194f5780 → 0e63d8ed5d4c70c37c82e8f0623e48cc (sin sus transacciones)
+19:40:23 [OK] reescrita: los nodos del cluster ven la historia reescrita → [56, 56]
+19:40:23 [OK] reescrita: los validadores no firman la cadena nueva → conflicto en 3 de 3
+19:40:47 ── epoca ──
+19:40:51 [OK] epoca: la lista de la época 0 con 50 shares más para un minero → rechazado en 10: la lista publicada de la época 0 no da la raíz de la cadena (1c3ad28b7fec1f12bb7c249b677743af)
+19:40:52 ── invalido ──
+19:40:57 Bloque 57 inválido agregado: 05c8da04dd5a8e0d25b1f51ff205d619
+19:41:00 [OK] invalido: los nodos rechazan el bloque → ['carga carga-40 inválida: firma: no es la del organizador', 'carga carga-40 inválida: firma: no es la del organizador']
+19:41:10 [OK] invalido: el bloque inválido no se finaliza → finalizada 56
+19:41:17 ── deshacer ──
+19:41:22 [OK] deshacer: un validador que firma otro bloque en la altura finalizada 57 → 409, 1 prueba(s)
+19:41:32 [OK] deshacer: los otros dos validadores no firman la historia nueva → [True, True]
+19:41:32 [OK] deshacer: la finalidad no retrocede → 57
+19:41:59 ── sin-validadores ──
+19:42:39 [OK] sin-validadores: con los validadores apagados salen bloques → de 57 a 59; finalizada sigue en 57
+19:42:42 [OK] sin-validadores: al volver, se ponen al día y finalizan → 59

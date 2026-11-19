@@ -135,7 +135,7 @@ EOF
 }
 
 reiniciar() {
-    local saldos replicas_nct replicas_trp primario
+    local saldos replicas_nct replicas_trp replicas_nodo primario
     saldos=$(env_de nct SALDOS_INICIALES)
     echo "SALDOS_INICIALES del NCT: ${saldos:-(los de por defecto)}"
     # {cuenta: saldo} o {cuenta: {saldo, nombre}} (contrato v2)
@@ -151,6 +151,14 @@ reiniciar() {
     k scale deploy nct trp --replicas=0
     k wait --for=delete pod -l app=nct --timeout=180s
     k wait --for=delete pod -l app=trp --timeout=180s
+    # Los nodos (BC-83) guardan su copia de la cadena: con la vieja verían la nueva como una historia reescrita.
+    replicas_nodo=$(k get sts nodo -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
+    if [ "$replicas_nodo" != 0 ]; then
+        echo "Apagando los nodos ($replicas_nodo) y borrando su copia de la cadena"
+        k scale sts nodo --replicas=0
+        k wait --for=delete pod -l app=nodo --timeout=180s
+        k delete pvc -l app=nodo --wait=true
+    fi
 
     # Lo que quedó en las colas es de la cadena vieja. Si no se puede purgar no es grave: el NCT
     # descarta las tareas y transacciones que ya no están en Redis.
@@ -170,6 +178,28 @@ reiniciar() {
     k rollout status deploy/nct --timeout=5m
     k rollout status deploy/trp --timeout=5m
     k logs -l app=nct --tail=200 --prefix | grep -i "génesis" || true
+    if [ "$replicas_nodo" != 0 ]; then
+        k scale sts nodo --replicas="$replicas_nodo"
+        k rollout status sts/nodo --timeout=5m
+    fi
+    # El escalador guarda su clave en Redis (escalador:clave): con el FLUSHALL la perdió y su permiso (BC-79) también.
+    # Se genera acá como la generaría él al arrancar (aunque KEDA lo tenga en 0) y, si estaba prendido, se lo reinicia
+    # para que no siga con la vieja en memoria. El organizador le da el permiso con `python -m claves permiso`.
+    if k get deploy escalador > /dev/null 2>&1; then
+        local escalador
+        escalador=$(k exec -i deploy/trp -- python - <<'PY'
+from comun import config, contrato, redisdb
+r = redisdb.conectar(config.cargar("preparar"))
+r.set("escalador:clave", contrato.nueva_clave()[0], nx=True)
+print(contrato.clave_publica(r.get("escalador:clave")))
+PY
+)
+        if [ "$(k get deploy escalador -o jsonpath='{.spec.replicas}')" != 0 ]; then
+            k rollout restart deploy/escalador
+            k rollout status deploy/escalador --timeout=5m
+        fi
+        echo "Clave del escalador (le falta el permiso del organizador): $escalador"
+    fi
 }
 
 condiciones() {

@@ -1,8 +1,15 @@
 # Versiones
 
-Versión actual: **0.4.0** (18/11/2026)
+Versión actual: **0.5.0** (18/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.5.0 — 18/11/2026
+
+- Historial por minero (BC-54): el gateway lleva el tiempo conectado, la fecha de alta y quién entra y quién sale (con una línea en el log), y Grafana suma la fila «Historial de mineros» con una tabla por minero, sus curvas y las altas, conexiones y desconexiones desde Loki. Los mineros salen de la API de la app: `/api/mineros` pasa a ser `GET /mineros` del gateway, y la página muestra sólo la blockchain (#65).
+- Grafana más limpio: CPU y memoria por servicio en vez de por pod, selector de mineros vivos o todos, y los logs separados en errores, advertencias, bloques y épocas, y escalado y dificultad; el log completo queda en una fila plegada (#66).
+- Arreglo: el hashrate que mandan los mineros en el keep-alive ya no baja solo cuando se quedan sin trabajo, y un minero que todavía no minó cuenta con su bench (#67).
+- Diagramas generales de los pilares 2 y 3 en sus README (#64).
 
 ## 0.4.0 — 18/11/2026
 

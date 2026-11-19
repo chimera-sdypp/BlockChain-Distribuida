@@ -64,6 +64,10 @@ def mandar_y_medir(base, maximo, ventana):
 
 def registrar(escritor, archivo, numero, fase, actual, medido, gateway):
     segundos, rearmados, minero, publicada = medido
+    # La duración la mide el NCT (desde que se armó la caja, con los rearmados: BC-73): los logs pueden confundir la
+    # publicación de una tarea con la de la anterior si caen en el mismo segundo.
+    if actual.get("duracion") not in (None, ""):
+        segundos = float(actual["duracion"])
     gpus, cpus = vivos(gateway)  # los mineros se listan en el gateway (BC-54), no en la API de la app
     prefijo = len(actual.get("prefijo", ""))
     escritor.writerow({

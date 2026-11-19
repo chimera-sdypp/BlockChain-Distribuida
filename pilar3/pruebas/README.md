@@ -279,9 +279,23 @@ La ráfaga de la demo: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`.
 
 ```bash
 # Correr con cadena limpia (preparar.sh reiniciar antes)
-pilar2/.venv/bin/python pilar3/pruebas/dificultad.py --api http://<traefik> --salida pilar3/pruebas/resultados/dificultad.csv --esperar-gpu
+pilar2/.venv/bin/python pilar3/pruebas/dificultad.py --api http://<traefik> --gateway http://<IP>:8081 --salida pilar3/pruebas/resultados/dificultad.csv --esperar-gpu
 python pilar3/pruebas/grafico_dificultad.py
 ```
+
+**19/11, en el k3s con la cadena reiniciada** (v0.6.0 más el arreglo de la medición, #73). Dos mineros CPU locales: uno de 7,8 MH/s y otro de 1,3 MH/s (9,1 MH/s en total); `PREFIJO_INICIAL=2`, `PREFIJO_BASE=8`, 60 s por bloque, ventana de 5. En la fase «sin GPU» se apagó el minero de 7,8 MH/s.
+
+![Ajuste de dificultad](resultados/dificultad.png)
+
+| Bloques | Prefijo | Qué pasó |
+|---|---|---|
+| 1 a 25 | 2 → 6 | Subió un carácter cada 5 bloques: los bloques salían en 0,2 a 13 s, bien por debajo de 15 s (60 / 4) |
+| 26 a 35 | 7 | Equilibrio: 16^7 / 9,1 MH/s ≈ 30 s. La ventana del 26 al 30 promedió 64 s (con uno de 188 s, la varianza de la prueba de trabajo) y el ajuste dio 0 |
+| 36 | 6 | Sale el minero rápido: la potencia cae 6 veces y el TrP recalcula en el acto (BC-73), sin esperar bloques lentos |
+| 37 a 40 | 6 | Con 1,3 MH/s, bloques de 3 a 9 s |
+| 41 | 7 | La ventana del 36 al 40 promedió 11 s: el tiempo lo sube de nuevo (16^7 / 1,3 MH/s ≈ 200 s, dentro del margen de 4 veces) |
+
+La primera corrida de ese día se descartó: mostró que el gateway medía mal los préstamos de menos de 2 s (con prefijo 2, a una CPU de 5,8 MH/s la medía en unos cientos de H/s) y el prefijo saltaba de 2 a 6. Se arregló en #73. La columna `segundos` del CSV es la `duracion` que guarda el NCT; en el bloque 2, los logs habían dado 30 s por confundir la publicación de la tarea anterior (`dificultad.py` ya usa la del NCT).
 
 ## Mineros que mienten (BC-76)
 

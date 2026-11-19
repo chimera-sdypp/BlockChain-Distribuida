@@ -1,8 +1,13 @@
 # Versiones
 
-Versión actual: **0.6.0** (19/11/2026)
+Versión actual: **0.6.1** (19/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.6.1 — 19/11/2026
+
+- Arreglo: el gateway no mide los préstamos de menos de 2 s. Con un prefijo chico para la potencia del minero (o una GPU, que recorre un rango en décimas), el préstamo duraba lo que tarda la red y la medición daba una potencia ridícula: el TrP recalculaba el prefijo sin motivo (#73).
+- `dificultad.py` busca los mineros en el gateway, sube `ESPACIO_NONCES` con el tope y toma la duración que mide el NCT (#73). Convergencia del ajuste corrida en el k3s con la cadena reiniciada: de 2 a 7 de a un carácter cada 5 bloques, y a 6 en el acto al salir el minero más potente (#74).
 
 ## 0.6.0 — 19/11/2026
 

@@ -155,6 +155,7 @@ El minero declara su `bench` y su `tipo`, y nadie los verifica. Desde BC-74 el g
   - `cota`: si la mitad o más de los préstamos llegaron al tope de 64 shares. Sólo se sabe que es al menos eso (una GPU con prefijo bajo).
   - `sin_datos`: si todavía no hay con qué decidir (pocos préstamos, o prefijos altos para su potencia).
 - **Potencia efectiva** (`contrato.potencia_efectiva`): `min(bench, medido)` si el estado es `medido`; si no, el bench. La usan el TrP (techo del prefijo, BC-73) y el escalador. Inflar el bench no sirve; decir `tipo: gpu` sin minar, tampoco.
+- **Préstamos cortos:** uno de menos de 2 s (`MEDICION_SEGUNDOS_MINIMOS`) no se mide: su tiempo es la red, no el hashing (un prefijo chico para su potencia, o una GPU que recorre el rango en décimas).
 - **Plazo de cada préstamo:** 3 × (tamaño del rango / potencia) + 10 s, nunca menos de 30 s. Sin medición (`sin_datos`), como mucho 120 s. Pasado el plazo, el keep-alive contesta `cortar: true` y el rango vuelve a la cola. No es una sanción: los shares quedan.
 
 ## Los que contestan `sin_solucion` sin buscar (BC-75)

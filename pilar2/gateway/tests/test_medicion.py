@@ -152,7 +152,7 @@ def test_una_gpu_falsa_que_no_manda_shares_mide_cero(armar, redis):
 def test_un_minero_rapido_que_llega_al_tope_es_una_cota(armar, redis):
     g, _ = armar()
     redis.hset(f"nodo:{MINERO}", "bench", 2_000_000_000)
-    g.medir(MINERO, prestamo(999.6, 64), rango("t1", 0, prefijo="000000"), ahora=1000)
+    g.medir(MINERO, prestamo(997, 64), rango("t1", 0, prefijo="000000"), ahora=1000)
     nodo = redis.hgetall(f"nodo:{MINERO}")
     assert nodo["medido_estado"] == "cota"
     assert contrato.potencia_efectiva(nodo) == 2_000_000_000  # sólo se sabe que es al menos eso: queda el bench
@@ -173,12 +173,22 @@ def test_la_medicion_guarda_los_ultimos_20(armar, redis):
     assert redis.llen(f"medicion:{MINERO}") == contrato.MEDICION_PRESTAMOS
 
 
+def test_un_prestamo_corto_no_se_mide(armar, redis):
+    # El caso del 19/11 en el k3s: prefijo 2, la solución sale a los ~256 hashes y el préstamo dura lo que tarda la
+    # red. Medido así daba unos cientos de H/s para una CPU de 5,8 MH/s, y el TrP recalculaba el prefijo.
+    g, _ = armar()
+    redis.hset(f"nodo:{MINERO}", "bench", 5_800_000)
+    assert g.medir(MINERO, prestamo(999.5, 16), rango("t1", 0, prefijo="00"), ahora=1000) is None
+    assert not redis.exists(f"medicion:{MINERO}") and redis.hget(f"nodo:{MINERO}", "medido_estado") is None
+
+
 def test_al_devolver_un_rango_se_mide(cliente, redis, colas):
     publicar_rangos(redis, colas, rango("t1", 0))
     cliente.get("/tasks/next")
+    redis.hset("prestamo:t1:0", "desde", time.time() - 5)  # lo tuvo 5 s
     cliente.post("/results", {"tarea": "t1", "rango": 0, "minero": MINERO, "sin_solucion": True})
     [registro] = [json.loads(r) for r in redis.lrange(f"medicion:{MINERO}", 0, -1)]
-    assert registro["shares"] == 0 and registro["segundos"] >= 0.05
+    assert registro["shares"] == 0 and registro["segundos"] >= 5
     assert redis.hget(f"nodo:{MINERO}", "medido_estado") in ("medido", "sin_datos")
 
 

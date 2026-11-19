@@ -1,4 +1,4 @@
-# Pruebas de carga y escalabilidad (BC-38 a BC-42, BC-59)
+# Pruebas de carga y escalabilidad (BC-38 a BC-42, BC-59, BC-76)
 
 | Carpeta / archivo | Qué es |
 |---|---|
@@ -10,6 +10,7 @@
 | [`ANALISIS.md`](ANALISIS.md) | BC-42: el análisis de desempeño y escalabilidad que cruza todas las pruebas, con sus conclusiones |
 | [`dificultad.py`](dificultad.py) y `grafico_dificultad.py` | BC-60: ajuste de dificultad (convergencia y caída sin GPU) |
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
+| [`trampas.py`](trampas.py) | BC-76: mineros que mienten a propósito contra el sistema desplegado |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
@@ -274,10 +275,36 @@ La ráfaga de la demo: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`.
 
 ## Ajuste de dificultad (BC-60)
 
-[`dificultad.py`](dificultad.py) arranca la cadena con `PREFIJO_INICIAL=2` y `PREFIJO_BASE=8`, espera que el prefijo vaya subiendo de a 1 cada `VENTANA_AJUSTE` bloques hasta acercarse al objetivo de 60 s (`SEGUNDOS_POR_BLOQUE`), y con `--esperar-gpu` pausa para desconectar la GPU y comprobar la bajada inmediata por techo de potencia viva. Al terminar deja el TrP en su configuración normal.
+[`dificultad.py`](dificultad.py) arranca la cadena con `PREFIJO_INICIAL=2` y `PREFIJO_BASE=8`, espera que el prefijo vaya subiendo de a 1 cada `VENTANA_AJUSTE` bloques hasta acercarse al objetivo de 60 s (`SEGUNDOS_POR_BLOQUE`), y con `--esperar-gpu` pausa para desconectar la GPU y comprobar la bajada (desde BC-73: en el acto si la potencia cae 4 veces o más, o de a un carácter cada 240 s sin bloque). `PREFIJO_INICIAL` sólo vale con la cadena sin bloques minados: sin reiniciarla, la subida por tiempo se ve en el escenario `bench-bajo` de [la prueba de trampas](#mineros-que-mienten-bc-76). Al terminar deja el TrP en su configuración normal.
 
 ```bash
 # Correr con cadena limpia (preparar.sh reiniciar antes)
 pilar2/.venv/bin/python pilar3/pruebas/dificultad.py --api http://<traefik> --salida pilar3/pruebas/resultados/dificultad.csv --esperar-gpu
 python pilar3/pruebas/grafico_dificultad.py
 ```
+
+## Mineros que mienten (BC-76)
+
+[`trampas.py`](trampas.py) corre mineros CPU locales contra el sistema desplegado: uno honesto y los tramposos de [`minero_cpu/trampas.py`](../../pilar2/minero_cpu/trampas.py) (variable `TRAMPA`, apagada por defecto), manda transferencias de alice, bob y carol para que haya bloques, y mira en Redis y en los logs qué hizo el sistema. Aprueba las cuentas de los tramposos con `pilar2/k8s/aprobar.sh` y las da de baja al final.
+
+```bash
+KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
+    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo]
+```
+
+| Escenario | Quiénes | Qué se comprueba |
+|---|---|---|
+| `juntos` | Honesto, `bench-alto`, `acaparar`, `retener`, `sin-solucion` y `guardar` | Los dos que contestan «sin solución» quedan suspendidos (BC-75); `acaparar` recibe un solo rango; `bench-alto` cuenta lo medido; el honesto no se suspende (BC-74) |
+| `retener` | `retener` y `acaparar`, sin nadie que mine | El plazo les saca el rango (sin medición, a los 120 s): con la tarea abierta, nada más se los puede sacar (BC-74) |
+| `gpu-falsa` | Sólo una «GPU» que avisa y nunca pide rangos, con trabajo apilado | El escalador pide VMs igual (BC-74) y, sin bloque en 240 s, el prefijo baja por emergencia (BC-73) |
+| `bench-bajo` | Sólo uno que declara la centésima parte de su bench, con `PREFIJO_BASE=8` | El ajuste por tiempo sube el prefijo por encima del techo que da ese bench (BC-73) |
+
+Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en [`resultados/trampas.log`](resultados/trampas.log).
+
+**19/11, en el k3s con las imágenes de la v0.6.0: 10 de 10.**
+- `sin-solucion` y `guardar` quedaron suspendidos por estadística en el primer rango (P ≈ 7,6×10⁻¹²: rangos de 430 M nonces con prefijo 6).
+- `acaparar` pidió 10 rangos seguidos 9 veces y recibió uno solo cada vez. Sin nadie que mine, el plazo les sacó el rango a `retener` y a `acaparar` a los 120 s.
+- `bench-alto` declaró 1,18 GH/s y el sistema contó lo medido: 1,34 MH/s. El honesto midió 2,64 MH/s con un bench de 2,19 MH/s (lo medido es una estimación: el sistema usa el menor) y no se lo suspendió.
+- Con sólo la «GPU» falsa, el escalador pidió 1 VM y, a los 240 s sin bloque, el prefijo bajó de 6 a 5 por emergencia.
+- `bench-bajo` declaró 52,6 kH/s (techo 5). Con el tope en 8, el prefijo de cada bloque fue 5 (ocho bloques), 6 (cinco) y 7: el tiempo pasó el techo. Con la regla anterior se quedaba en 5.
+

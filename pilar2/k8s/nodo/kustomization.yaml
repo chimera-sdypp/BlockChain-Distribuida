@@ -1,0 +1,6 @@
+# Los nodos verificadores (BC-83). Usan el Middleware de Traefik (k3s y GKE lo traen): por eso van aparte.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: blockchain
+resources:
+  - nodo.yaml

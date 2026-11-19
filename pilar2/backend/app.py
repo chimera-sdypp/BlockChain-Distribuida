@@ -6,25 +6,54 @@ También entran las cargas de saldo, firmadas por el organizador (`ORGANIZADOR_C
 
 BC-58: los pedidos de alta (`POST /api/altas`, públicos y firmados por quien pide) y el panel del
 organizador (`/api/organizador/*`), donde cada pedido va firmado con su clave (X-Organizador).
+
+Contrato v3 (BC-79, BC-80, BC-82): las altas, bajas y permisos llegan como transacciones firmadas por el organizador
+(`POST /api/transacciones`, como las cargas) y quedan aprobadas cuando entran en un bloque. El panel ya no aprueba ni
+da de baja (eso escribía `cuentas` sin firma): muestra los pedidos y el comando de la herramienta de claves. Se suman
+las lecturas para verificar desde afuera: los bloques en orden ascendente, la prueba de Merkle de una cuenta contra
+la raíz de estado (`/api/prueba/<cuenta>`) y la lista de shares de cada época (`/api/epocas/<n>`).
 """
 
 import json
 import logging
 import threading
+import time
 
 import redis as redislib
 from fastapi import Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 
-from comun import Servicio, config, contrato
+from comun import Servicio, config, contrato, estado as estado_cadena
 from comun.altas import ALTAS_MAXIMAS, Altas
 
 log = logging.getLogger("backend")
 
 # Por transacción, también en los lotes: aceptada, invalida, repetida (un reenvío) o error (no se pudo encolar).
 TX_RECIBIDAS = Counter("blockchain_tx_recibidas", "Transacciones recibidas por el backend", ["resultado"])
+# BC-86: las firmas de los validadores y la finalidad.
+FIRMAS_RECIBIDAS = Counter("blockchain_firmas", "Firmas de validadores recibidas", ["resultado"])  # aceptada, invalida, doble
+ALTURA_FINALIZADA = Gauge("blockchain_altura_finalizada", "La última altura finalizada (2/3 de los validadores la firmaron)")
+VALIDADORES = Gauge("blockchain_validadores", "Validadores con alta en la cadena")
+
+# Anota la firma de un validador (BC-86). Una por validador y altura: si ya firmó otro bloque a esa altura, deja la
+# prueba de la doble firma y no la cuenta. Lleva la última altura que firmó cada uno (firmar un bloque firma los
+# anteriores). KEYS: firmas:<altura>, firmas:ultima, firmas:dobles. ARGV: validador, altura, datos (JSON), block_hash.
+# Devuelve 'aceptada', 'repetida' o 'doble'.
+LUA_FIRMA = """
+local previa = redis.call('HGET', KEYS[1], ARGV[1])
+if previa then
+  if cjson.decode(previa).block_hash == ARGV[4] then return 'repetida' end
+  redis.call('RPUSH', KEYS[3], cjson.encode({validador = ARGV[1], altura = tonumber(ARGV[2]), primera = cjson.decode(previa),
+                                             segunda = cjson.decode(ARGV[3])}))
+  return 'doble'
+end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+local ultima = tonumber(redis.call('ZSCORE', KEYS[2], ARGV[1]) or '-1')
+if tonumber(ARGV[2]) > ultima then redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1]) end
+return 'aceptada'
+"""
 
 # Crea los tx:<id> «recibida» sólo si no existía ninguno: todo o nada, también en un lote. Atómico:
 # dos backends que reciben la misma transacción a la vez no la encolan dos veces.
@@ -43,7 +72,7 @@ for i, clave in ipairs(KEYS) do
 end
 return repetidas
 """
-CAMPOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma")
+CAMPOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "datos")
 REENVIO = "ya existe: es un reenvío"
 
 
@@ -112,27 +141,26 @@ def _transaccion(id_, tx):
     for campo in ("monto", "nonce", "timestamp"):
         if campo in resultado:
             resultado[campo] = int(resultado[campo])
+    if resultado.get("datos") == "":
+        del resultado["datos"]
     return resultado
 
 
 def validar(datos, organizador):
-    """Los errores de una transferencia firmada o de una carga del organizador; vacío si sirve."""
-    if isinstance(datos, dict) and datos.get("origen") == contrato.EMISION:
-        if not organizador:
-            return ["origen: «emision» es para las cargas de saldo, y este backend no tiene ORGANIZADOR_CLAVE"]
-        return contrato.validar_carga(datos, organizador)
-    return contrato.validar_transaccion_firmada(datos)
+    """Los errores de una transferencia firmada, de una carga o de un acta del organizador; vacío si sirve."""
+    return contrato.validar_de_entrada(datos, organizador)
 
 
 def nueva_transaccion(datos):
-    """La transacción como va a la cola y a tx:<id>: el id sale del contenido (o es carga-<n>)."""
-    id_ = datos["id"] if contrato.es_emision(datos) else contrato.id_transaccion(datos)
-    return {"id": id_, **{campo: datos[campo] for campo in CAMPOS_TX}}
+    """La transacción como va a la cola y a tx:<id>: el id sale del contenido (o es carga-<n>, alta-<n>…)."""
+    id_ = datos["id"] if contrato.es_emision(datos) or contrato.es_acta(datos) else contrato.id_transaccion(datos)
+    return {"id": id_, **{campo: datos.get(campo, "") for campo in CAMPOS_TX}}
 
 
 def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LOTE_MAXIMO,
                   organizador="", altas_maximas=ALTAS_MAXIMAS):
     crear = redis.register_script(LUA_CREAR)
+    anotar_firma = redis.register_script(LUA_FIRMA)
     altas = Altas(redis, maximas=altas_maximas)
 
     def registrar_y_encolar(txs):
@@ -154,7 +182,7 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         encoladas = []
         for tx in txs:
             try:
-                publicador.publicar(cola, tx)
+                publicador.publicar(cola, {k: v for k, v in tx.items() if not (k == "datos" and v == "")})
             except Exception as error:
                 log.error("No se pudo publicar %s en %s: %r", tx["id"], cola, error)
                 _borrar(*claves[len(encoladas):])
@@ -205,7 +233,10 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             return JSONResponse({"error": REENVIO, "id": tx["id"]}, status_code=409)
         except NoDisponible as error:
             return JSONResponse({"error": error.motivo}, status_code=503)
-        if contrato.es_emision(tx):
+        if contrato.es_acta(tx):
+            log.info("Acta %s (%s): %s %s", tx["id"], "delegada" if contrato.es_delegada(tx) else "del organizador",
+                     tx["destino"], tx["datos"])
+        elif contrato.es_emision(tx):
             log.info("Carga %s del organizador: %s a %s", tx["id"], tx["monto"], tx["destino"])
         return JSONResponse({"id": tx["id"]}, status_code=202)
 
@@ -303,8 +334,10 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         return {"usuario": usuario, "saldo": int(redis.hget(contrato.SALDOS, usuario) or 0)}
 
     @app.get("/api/bloques")
-    def bloques(limite: str = str(LIMITE_BLOQUES), desde: str | None = None):
-        """Del más nuevo al más viejo, empezando por la altura `desde` (por defecto, la punta)."""
+    def bloques(limite: str = str(LIMITE_BLOQUES), desde: str | None = None, orden: str = "desc"):
+        """Del más nuevo al más viejo, empezando por la altura `desde` (por defecto, la punta). Con `orden=asc`, del
+        más viejo al más nuevo desde `desde` (por defecto, el génesis): lo que usan los nodos y la billetera para
+        bajar sólo lo nuevo."""
         errores = []
         limite = _entero(limite)
         if limite is None or not 1 <= limite <= LIMITE_MAXIMO_BLOQUES:
@@ -313,26 +346,162 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             desde = _entero(desde)
             if desde is None or desde < 0:
                 errores.append("desde: entero mayor o igual que 0")
+        if orden not in ("asc", "desc"):
+            errores.append("orden: asc | desc")
         if errores:
             return invalido(errores)
         largo = redis.llen(contrato.CADENA)
         if largo == 0:
             return []
-        primera = largo - 1 if desde is None else min(desde, largo - 1)
-        ultima = max(primera - limite + 1, 0)
-        hashes = redis.lrange(contrato.CADENA, ultima, primera)
+        if orden == "asc":
+            primera = desde or 0
+            if primera >= largo:
+                return []
+            hashes = redis.lrange(contrato.CADENA, primera, min(primera + limite, largo) - 1)
+        else:
+            primera = largo - 1 if desde is None else min(desde, largo - 1)
+            hashes = redis.lrange(contrato.CADENA, max(primera - limite + 1, 0), primera)[::-1]
         tuberia = redis.pipeline(transaction=False)
         for hash_ in hashes:
             tuberia.hgetall(contrato.BLOQUE.format(hash_))
-        guardados = tuberia.execute()
-        return [_bloque(guardado) for guardado in reversed(guardados)]
+        return con_firmas([_bloque(guardado) for guardado in tuberia.execute()])
+
+    def con_firmas(bloques_):
+        """BC-86: a cada bloque, las firmas de validadores sobre él y si está finalizado. Van aparte del bloque (no
+        cambian su hash): quien verifica las comprueba él mismo con las altas de los validadores en la cadena."""
+        if not bloques_:
+            return bloques_
+        tuberia = redis.pipeline(transaction=False)
+        for b in bloques_:
+            tuberia.hgetall(contrato.FIRMAS.format(b["altura"]))
+        tuberia.hget(contrato.FINALIZADA, "altura")
+        *firmas, finalizada = tuberia.execute()
+        finalizada = int(finalizada) if finalizada is not None else -1
+        for b, de_la_altura in zip(bloques_, firmas):
+            b["firmas"] = [{"validador": v, "firma": json.loads(d)["firma"]} for v, d in sorted(de_la_altura.items())
+                           if json.loads(d)["block_hash"] == b["block_hash"]]
+            b["finalizado"] = b["altura"] <= finalizada
+        return bloques_
+
+    @app.get("/api/epocas/{numero}")
+    def epoca(numero: str):
+        """BC-82: la lista de shares con que se pagó la época, para recalcular el pago desde afuera. Su `raiz` es la
+        que quedó en la cadena, en la transacción `shares-<n>` del primer bloque de la época siguiente."""
+        n = _entero(numero)
+        if n is None or n < 0:
+            return invalido(["la época es un entero mayor o igual que 0"])
+        guardado = redis.hgetall(contrato.EPOCA.format(n))
+        if not guardado:
+            return JSONResponse({"error": "esa época todavía no se pagó"}, status_code=404)
+        detalle = json.loads(guardado.get("detalle") or "{}")
+        return {"epoca": n, "fondo": int(guardado.get("fondo") or 0), "raiz": contrato.raiz_shares(detalle),
+                "detalle": detalle, "lista": contrato.lista_shares(detalle)}
+
+    pruebas = {}  # (altura, punta) → las hojas del estado: se calculan una vez por bloque y por pod
+
+    @app.get("/api/prueba/{cuenta}")
+    def prueba_merkle(cuenta: str):
+        """BC-80: la hoja de `cuenta` y su rama de Merkle en el estado al cerrar la punta. Esa raíz es la que va a
+        llevar el bloque siguiente (`raiz_estado`). Una billetera la compara con la que calculó ella."""
+        if cuenta != contrato.EMISION and not contrato.cuenta_valida(cuenta):
+            return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
+        cache = estado_cadena.cache_de_redis(redis)
+        clave = (cache["altura"], cache["punta"])
+        if clave not in pruebas:
+            pruebas.clear()
+            pruebas[clave] = estado_cadena.hojas_de_cache(cache)
+        return {"cuenta": cuenta, "altura": cache["altura"], "block_hash": cache["punta"],
+                **estado_cadena.prueba(pruebas[clave], cuenta)}
+
+    @app.get("/api/altas/pendientes")
+    def altas_pendientes():
+        """Públicos (v3): los pedidos de alta que esperan al organizador. El panel los muestra sin pedir la clave."""
+        return {"pendientes": altas.pendientes()}
+
+    @app.get("/api/cuentas")
+    def lista_cuentas():
+        """Públicas (v3): las cuentas aprobadas (las que están en la cadena), con su saldo."""
+        return {"cuentas": altas.aprobadas()}
+
+    @app.get("/api/suspendidos")
+    def lista_suspendidos():
+        """Públicos (v3): los mineros suspendidos por el gateway (BC-75), que esperan que el organizador decida."""
+        return {"suspendidos": altas.suspendidos()}
 
     @app.get("/api/bloques/{hash_}")
     def bloque(hash_: str):
         guardado = redis.hgetall(contrato.BLOQUE.format(hash_))
         if not guardado:
             return JSONResponse({"error": "no existe el bloque"}, status_code=404)
-        return _bloque(guardado)
+        return con_firmas([_bloque(guardado)])[0]
+
+    # ── BC-86: firmas de los validadores y finalidad ──
+
+    def validadores():
+        return {c for c, d in redis.hgetall(contrato.CUENTAS).items() if json.loads(d).get("tipo") == "validador"}
+
+    def finalidad():
+        """(altura, block_hash, validadores, umbral, últimas firmas): lo finalizado con los validadores de la cadena."""
+        vigentes = validadores()
+        ultimas = {v: int(a) for v, a in redis.zrange(contrato.FIRMAS_ULTIMA, 0, -1, withscores=True)}
+        altura = contrato.altura_finalizada(vigentes, ultimas)
+        VALIDADORES.set(len(vigentes))
+        return altura, (redis.lindex(contrato.CADENA, altura) if altura >= 0 else None), vigentes, ultimas
+
+    @app.post("/api/firmas")
+    async def recibir_firma(request: Request):
+        """Un validador firma `firma:<altura>:<block_hash>` del último bloque que verificó (POST, sin túnel). Tiene
+        que tener un alta de tipo validador en la cadena y el bloque tiene que ser el de la cadena a esa altura."""
+        datos = await leer_json(request)
+        errores = ["el cuerpo no es JSON válido"] if datos is None else \
+            await run_in_threadpool(contrato.validar_firma_bloque, datos)
+        if errores:
+            FIRMAS_RECIBIDAS.labels("invalida").inc()
+            return invalido(errores)
+        return await run_in_threadpool(anotar, datos)
+
+    def anotar(datos):
+        validador, altura = datos["validador"], datos["altura"]
+        if validador not in validadores():
+            FIRMAS_RECIBIDAS.labels("invalida").inc()
+            return JSONResponse({"error": "esa clave no es un validador en la cadena"}, status_code=403)
+        if redis.lindex(contrato.CADENA, altura) != datos["block_hash"]:
+            FIRMAS_RECIBIDAS.labels("invalida").inc()
+            return JSONResponse({"error": "ese no es el bloque de la cadena a esa altura"}, status_code=409)
+        registro = json.dumps({"validador": validador, "altura": altura, "block_hash": datos["block_hash"],
+                               "firma": datos["firma"], "cuando": int(time.time())})
+        resultado = anotar_firma(keys=[contrato.FIRMAS.format(altura), contrato.FIRMAS_ULTIMA, contrato.FIRMAS_DOBLES],
+                                 args=[validador, altura, registro, datos["block_hash"]])
+        FIRMAS_RECIBIDAS.labels(resultado).inc()
+        if resultado == "doble":
+            log.error("DOBLE FIRMA: %s firmó dos bloques distintos a la altura %d (queda la prueba en %s)",
+                      validador, altura, contrato.FIRMAS_DOBLES)
+            return JSONResponse({"error": "ya firmaste otro bloque a esa altura: queda la prueba"}, status_code=409)
+        final, hash_final, _, _ = finalidad()
+        anterior = int(redis.hget(contrato.FINALIZADA, "altura") or -1)
+        if final > anterior:
+            redis.hset(contrato.FINALIZADA, mapping={"altura": final, "block_hash": hash_final})
+            ALTURA_FINALIZADA.set(final)
+            log.info("Bloque %d finalizado: %s", final, hash_final)
+            try:
+                publicador.avisar(contrato.EXCHANGE_EVENTOS, contrato.BLOQUE_FINALIZADO,
+                                  {"altura": final, "block_hash": hash_final})
+            except Exception as error:
+                log.warning("No se pudo avisar la finalidad: %r", error)
+        return {"resultado": resultado, "finalizada": max(final, anterior)}
+
+    @app.get("/api/finalidad")
+    def ver_finalidad():
+        """La altura finalizada, los validadores de la cadena, el umbral y la última firma de cada uno."""
+        altura, hash_, vigentes, ultimas = finalidad()
+        firmas = {}
+        for validador, ultima in ultimas.items():
+            guardada = redis.hget(contrato.FIRMAS.format(ultima), validador)
+            if guardada:
+                firmas[validador] = json.loads(guardada)
+        return {"altura": altura, "block_hash": hash_, "validadores": sorted(vigentes),
+                "umbral": contrato.umbral_finalidad(len(vigentes)), "firmas": firmas,
+                "dobles": [json.loads(d) for d in redis.lrange(contrato.FIRMAS_DOBLES, 0, 20)]}
 
     # ── BC-58: pedidos de alta y panel del organizador ──
 
@@ -393,39 +562,6 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     async def listar_cuentas(datos):
         return {"cuentas": await run_in_threadpool(altas.aprobadas)}
 
-    async def aprobar(datos):
-        """{cuenta, nombre?, carga?}: la cuenta pasa a `cuentas`; si viene `carga` (una carga-<n> firmada
-        por el organizador para esa cuenta), además se encola como cualquier transacción."""
-        cuenta_ = cuenta_del_pedido(datos)
-        nombre = datos.get("nombre") or ""
-        errores = [] if cuenta_ else ["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"]
-        if nombre and not contrato.nombre_valido(nombre):
-            errores.append("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
-        carga_ = datos.get("carga")
-        if carga_ is not None and not errores:
-            errores = [f"carga: {e}" for e in await run_in_threadpool(contrato.validar_carga, carga_, organizador)]
-            if not errores and carga_["destino"] != cuenta_:
-                errores = ["carga: el destino tiene que ser la cuenta que se aprueba"]
-        if errores:
-            return invalido(errores)
-        pedido = next((p for p in await run_in_threadpool(altas.pendientes) if p["cuenta"] == cuenta_), None)
-        if pedido is None:
-            return JSONResponse({"error": "no hay un pedido de alta de esa cuenta"}, status_code=404)
-        if carga_ is not None and pedido["tipo"] != "usuario":
-            return invalido(["carga: sólo a un usuario (los mineros cobran minando)"])
-        aprobada = await run_in_threadpool(altas.aprobar, cuenta_, nombre)
-        if aprobada is None:  # otro pedido la aprobó o la rechazó en el medio
-            return JSONResponse({"error": "no hay un pedido de alta de esa cuenta"}, status_code=404)
-        log.info("El organizador aprobó a %s (%s): %s", aprobada["nombre"], aprobada["tipo"], cuenta_)
-        resultado = {"cuenta": cuenta_, **aprobada}
-        if carga_ is None:
-            return resultado
-        respuesta = await recibir_una(carga_)
-        if respuesta.status_code != 202:
-            return JSONResponse({**resultado, "error": "aprobada, pero la carga no entró: " +
-                                 json.loads(respuesta.body)["error"]}, status_code=respuesta.status_code)
-        return {**resultado, "carga": carga_["id"]}
-
     async def rechazar(datos):
         cuenta_ = cuenta_del_pedido(datos)
         if not cuenta_:
@@ -435,19 +571,6 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             return JSONResponse({"error": "no hay un pedido de alta de esa cuenta"}, status_code=404)
         log.info("El organizador rechazó el alta de %s (%s): %s", pedido.get("nombre"), pedido.get("tipo"), cuenta_)
         return {"cuenta": cuenta_, "rechazada": True}
-
-    async def dar_de_baja(datos):
-        cuenta_ = cuenta_del_pedido(datos)
-        if not cuenta_:
-            return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
-        if cuenta_ == organizador:
-            return invalido(["cuenta: el organizador no se puede dar de baja a sí mismo"])
-        datos_cuenta = await run_in_threadpool(altas.baja, cuenta_)
-        if datos_cuenta is None:
-            return JSONResponse({"error": "la cuenta no está aprobada"}, status_code=404)
-        log.info("El organizador dio de baja a %s (%s): %s", datos_cuenta.get("nombre"), datos_cuenta.get("tipo"),
-                 cuenta_)
-        return {"cuenta": cuenta_, "baja": True}
 
     async def listar_suspendidos(datos):
         return {"suspendidos": await run_in_threadpool(altas.suspendidos)}
@@ -466,9 +589,7 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
 
     app.get("/api/organizador/altas")(del_organizador(listar_altas))
     app.get("/api/organizador/cuentas")(del_organizador(listar_cuentas))
-    app.post("/api/organizador/aprobar")(del_organizador(aprobar))
     app.post("/api/organizador/rechazar")(del_organizador(rechazar))
-    app.post("/api/organizador/baja")(del_organizador(dar_de_baja))
     app.get("/api/organizador/suspendidos")(del_organizador(listar_suspendidos))
     app.post("/api/organizador/reactivar")(del_organizador(reactivar))
 

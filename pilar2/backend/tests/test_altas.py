@@ -107,11 +107,10 @@ def test_con_demasiados_pedidos_pendientes_da_429(entorno):
     assert [pedir(cliente, n).status_code for n in ("zoe", "yago", "ximena")] == [202, 202, 429]
 
 
-# ── El panel sólo atiende al organizador ──
+# ── El panel sólo atiende al organizador (v3: sólo lo que no va a la cadena) ──
 
 RUTAS_PANEL = [("GET", "/api/organizador/altas"), ("GET", "/api/organizador/cuentas"),
-               ("POST", "/api/organizador/aprobar"), ("POST", "/api/organizador/rechazar"),
-               ("POST", "/api/organizador/baja"), ("GET", "/api/organizador/suspendidos"),
+               ("POST", "/api/organizador/rechazar"), ("GET", "/api/organizador/suspendidos"),
                ("POST", "/api/organizador/reactivar")]
 
 
@@ -135,15 +134,15 @@ def test_una_accion_vieja_o_alterada_da_403(entorno):
     armar, _, redis = entorno
     cliente = armar()
     pedir(cliente, "zoe")
-    vieja = panel(cliente, "POST", "/api/organizador/aprobar", {"cuenta": CUENTA["zoe"]}, tiempo=int(time.time()) - 60)
+    vieja = panel(cliente, "POST", "/api/organizador/rechazar", {"cuenta": CUENTA["zoe"]}, tiempo=int(time.time()) - 60)
     assert vieja.status_code == 403 and "X-Tiempo" in vieja.json()["error"]
     # La firma es sobre el cuerpo: cambiar la cuenta después de firmar no sirve.
-    encabezados = contrato.firmar_pedido(PRIVADA["organizador"], "POST", "/api/organizador/aprobar",
+    encabezados = contrato.firmar_pedido(PRIVADA["organizador"], "POST", "/api/organizador/rechazar",
                                          json.dumps({"cuenta": CUENTA["yago"]}).encode(), quien=contrato.ORGANIZADOR)
-    alterada = cliente.post("/api/organizador/aprobar", content=json.dumps({"cuenta": CUENTA["zoe"]}).encode(),
+    alterada = cliente.post("/api/organizador/rechazar", content=json.dumps({"cuenta": CUENTA["zoe"]}).encode(),
                             headers=encabezados)
     assert alterada.status_code == 403
-    assert not redis.hexists("cuentas", CUENTA["zoe"])
+    assert redis.hexists("altas:pendientes", CUENTA["zoe"])
 
 
 def test_sin_organizador_clave_el_panel_esta_apagado(entorno):
@@ -152,56 +151,64 @@ def test_sin_organizador_clave_el_panel_esta_apagado(entorno):
     assert respuesta.status_code == 403 and "ORGANIZADOR_CLAVE" in respuesta.json()["error"]
 
 
-# ── Aprobar, rechazar y dar de baja ──
-
-def test_aprobar_un_usuario_con_saldo_inicial_encola_la_carga(entorno):
-    armar, cola, redis = entorno
+def test_el_panel_ya_no_aprueba_ni_da_de_baja(entorno):
+    """v3: eso escribía `cuentas` sin firma. Ahora son actas que entran en la cadena."""
+    armar, _, _ = entorno
     cliente = armar()
-    pedir(cliente, "zoe")
-    assert panel(cliente, "GET", "/api/organizador/altas").json()["pendientes"][0]["cuenta"] == CUENTA["zoe"]
-
-    respuesta = panel(cliente, "POST", "/api/organizador/aprobar",
-                      {"cuenta": CUENTA["zoe"], "carga": carga(1, "zoe", 500)})
-
-    assert respuesta.status_code == 200, respuesta.text
-    assert respuesta.json()["carga"] == "carga-1" and respuesta.json()["tipo"] == "usuario"
-    cuenta = json.loads(redis.hget("cuentas", CUENTA["zoe"]))
-    assert cuenta["tipo"] == "usuario" and cuenta["nombre"] == "zoe" and cuenta["alta"] > 0
-    assert not redis.exists("altas:pendientes")
-    assert redis.hget("tx:carga-1", "estado") == "recibida"
-    [mensaje] = recibir(cola, 1)
-    assert mensaje == carga(1, "zoe", 500)
-    [aprobada] = panel(cliente, "GET", "/api/organizador/cuentas").json()["cuentas"]
-    assert aprobada["cuenta"] == CUENTA["zoe"] and aprobada["saldo"] == 0  # la carga todavía no está en un bloque
+    for ruta in ("/api/organizador/aprobar", "/api/organizador/baja"):
+        assert panel(cliente, "POST", ruta, {"cuenta": CUENTA["zoe"]}).status_code in (404, 405)
 
 
-def test_aprobar_un_minero_sin_carga(entorno):
+# ── Las listas son públicas: el panel las muestra sin la clave del organizador (BC-78) ──
+
+def test_pedidos_cuentas_y_suspendidos_se_leen_sin_firmar(entorno):
     armar, _, redis = entorno
     cliente = armar()
-    pedir(cliente, "gpu-zoe", tipo="minero")
+    pedir(cliente, "zoe")
+    redis.hset("cuentas", CUENTA["yago"], json.dumps({"tipo": "usuario", "nombre": "yago", "alta": 1}))
+    redis.hset("saldos", CUENTA["yago"], 7)
+    assert [p["cuenta"] for p in cliente.get("/api/altas/pendientes").json()["pendientes"]] == [CUENTA["zoe"]]
+    assert cliente.get("/api/cuentas").json()["cuentas"] == [{"cuenta": CUENTA["yago"], "tipo": "usuario",
+                                                              "nombre": "yago", "alta": 1, "saldo": 7}]
+    assert cliente.get("/api/suspendidos").json() == {"suspendidos": []}
 
-    respuesta = panel(cliente, "POST", "/api/organizador/aprobar", {"cuenta": CUENTA["gpu-zoe"], "nombre": "gpu-1"})
 
-    assert respuesta.status_code == 200
-    assert json.loads(redis.hget("cuentas", CUENTA["gpu-zoe"]))["tipo"] == "minero"
-    assert json.loads(redis.hget("cuentas", CUENTA["gpu-zoe"]))["nombre"] == "gpu-1"  # el organizador lo renombró
+# ── Aprobar y dar de baja: actas firmadas por el organizador, por /api/transacciones ──
 
-
-@pytest.mark.parametrize("nombre, tx, error", [
-    ("zoe", contrato.carga(PRIVADA["alice"], 1, CUENTA["zoe"], 500, 1793836800), "firma: no es la del organizador"),
-    ("zoe", carga(1, "yago", 500), "destino"),
-    ("gpu-zoe", carga(1, "gpu-zoe", 500), "sólo a un usuario"),
-])
-def test_una_carga_mala_no_aprueba_ni_encola(entorno, nombre, tx, error):
+def test_un_alta_y_una_carga_del_organizador_se_encolan_como_cualquier_transaccion(entorno):
     armar, cola, redis = entorno
     cliente = armar()
-    pedir(cliente, nombre, tipo="minero" if nombre.startswith("gpu") else "usuario")
+    alta = contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800)
 
-    respuesta = panel(cliente, "POST", "/api/organizador/aprobar", {"cuenta": CUENTA[nombre], "carga": tx})
+    assert cliente.post("/api/transacciones", json=alta).json() == {"id": "alta-1"}
+    assert cliente.post("/api/transacciones", json=carga(2, "zoe", 500)).status_code == 202
 
+    assert redis.hgetall("tx:alta-1")["datos"] == "usuario:zoe" and redis.hget("tx:alta-1", "estado") == "recibida"
+    assert not redis.exists("cuentas")  # queda aprobada cuando entra en un bloque, no antes
+    assert recibir(cola, 2) == [alta, carga(2, "zoe", 500)]
+    assert cliente.post("/api/transacciones", json=alta).status_code == 409
+
+
+@pytest.mark.parametrize("tx, error", [
+    (contrato.alta(PRIVADA["alice"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800), "firma: no es la del organizador"),
+    ({**contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800), "datos": "usuario:yo"},
+     "firma"),
+    (contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "organizador", "yo", 1793836800), "datos"),
+    (contrato.baja(PRIVADA["organizador"], 1, CUENTA["zoe"], "a|b", 1793836800), "datos"),
+])
+def test_un_acta_mala_no_entra(entorno, tx, error):
+    armar, cola, redis = entorno
+    respuesta = armar().post("/api/transacciones", json=tx)
     assert respuesta.status_code == 400 and error in respuesta.json()["errores"][0]
-    assert not redis.exists("cuentas") and redis.hexists("altas:pendientes", CUENTA[nombre])
-    assert recibir(cola, 1, segundos=1) == []
+    assert not redis.exists(f"tx:{tx['id']}") and recibir(cola, 1, segundos=1) == []
+
+
+def test_un_alta_delegada_entra_con_la_firma_de_su_clave(entorno):
+    """El permiso lo controla el NCT contra la cadena; el backend verifica la firma."""
+    armar, _, redis = entorno
+    alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True)
+    assert armar().post("/api/transacciones", json=alta).json() == {"id": alta["id"]}
+    assert redis.hget(f"tx:{alta['id']}", "origen") == CUENTA["escalador"]
 
 
 def test_una_carga_firmada_por_otra_clave_se_rechaza_tambien_suelta(entorno):
@@ -209,11 +216,6 @@ def test_una_carga_firmada_por_otra_clave_se_rechaza_tambien_suelta(entorno):
     trucha = contrato.carga(PRIVADA["alice"], 1, CUENTA["zoe"], 500, 1793836800)
     respuesta = armar().post("/api/transacciones", json=trucha)
     assert respuesta.status_code == 400 and "organizador" in respuesta.json()["errores"][0]
-
-
-def test_aprobar_sin_pedido_da_404(entorno):
-    armar, _, _ = entorno
-    assert panel(armar(), "POST", "/api/organizador/aprobar", {"cuenta": CUENTA["zoe"]}).status_code == 404
 
 
 def test_rechazar_borra_el_pedido(entorno):
@@ -224,18 +226,6 @@ def test_rechazar_borra_el_pedido(entorno):
     assert panel(cliente, "POST", "/api/organizador/rechazar", {"cuenta": CUENTA["zoe"]}).status_code == 200
     assert not redis.exists("altas:pendientes") and not redis.exists("cuentas")
     assert panel(cliente, "POST", "/api/organizador/rechazar", {"cuenta": CUENTA["zoe"]}).status_code == 404
-
-
-def test_dar_de_baja_saca_la_cuenta_y_deja_el_saldo(entorno):
-    armar, _, redis = entorno
-    cliente = armar()
-    redis.hset("cuentas", CUENTA["zoe"], json.dumps({"tipo": "usuario", "nombre": "zoe", "alta": 1}))
-    redis.hset("saldos", CUENTA["zoe"], 40)
-
-    assert panel(cliente, "POST", "/api/organizador/baja", {"cuenta": CUENTA["zoe"]}).status_code == 200
-    assert not redis.hexists("cuentas", CUENTA["zoe"]) and redis.hget("saldos", CUENTA["zoe"]) == "40"
-    assert panel(cliente, "POST", "/api/organizador/baja", {"cuenta": CUENTA["zoe"]}).status_code == 404
-    assert panel(cliente, "POST", "/api/organizador/baja", {"cuenta": CUENTA["organizador"]}).status_code == 400
 
 
 # ── BC-75: suspendidos ──
@@ -262,13 +252,6 @@ def test_reactivar_lo_saca_de_suspendidos_y_sigue_aprobado(entorno):
     assert panel(cliente, "POST", "/api/organizador/reactivar", {"cuenta": CUENTA["zoe"]}).status_code == 200
     assert not redis.hexists("suspendidos", CUENTA["zoe"]) and redis.hexists("cuentas", CUENTA["zoe"])
     assert panel(cliente, "POST", "/api/organizador/reactivar", {"cuenta": CUENTA["zoe"]}).status_code == 404
-
-
-def test_confirmar_la_baja_de_un_suspendido_lo_saca_de_las_dos(entorno):
-    armar, _, redis = entorno
-    suspendido(redis)
-    assert panel(armar(), "POST", "/api/organizador/baja", {"cuenta": CUENTA["zoe"]}).status_code == 200
-    assert not redis.hexists("suspendidos", CUENTA["zoe"]) and not redis.hexists("cuentas", CUENTA["zoe"])
 
 
 def test_un_usuario_o_una_cuenta_sin_aprobar_no_se_suspenden(entorno):

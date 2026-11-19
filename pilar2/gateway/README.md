@@ -60,7 +60,7 @@ Métricas: `blockchain_tareas_entregadas_total`, `blockchain_prestamos_vencidos_
 ```bash
 python -m gateway
 python -m claves generar cpu-1.clave                          # muestra la cuenta del minero
-python -m claves aprobar <cuenta> --tipo minero --nombre cpu-1   # REDIS_*: lo que hace el organizador
+python -m claves aprobar organizador.clave --cuenta <cuenta> --tipo minero --nombre cpu-1 --url <backend>   # un acta firmada (v3)
 GATEWAY_URL=http://localhost:8080 CLAVE_ARCHIVO=cpu-1.clave MINERO_ID=cpu-1 python -m minero_cpu
 INTEGRACION=1 python -m pytest gateway     # Redis real (base 15) y colas temporales
 ```
@@ -76,3 +76,5 @@ kubectl apply -k k8s
 ```
 
 Un minero de afuera usa `GATEWAY_URL=http://<ip del nodo o del LoadBalancer>:8081` y su clave; el organizador aprueba su cuenta con `k8s/aprobar.sh <cuenta> minero <alias>`.
+
+**Contrato v3 (BC-79, BC-82).** Un minero entra si su alta está en la cadena (`cuentas`) o ya la validó el NCT (`altas:en_camino`): así una VM nueva puede minar el bloque con su propia alta. Cada rango lleva la `altura`, y `GET /epocas/<n>` le dice al minero cuántos shares suyos quedaron en la lista publicada de la época, para que los compare con los que le aceptó el gateway.

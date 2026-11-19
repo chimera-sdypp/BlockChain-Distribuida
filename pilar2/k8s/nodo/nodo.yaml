@@ -1,0 +1,100 @@
+# Nodos verificadores en el cluster (BC-83): un StatefulSet de 2, cada uno con su propio disco (su copia de la
+# cadena en SQLite). No usan el Redis compartido: leen la API del backend como cualquiera de afuera y verifican
+# todo. Los que más valen son los que corre otra gente fuera de la nube (python -m nodo --fuente https://…); éstos
+# alertan en Grafana. No son validadores: un validador en la nube del operador lo controlaría el operador (BC-86).
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodo
+  labels: { app: nodo }
+spec:
+  clusterIP: None
+  selector: { app: nodo }
+  ports:
+    - { name: http, port: 8090, targetPort: http }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nodo
+spec:
+  serviceName: nodo
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: nodo }
+  template:
+    metadata:
+      labels: { app: nodo }
+    spec:
+      securityContext: { fsGroup: 10001 }
+      containers:
+        - name: nodo
+          image: nodo
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8090 }
+          env:
+            - { name: FUENTE_URL, value: "http://backend:8080" }
+            - { name: NODO_DATOS, value: /datos }
+            - { name: PUERTO, value: "8090" }
+          volumeMounts:
+            - { name: datos, mountPath: /datos }
+          readinessProbe:
+            httpGet: { path: /metrics, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 1Gi }
+---
+# Cada nodo por el Ingress, en /nodos/0 y /nodos/1 (la billetera los compara): un Service por pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodo-0
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: nodo-0 }
+  ports:
+    - { name: http, port: 8090, targetPort: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodo-1
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: nodo-1 }
+  ports:
+    - { name: http, port: 8090, targetPort: http }
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: nodos
+spec:
+  replacePathRegex:
+    regex: "^/nodos/[0-9]+(.*)"
+    replacement: "$1"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nodos
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: blockchain-nodos@kubernetescrd
+spec:
+  rules:
+    - http:
+        paths:
+          - { path: /nodos/0, pathType: Prefix, backend: { service: { name: nodo-0, port: { name: http } } } }
+          - { path: /nodos/1, pathType: Prefix, backend: { service: { name: nodo-1, port: { name: http } } } }

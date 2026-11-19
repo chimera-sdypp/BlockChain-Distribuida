@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pruebas del sistema desplegado en k3s (BC-30 y BC-37): el recorrido de una transferencia, las caídas
 # y el monitoreo. Desde pilar2/, con todo levantado (ver README): k8s/probar_sistema.sh [-k filtro de pytest]
-# Las cuentas y los mineros de prueba se aprueban con k8s/aprobar.sh (kubectl exec en el Redis del cluster).
+# Las cuentas y los mineros de prueba se aprueban con un alta firmada por el organizador (contrato v3).
 # Con los mineros GPU apagados (minero-gpu en 0): si no, se llevan todos los rangos y test_fallas no tiene víctima.
 set -euo pipefail
 export NAMESPACE=${NAMESPACE:-blockchain}

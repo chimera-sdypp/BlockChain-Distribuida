@@ -1,16 +1,28 @@
-"""La herramienta de claves (BC-55): el «servicio que genera las claves» que pidió el profe.
+"""La herramienta de claves (BC-55 y BC-78): la billetera de línea de comandos. Nada pasa por una página de la nube.
 
-    python -m claves generar alice.clave            # la privada queda en el archivo (600); muestra la pública
-    python -m claves publica alice.clave
-    python -m claves exportar alice.clave           # JWK para importar en el navegador (la sección «Transferir»)
-    python -m claves firmar alice.clave --destino <cuenta> --monto 5 --url http://localhost [--enviar]
-    python -m claves cargar organizador.clave --destino <cuenta> --monto 1000 --url http://localhost
-    python -m claves aprobar <cuenta> --tipo minero --nombre gpu-tomas    # escribe en Redis (REDIS_*)
-    python -m claves rafaga --url http://localhost -n 20 alice.clave bob.clave carol.clave
+Para cualquiera:
 
-`aprobar` habla directo con Redis y saltea el panel del organizador (/organizador): es para scripts y pruebas.
-El resto le habla al backend como cualquier cliente. La privada no sale nunca del archivo: lo que se
-manda es la transacción firmada.
+    python -m claves generar zoe.clave                  # la privada queda en el archivo (600); muestra la pública
+    python -m claves publica zoe.clave
+    python -m claves exportar zoe.clave                 # JWK, para importar en la billetera del navegador
+    python -m claves alta zoe.clave --tipo usuario --nombre zoe --url https://…      # pide el alta
+    python -m claves saldo zoe.clave --url https://…    # lo que dice el backend (con --verificar, lo calcula, BC-84)
+    python -m claves transferir zoe.clave --destino <cuenta> --monto 5 --url https://…
+    python -m claves firmar zoe.clave --destino <cuenta> --monto 5 --nonce 3      # sólo la firma (no la manda)
+    python -m claves rafaga --url https://… -n 20 alice.clave bob.clave carol.clave
+
+Para el organizador (contrato v3, BC-79): cada decisión es una transacción firmada con su clave que entra en la
+cadena; nada se escribe directo en Redis.
+
+    python -m claves pendientes --url https://…         # los pedidos de alta
+    python -m claves aprobar organizador.clave --cuenta <c> --tipo minero --nombre gpu-1 [--carga 500] --url …
+    python -m claves baja organizador.clave --cuenta <c> --motivo "…" --url …
+    python -m claves cargar organizador.clave --destino <c> --monto 1000 --url … --enviar
+    python -m claves permiso organizador.clave --clave <escalador> --prefijo minero-cpu- --url …
+    python -m claves rechazar organizador.clave --cuenta <c> --url …    # borra un pedido (fuera de la cadena)
+    python -m claves reactivar organizador.clave --cuenta <c> --url …   # un minero suspendido (fuera de la cadena)
+
+La privada no sale nunca del archivo: lo que se manda es la transacción firmada.
 """
 
 import argparse
@@ -23,7 +35,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from comun import config, contrato
+from comun import contrato
 
 CERRADOS = ("confirmada", "rechazada")
 
@@ -39,12 +51,18 @@ def guardar_privada(ruta, privada):
 
 def leer_privada(ruta):
     privada = Path(ruta).read_text().strip()
+    if privada.startswith("{"):  # un .jwk bajado de la billetera del navegador
+        privada = _de_b64url(json.loads(privada)["d"]).hex()
     contrato.clave_publica(privada)  # que sea una clave Ed25519
     return privada
 
 
 def _b64url(datos):
     return base64.urlsafe_b64encode(datos).rstrip(b"=").decode()
+
+
+def _de_b64url(texto):
+    return base64.urlsafe_b64decode(texto + "=" * (-len(texto) % 4))
 
 
 def jwk(privada):
@@ -54,15 +72,15 @@ def jwk(privada):
 
 
 class Backend:
-    """Lo poco del backend que usa la herramienta: la cuenta (para el nonce) y mandar transacciones."""
+    """Lo que usa la herramienta del backend: cuentas, nonces, transacciones, pedidos y el panel firmado."""
 
     def __init__(self, url, timeout=10):
         self.url, self.timeout = url.rstrip("/"), timeout
 
-    def pedir(self, metodo, ruta, cuerpo=None):
+    def pedir(self, metodo, ruta, cuerpo=None, encabezados=None):
         datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
         pedido = urllib.request.Request(self.url + ruta, data=datos, method=metodo,
-                                        headers={"Content-Type": "application/json"})
+                                        headers={"Content-Type": "application/json", **(encabezados or {})})
         try:
             with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
                 return respuesta.status, json.loads(respuesta.read() or b"null")
@@ -72,12 +90,15 @@ class Backend:
             except ValueError:
                 return error.code, None
 
-    def nonce(self, cuenta):
-        """El último nonce aceptado de la cuenta (pendiente o confirmado): el próximo es +1."""
+    def cuenta(self, cuenta):
         codigo, datos = self.pedir("GET", f"/api/cuentas/{cuenta}")
         if codigo != 200:
             raise SystemExit(f"No se pudo leer la cuenta {cuenta}: {codigo} {datos}")
-        return datos["nonce"]
+        return datos
+
+    def nonce(self, cuenta):
+        """El último nonce aceptado de la cuenta (pendiente o confirmado): el próximo es +1."""
+        return self.cuenta(cuenta)["nonce"]
 
     def mandar(self, tx):
         return self.pedir("POST", "/api/transacciones", tx)
@@ -86,19 +107,73 @@ class Backend:
         codigo, tx = self.pedir("GET", f"/api/transacciones/{id_}")
         return tx if codigo == 200 else None
 
+    def firmado(self, privada, metodo, ruta, cuerpo):
+        """Un pedido al panel (`/api/organizador/*`), firmado como el organizador (X-Organizador)."""
+        crudo = json.dumps(cuerpo).encode()
+        encabezados = contrato.firmar_pedido(privada, metodo, ruta, crudo, quien=contrato.ORGANIZADOR)
+        pedido = urllib.request.Request(self.url + ruta, data=crudo, method=metodo,
+                                        headers={"Content-Type": "application/json", **encabezados})
+        try:
+            with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
+                return respuesta.status, json.loads(respuesta.read() or b"null")
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read() or b"null")
 
-def aprobar(redis, cuenta, tipo, nombre, ahora=None):
-    """Lo que hace el organizador al aprobar una cuenta: entra en `cuentas` (contrato v2)."""
+
+def esperar_validada(backend, id_, segundos=20, pausa=0.5):
+    """Espera a que el NCT la valide (deja de estar «recibida»). Devuelve la transacción como la ve el backend."""
+    limite, tx = time.monotonic() + segundos, None
+    while time.monotonic() < limite:
+        tx = backend.estado(id_)
+        if tx and tx.get("estado") != "recibida":
+            return tx
+        time.sleep(pausa)
+    return tx
+
+
+def mandar_y_seguir(backend, txs, salida=print, esperar=True):
+    """Manda las transacciones en orden y espera a que el NCT valide cada una. Devuelve 0 si todas quedaron
+    pendientes o confirmadas."""
+    resultado = 0
+    for tx in txs:
+        codigo, respuesta = backend.mandar(tx)
+        if codigo != 202:
+            salida(f"✗ {tx['id']}: {codigo} {json.dumps(respuesta)}")
+            return 1
+        if not esperar:
+            salida(f"→ {tx['id']}: enviada")
+            continue
+        validada = esperar_validada(backend, respuesta["id"]) or {}
+        estado = validada.get("estado", "?")
+        salida(f"{'✓' if estado in ('pendiente', 'confirmada') else '✗'} {respuesta['id']}: {estado}"
+               + (f" ({validada.get('motivo')})" if validada.get("motivo") else ""))
+        if estado not in ("pendiente", "confirmada"):
+            resultado = 1
+    return resultado
+
+
+def actas_de_aprobacion(privada_organizador, nonce, cuenta, tipo, nombre, carga=None, ahora=None):
+    """El alta (y, si viene, la carga para esa cuenta) con los nonces de «emision» que siguen a `nonce`."""
+    timestamp = int(time.time() if ahora is None else ahora)
+    txs = [contrato.alta(privada_organizador, nonce + 1, cuenta, tipo, nombre, timestamp)]
+    if carga:
+        txs.append(contrato.carga(privada_organizador, nonce + 2, cuenta, carga, timestamp))
+    return txs
+
+
+def aprobar(backend, privada_organizador, cuenta, tipo, nombre, carga=None, salida=print, esperar=True):
+    """Lo que hace el organizador al aprobar una cuenta (v3): firma `alta-<n>` y la manda. Queda aprobada cuando
+    entra en un bloque (un minero ya puede entrar al gateway apenas el NCT la valida)."""
     if not contrato.cuenta_valida(cuenta):
         raise ValueError("la cuenta tiene que ser una clave pública Ed25519 en hex (64 caracteres)")
-    if tipo not in contrato.TIPOS_CUENTA:
-        raise ValueError(f"tipo: {' | '.join(contrato.TIPOS_CUENTA)}")
-    if nombre and not contrato.nombre_valido(nombre):
+    if tipo not in contrato.TIPOS_ALTA:
+        raise ValueError(f"tipo: {' | '.join(contrato.TIPOS_ALTA)}")
+    if not contrato.nombre_valido(nombre):
         raise ValueError("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
-    datos = {"tipo": tipo, "nombre": nombre, "alta": int(time.time() if ahora is None else ahora)}
-    redis.hset(contrato.CUENTAS, cuenta, json.dumps(datos))
-    redis.hdel(contrato.ALTAS_PENDIENTES, cuenta)
-    return datos
+    if carga and tipo != "usuario":
+        raise ValueError("la carga es sólo para usuarios (los mineros cobran minando)")
+    txs = actas_de_aprobacion(privada_organizador, backend.nonce(contrato.EMISION), cuenta, tipo, nombre, carga)
+    return mandar_y_seguir(backend, txs, salida, esperar)
 
 
 def rafaga(backend, privadas, cantidad, monto_maximo=5, esperar=600, salida=print):
@@ -129,6 +204,18 @@ def rafaga(backend, privadas, cantidad, monto_maximo=5, esperar=600, salida=prin
     return estados
 
 
+def _url(parser, a):
+    if not a.url:
+        parser.error("hace falta --url (el backend: https://<dominio> o http://localhost:8080)")
+    return Backend(a.url)
+
+
+def _cuenta(parser, valor):
+    if not contrato.cuenta_valida(valor):
+        parser.error("la cuenta es una clave pública Ed25519 en hex (64 caracteres en minúscula)")
+    return valor
+
+
 def principal(argumentos=None, salida=print):
     parser = argparse.ArgumentParser(prog="python -m claves", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="comando", required=True)
@@ -139,18 +226,49 @@ def principal(argumentos=None, salida=print):
     p.add_argument("archivo")
     p = sub.add_parser("exportar", help="la privada de ARCHIVO en JWK, para importarla en el navegador")
     p.add_argument("archivo")
-    for nombre, ayuda in (("firmar", "arma y firma una transferencia"), ("cargar", "una carga de saldo del organizador")):
+    p = sub.add_parser("alta", help="pide el alta de la cuenta de ARCHIVO (la aprueba el organizador)")
+    p.add_argument("archivo")
+    p.add_argument("--tipo", choices=contrato.TIPOS_ALTA, default="usuario")
+    p.add_argument("--nombre", required=True)
+    p.add_argument("--url")
+    p = sub.add_parser("saldo", help="el saldo, el nonce y si está aprobada la cuenta de ARCHIVO (o --cuenta)")
+    p.add_argument("archivo", nargs="?")
+    p.add_argument("--cuenta")
+    p.add_argument("--url")
+    for nombre, ayuda in (("firmar", "arma y firma una transferencia"), ("cargar", "una carga de saldo del organizador"),
+                          ("transferir", "firma una transferencia con el nonce siguiente y la manda")):
         p = sub.add_parser(nombre, help=ayuda)
         p.add_argument("archivo", help="la clave del origen (en «cargar», la del organizador)")
         p.add_argument("--destino", required=True, help="la cuenta destino (64 hex)")
         p.add_argument("--monto", type=int, required=True)
         p.add_argument("--nonce", type=int, help="si no está, lo pide al backend (--url): el último + 1")
-        p.add_argument("--url", help="el backend (http://<Ingress>)")
+        p.add_argument("--url", help="el backend (https://<dominio>)")
         p.add_argument("--enviar", action="store_true", help="la manda al backend (si no, sólo la muestra)")
-    p = sub.add_parser("aprobar", help="aprueba una cuenta directo en Redis, sin el panel (para scripts y pruebas)")
-    p.add_argument("cuenta")
-    p.add_argument("--tipo", choices=contrato.TIPOS_CUENTA, default="usuario")
-    p.add_argument("--nombre", default="")
+    p = sub.add_parser("pendientes", help="los pedidos de alta que esperan al organizador")
+    p.add_argument("--url")
+    p = sub.add_parser("aprobar", help="organizador: firma el alta de una cuenta (y opcionalmente una carga)")
+    p.add_argument("archivo", help="la clave del organizador")
+    p.add_argument("--cuenta", required=True)
+    p.add_argument("--tipo", choices=contrato.TIPOS_ALTA, default="usuario")
+    p.add_argument("--nombre", required=True)
+    p.add_argument("--carga", type=int, help="saldo inicial para un usuario (carga-<n> en el mismo paso)")
+    p.add_argument("--url")
+    p = sub.add_parser("baja", help="organizador: firma la baja de una cuenta")
+    p.add_argument("archivo", help="la clave del organizador")
+    p.add_argument("--cuenta", required=True)
+    p.add_argument("--motivo", default="")
+    p.add_argument("--url")
+    p = sub.add_parser("permiso", help="organizador: deja a otra clave dar de alta y de baja mineros con un prefijo")
+    p.add_argument("archivo", help="la clave del organizador")
+    p.add_argument("--clave", required=True, help="la clave que recibe el permiso (la del escalador)")
+    p.add_argument("--prefijo", required=True, help="el prefijo de nombre de sus mineros; vacío («») lo revoca")
+    p.add_argument("--url")
+    for nombre, ayuda in (("rechazar", "organizador: borra un pedido de alta (no va a la cadena)"),
+                          ("reactivar", "organizador: un minero suspendido vuelve a recibir rangos")):
+        p = sub.add_parser(nombre, help=ayuda)
+        p.add_argument("archivo", help="la clave del organizador")
+        p.add_argument("--cuenta", required=True)
+        p.add_argument("--url")
     p = sub.add_parser("rafaga", help="N transferencias en ronda entre las cuentas, y las sigue")
     p.add_argument("archivos", nargs="+", help="las claves de las cuentas (necesitan saldo y estar aprobadas)")
     p.add_argument("--url", required=True)
@@ -166,7 +284,20 @@ def principal(argumentos=None, salida=print):
         salida(contrato.clave_publica(leer_privada(a.archivo)))
     elif a.comando == "exportar":
         salida(json.dumps(jwk(leer_privada(a.archivo))))
-    elif a.comando in ("firmar", "cargar"):
+    elif a.comando == "alta":
+        if not contrato.nombre_valido(a.nombre):
+            parser.error("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
+        codigo, respuesta = _url(parser, a).pedir("POST", "/api/altas",
+                                                  contrato.pedido_alta(leer_privada(a.archivo), a.tipo, a.nombre))
+        salida(f"{codigo} {json.dumps(respuesta)}")
+        return 0 if codigo in (202, 409) else 1
+    elif a.comando == "saldo":
+        cuenta = a.cuenta or (contrato.clave_publica(leer_privada(a.archivo)) if a.archivo else None)
+        if not cuenta:
+            parser.error("hace falta ARCHIVO o --cuenta")
+        datos = _url(parser, a).cuenta(cuenta)
+        salida(json.dumps(datos, ensure_ascii=False))
+    elif a.comando in ("firmar", "cargar", "transferir"):
         privada = leer_privada(a.archivo)
         backend = Backend(a.url) if a.url else None
         if a.nonce is None and backend is None:
@@ -174,9 +305,13 @@ def principal(argumentos=None, salida=print):
         origen = contrato.EMISION if a.comando == "cargar" else contrato.clave_publica(privada)
         nonce = a.nonce if a.nonce is not None else backend.nonce(origen) + 1
         if a.comando == "cargar":
-            tx = contrato.carga(privada, nonce, a.destino, a.monto, int(time.time()))
+            tx = contrato.carga(privada, nonce, _cuenta(parser, a.destino), a.monto, int(time.time()))
         else:
-            tx = contrato.transaccion(privada, a.destino, a.monto, nonce)
+            tx = contrato.transaccion(privada, _cuenta(parser, a.destino), a.monto, nonce)
+        if a.comando == "transferir":
+            if backend is None:
+                parser.error("transferir necesita --url")
+            return mandar_y_seguir(backend, [tx], salida)
         salida(json.dumps(tx))
         if a.enviar:
             if backend is None:
@@ -184,10 +319,29 @@ def principal(argumentos=None, salida=print):
             codigo, respuesta = backend.mandar(tx)
             salida(f"{codigo} {json.dumps(respuesta)}")
             return 0 if codigo == 202 else 1
+    elif a.comando == "pendientes":
+        codigo, datos = _url(parser, a).pedir("GET", "/api/altas/pendientes")
+        for pedido in (datos or {}).get("pendientes", []):
+            salida(f"{pedido['cuenta']}  {pedido.get('tipo'):<9} {pedido.get('nombre')}")
+        return 0 if codigo == 200 else 1
     elif a.comando == "aprobar":
-        from comun import redisdb
-        datos = aprobar(redisdb.conectar(config.cargar("claves")), a.cuenta, a.tipo, a.nombre)
-        salida(f"aprobada: {a.cuenta} {json.dumps(datos)}")
+        return aprobar(_url(parser, a), leer_privada(a.archivo), _cuenta(parser, a.cuenta), a.tipo, a.nombre,
+                       a.carga, salida)
+    elif a.comando in ("baja", "permiso"):
+        backend, privada = _url(parser, a), leer_privada(a.archivo)
+        nonce, ahora = backend.nonce(contrato.EMISION) + 1, int(time.time())
+        if a.comando == "baja":
+            tx = contrato.baja(privada, nonce, _cuenta(parser, a.cuenta), a.motivo, ahora)
+        else:
+            if a.prefijo and not contrato.nombre_valido(a.prefijo):
+                parser.error("el prefijo: de 1 a 32 letras, números, «_», «.» o «-»")
+            tx = contrato.permiso(privada, nonce, _cuenta(parser, a.clave), a.prefijo, ahora)
+        return mandar_y_seguir(backend, [tx], salida)
+    elif a.comando in ("rechazar", "reactivar"):
+        codigo, respuesta = _url(parser, a).firmado(leer_privada(a.archivo), "POST", f"/api/organizador/{a.comando}",
+                                                    {"cuenta": _cuenta(parser, a.cuenta)})
+        salida(f"{codigo} {json.dumps(respuesta)}")
+        return 0 if codigo == 200 else 1
     elif a.comando == "rafaga":
         estados = rafaga(Backend(a.url), [leer_privada(r) for r in a.archivos], a.cantidad, esperar=a.esperar,
                          salida=salida)
@@ -198,5 +352,5 @@ def principal(argumentos=None, salida=print):
 def main():
     try:
         sys.exit(principal())
-    except (FileExistsError, FileNotFoundError, ValueError) as error:
+    except (FileExistsError, FileNotFoundError, ValueError, KeyError) as error:
         sys.exit(f"Error: {error}")

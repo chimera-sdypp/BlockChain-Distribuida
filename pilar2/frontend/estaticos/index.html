@@ -51,8 +51,12 @@
 const BLOQUES_VISIBLES = 20;
 
 // Las transacciones de emisión (origen «emision») crean plata: génesis, coinbase, carga y participación.
-const TIPOS_EMISION = [["genesis-", "génesis"], ["cb-", "recompensa"], ["carga-", "carga"], ["part-", "participación"]];
-const tipoDe = (tx) => tx.origen !== "emision" ? "" : (TIPOS_EMISION.find(([p]) => tx.id.startsWith(p)) || ["", "emisión"])[1];
+// Contrato v3: las actas del organizador (alta, baja, permiso) y los shares de la época también están en la cadena.
+const TIPOS_EMISION = [["genesis-", "génesis"], ["organizador-", "organizador"], ["cb-", "recompensa"], ["carga-", "carga"],
+  ["part-", "participación"], ["shares-", "shares"], ["alta-", "alta"], ["baja-", "baja"], ["permiso-", "permiso"]];
+const tipoDe = (tx) => tx.origen !== "emision"
+  ? (/^(alta|baja)-/.test(tx.id) ? `${tx.id.split("-")[0]} delegada` : "")
+  : (TIPOS_EMISION.find(([p]) => tx.id.startsWith(p)) || ["", "emisión"])[1];
 
 // ── Cadena ──
 
@@ -68,7 +72,9 @@ function vistaBloque(bloque, nuevo = false) {
       el("span", { clase: "altura" }, `#${bloque.altura}`),
       el("span", { clase: "mono" }, corto(bloque.block_hash)),
       el("span", { clase: "suave" }, `${bloque.transactions.length} tx`),
-      el("span", { clase: "suave" }, bloque.minero ? `minó ${cuentaCorta(bloque.minero)}` : "génesis")),
+      el("span", { clase: "suave" }, bloque.minero ? `minó ${cuentaCorta(bloque.minero)}` : "génesis"),
+      // BC-86: finalizado = firmado por 2 de 3 validadores. Esto lo dice el servidor; la billetera lo verifica sola.
+      bloque.finalizado ? el("span", { clase: "chip confirmada", title: `${(bloque.firmas || []).length} firmas de validadores` }, "finalizado") : ""),
     el("dl", {},
       el("dt", {}, "hash"), el("dd", { clase: "mono" }, bloque.block_hash),
       el("dt", {}, "anterior"), el("dd", { clase: "mono" }, bloque.previous_hash),
@@ -124,7 +130,9 @@ function pintarMias() {
     el("span", { clase: "mono" }, `${cuentaCorta(tx.origen)} → ${cuentaCorta(tx.destino)}: ${tx.monto}`),
     el("span", { clase: "mono suave" }, corto(tx.id)),
     tx.motivo ? el("span", { clase: "suave" }, tx.motivo) : "",
-    tx.bloque ? el("span", { clase: "suave" }, `en el bloque ${corto(tx.bloque)}`) : ""))
+    tx.bloque ? el("span", { clase: "suave" }, `en el bloque ${corto(tx.bloque)}`) : "",
+    tx.estado === "confirmada" && bloques.some((b) => b.block_hash === tx.bloque && b.finalizado)
+      ? el("span", { clase: "chip confirmada" }, "finalizada") : ""))
     : [el("li", { clase: "vacio" }, "Todavía no hiciste ninguna.")]));
 }
 
@@ -293,6 +301,7 @@ function escuchar() {
     $("conexion").classList.remove("vivo");
   };
   fuente.addEventListener("transaccion.estado", (e) => estadoDeTransaccion(JSON.parse(e.data)));
+  fuente.addEventListener("bloque.finalizado", () => cargarCadena());
   fuente.addEventListener("bloque.confirmado", (e) => {
     const aviso = JSON.parse(e.data);
     for (const reaccion of alConfirmarBloque) reaccion(aviso);

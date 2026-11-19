@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA, firmada
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, firmada
 
 VECTOR = json.loads((Path(__file__).parent.parent / "vector_prueba.json").read_text())
 ALICE, BOB, MINERO, ORGANIZADOR = CUENTA["alice"], CUENTA["bob"], CUENTA["minero"], CUENTA["organizador"]
@@ -17,21 +17,28 @@ def tx_de_alice(**cambios):
 # ── Vector de prueba ──
 
 def test_vector_de_prueba():
-    genesis = contrato.bloque_genesis(VECTOR["genesis"]["saldos"], VECTOR["genesis"]["timestamp"])
-    assert genesis["block_hash"] == VECTOR["genesis"]["block_hash"] == VECTOR["tarea"]["previous_hash"]
+    g = VECTOR["genesis"]
+    genesis = contrato.bloque_genesis(g["saldos"], g["timestamp"], organizador=g["organizador"], nombres=g["nombres"])
+    assert genesis["block_hash"] == g["block_hash"] == VECTOR["tarea"]["previous_hash"]
+    assert genesis == g["bloque"]
     tarea, minero = VECTOR["tarea"], VECTOR["minero"]
+    assert tarea["raiz_estado"] == VECTOR["estado_genesis"]["raiz"]
     bloque = contrato.transacciones_del_bloque(tarea, minero)
     assert bloque[0] == VECTOR["coinbase"] and bloque[1:] == tarea["transacciones"]
-    assert contrato.raiz_transacciones(bloque) == VECTOR["raiz"]
+    assert contrato.raiz_transacciones(bloque) == VECTOR["raiz_transacciones"]
+    assert contrato.raiz_bloque(bloque, tarea["raiz_estado"]) == VECTOR["raiz"]
     texto = contrato.texto_para(tarea, minero)
-    assert texto == VECTOR["texto"]
+    assert texto == VECTOR["texto"] and len(texto) == 77
     hash_ = contrato.hash_bloque(texto, VECTOR["nonce"])
     assert hash_ == VECTOR["block_hash"] and contrato.cumple(hash_, tarea["prefijo"])
+    assert contrato.texto_de_bloque(VECTOR["bloque"]) == texto
 
 
 def test_las_transacciones_del_vector_estan_bien_firmadas():
-    for tx in VECTOR["tarea"]["transacciones"]:
+    transferencias, acta = VECTOR["tarea"]["transacciones"][:2], VECTOR["tarea"]["transacciones"][2]
+    for tx in transferencias:
         assert contrato.validar_transaccion_firmada(tx) == []
+    assert contrato.tipo_de(acta) == "alta" and contrato.validar_acta(acta, CUENTA["organizador"]) == []
 
 
 def test_las_claves_de_prueba_son_las_del_vector():
@@ -122,7 +129,7 @@ def test_coinbase_y_participacion_tienen_id_fijo_y_sin_firma():
     part = contrato.participacion(2, MINERO, 15, 1)
     assert (cb["id"], part["id"]) == (f"cb-7-{MINERO}", f"part-2-{MINERO}")
     assert cb["firma"] == part["firma"] == "" and contrato.es_emision(cb) and contrato.es_emision(part)
-    assert contrato.serializar_transaccion(cb) == f"cb-7-{MINERO}:emision:{MINERO}:40:0:1:"
+    assert contrato.serializar_transaccion(cb) == f"cb-7-{MINERO}:emision:{MINERO}:40:0:1::"  # datos y firma vacíos
 
 
 # ── Bloque ──
@@ -142,7 +149,7 @@ def test_la_coinbase_paga_segun_el_prefijo_de_la_tarea():
 def test_el_texto_del_bloque_mide_siempre_77():
     muchas = [tx_de_alice()] * 1000
     tarea = {"previous_hash": contrato.CEROS, "timestamp": 1793836860, "altura": 123456, "prefijo": "0" * 8,
-             "transacciones": muchas}
+             "transacciones": muchas, "raiz_estado": "f" * 32}
     assert len(contrato.texto_para(tarea, MINERO)) == 77
 
 
@@ -155,7 +162,80 @@ def test_cambiar_una_transaccion_cambia_el_hash():
 def test_el_genesis_reparte_desde_emision_con_altura_0():
     genesis = contrato.bloque_genesis({ALICE: 1}, 1)
     assert genesis["altura"] == 0 and genesis["previous_hash"] == contrato.CEROS
-    assert genesis["transactions"] == [contrato._emision(f"genesis-{ALICE}", ALICE, 1, 0, 1)]
+    assert genesis["raiz_estado"] == contrato.RAIZ_VACIA
+    assert genesis["transactions"] == [contrato._emision(f"genesis-{ALICE}", ALICE, 1, 0, 1, datos="usuario:")]
+
+
+def test_el_genesis_v3_trae_al_organizador_primero_y_el_nombre_de_cada_cuenta():
+    organizador = CUENTA["organizador"]
+    genesis = contrato.bloque_genesis({ALICE: 5}, 1, organizador=organizador, nombres={ALICE: "alice"})
+    assert [tx["id"] for tx in genesis["transactions"]] == [f"organizador-{organizador}", f"genesis-{ALICE}"]
+    assert genesis["transactions"][1]["datos"] == "usuario:alice"
+
+
+# ── Actas (v3, BC-79) ──
+
+def test_un_alta_firmada_por_el_organizador_vale_y_no_sirve_como_carga():
+    alta = contrato.alta(PRIVADA["organizador"], 3, ALICE, "minero", "gpu-1", FECHA)
+    assert alta["id"] == "alta-3" and alta["monto"] == 0 and alta["datos"] == "minero:gpu-1"
+    assert contrato.tipo_de(alta) == "alta" and not contrato.es_delegada(alta)
+    assert contrato.validar_acta(alta, CUENTA["organizador"]) == []
+    assert contrato.validar_acta(alta, CUENTA["bob"]) == ["firma: no es la del organizador"]
+    # La misma firma con el id de una carga no vale: el mensaje del acta empieza con su tipo.
+    trucha = {**{k: v for k, v in alta.items() if k != "datos"}, "id": "carga-3", "monto": 1}
+    assert contrato.validar_carga(trucha, CUENTA["organizador"]) == ["firma: no es la del organizador"]
+
+
+@pytest.mark.parametrize("cambio, error", [
+    ({"datos": "organizador:yo"}, "datos:"), ({"datos": "usuario:"}, "datos:"), ({"monto": 5}, "monto:"),
+    ({"id": "alta-9"}, "id:"), ({"destino": "alice"}, "destino:"), ({"datos": "minero:gpu-2"}, "firma:")])
+def test_un_alta_mal_formada_o_cambiada_no_vale(cambio, error):
+    alta = {**contrato.alta(PRIVADA["organizador"], 3, ALICE, "minero", "gpu-1", FECHA), **cambio}
+    assert contrato.validar_acta(alta, CUENTA["organizador"])[0].startswith(error)
+
+
+def test_baja_y_permiso():
+    baja = contrato.baja(PRIVADA["organizador"], 4, ALICE, "se fue", FECHA)
+    permiso = contrato.permiso(PRIVADA["organizador"], 5, CUENTA["bob"], "minero-cpu-", FECHA)
+    assert contrato.validar_acta(baja, CUENTA["organizador"]) == contrato.validar_acta(permiso, CUENTA["organizador"]) == []
+    assert contrato.validar_acta({**baja, "datos": "a|b"}, CUENTA["organizador"])[0].startswith("datos:")
+    revoca = contrato.permiso(PRIVADA["organizador"], 6, CUENTA["bob"], "", FECHA)
+    assert contrato.validar_acta(revoca, CUENTA["organizador"]) == []
+
+
+def test_un_alta_delegada_la_firma_la_clave_con_permiso_y_lleva_su_cuenta_en_el_id():
+    alta = contrato.alta(PRIVADA["bob"], 1, ALICE, "minero", "minero-cpu-0", FECHA, delegada=True)
+    assert alta["id"] == f"alta-{CUENTA['bob']}-1" and alta["origen"] == CUENTA["bob"]
+    assert contrato.tipo_de(alta) == "alta" and contrato.es_delegada(alta)
+    assert contrato.validar_acta(alta, CUENTA["organizador"]) == []
+    assert contrato.validar_de_entrada(alta, CUENTA["organizador"]) == []
+    permiso = contrato.acta(PRIVADA["bob"], "permiso", 2, ALICE, "x", FECHA, delegada=True)
+    assert contrato.tipo_de(permiso) == "transferencia"  # un permiso delegado no existe: no es un acta
+
+
+def test_una_transferencia_no_lleva_datos():
+    tx = {**firmada("alice", "bob", 1), "datos": "algo"}
+    assert "datos: una transferencia no lleva datos (no van firmados)" in contrato.validar_transaccion_firmada(tx)
+
+
+def test_los_tipos_salen_del_id():
+    assert [contrato.tipo_de({"id": i, "origen": contrato.EMISION}) for i in
+            ("genesis-x", "organizador-x", "cb-1-x", "carga-1", "part-1-x", "shares-1", "alta-1", "baja-1",
+             "permiso-1", "otra")] == ["genesis", "organizador", "coinbase", "carga", "participacion", "shares",
+                                       "alta", "baja", "permiso", "desconocida"]
+
+
+# ── Shares publicados (v3, BC-82) ──
+
+def test_la_raiz_de_shares_es_la_lista_ordenada_con_racha():
+    detalle = {CUENTA["minero2"]: {"shares": 3, "racha": 2, "monto": 40}, CUENTA["minero"]: {"shares": 5, "racha": 1,
+                                                                                           "monto": 60},
+               CUENTA["zoe"]: {"shares": 0, "racha": 1, "monto": 0}}
+    lista = contrato.lista_shares(detalle)
+    assert lista == sorted([f"{CUENTA['minero']}:5:1", f"{CUENTA['minero2']}:3:2"])
+    assert contrato.raiz_shares(detalle) == contrato.md5("|".join(lista))
+    tx = contrato.shares_epoca(4, 100, contrato.raiz_shares(detalle), FECHA)
+    assert tx["id"] == "shares-4" and tx["datos"] == f"100:{contrato.raiz_shares(detalle)}" and tx["monto"] == 0
 
 
 def test_recompensa_crece_con_el_prefijo():
@@ -248,7 +328,8 @@ def test_transaccion_y_tarea_como_las_devuelve_redis():
     tarea = VECTOR["tarea"]
     guardada = {"previous_hash": tarea["previous_hash"], "timestamp": str(tarea["timestamp"]),
                 "altura": str(tarea["altura"]), "prefijo": tarea["prefijo"],
-                "transacciones": json.dumps(tarea["transacciones"]), "estado": "en_curso"}
+                "transacciones": json.dumps(tarea["transacciones"]), "estado": "en_curso",
+                "raiz_estado": tarea["raiz_estado"]}
     assert contrato.tarea_guardada(guardada) == tarea
     assert contrato.texto_para(contrato.tarea_guardada(guardada), VECTOR["minero"]) == VECTOR["texto"]
 

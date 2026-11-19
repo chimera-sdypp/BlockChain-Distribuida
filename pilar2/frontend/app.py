@@ -27,7 +27,7 @@ ARCHIVOS = {"/alta": ("alta.html", "text/html; charset=utf-8"),
             "/comun.js": ("comun.js", "text/javascript; charset=utf-8"),
             "/estilos.css": ("estilos.css", "text/css; charset=utf-8")}
 KEEPALIVE = 15  # segundos: así el Ingress no corta las conexiones quietas
-AVISOS = (contrato.BLOQUE_CONFIRMADO, contrato.TRANSACCION_ESTADO)
+AVISOS = (contrato.BLOQUE_CONFIRMADO, contrato.TRANSACCION_ESTADO, contrato.BLOQUE_FINALIZADO)  # BC-86
 
 CLIENTES = Gauge("blockchain_sse_clientes", "Navegadores conectados por SSE a este pod")
 REENVIADOS = Counter("blockchain_eventos_reenviados", "Avisos de `eventos` reenviados por SSE", ["evento"])

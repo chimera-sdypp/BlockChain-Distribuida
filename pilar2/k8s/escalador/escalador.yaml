@@ -30,6 +30,7 @@ spec:
           env:
             - { name: REDIS_SENTINELS, value: "redis:26379" }
             - { name: VMS_ACTIVAS, value: "0" }          # 1 cuando exista el módulo de BC-35
+            - { name: BACKEND_URL, value: "http://backend:8080" }   # manda las altas delegadas de las VMs (BC-79)
             - { name: VMS_MAXIMO, value: "3" }
             - { name: PREFIJO_BASE, value: "6" }          # el mismo que el TrP
             - { name: SEGUNDOS_POR_BLOQUE, value: "60" }

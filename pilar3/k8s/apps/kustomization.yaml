@@ -15,6 +15,7 @@ resources:
   - ../../../pilar2/k8s/gateway.yaml
   - ../../../pilar2/k8s/ingress.yaml
   - ../../../pilar2/k8s/escalador/escalador.yaml
+  - ../../../pilar2/k8s/nodo/nodo.yaml
   - salud.yaml
   - a-https.yaml
 
@@ -34,6 +35,10 @@ patches:
   - path: ../nodegroup-apps.yaml
     target:
       kind: Deployment
+  - path: ../nodegroup-apps.yaml
+    target:
+      kind: StatefulSet
+      name: nodo
   - path: escalador.yaml
   - path: gateway-ip.yaml
   - path: nct-saldos.yaml

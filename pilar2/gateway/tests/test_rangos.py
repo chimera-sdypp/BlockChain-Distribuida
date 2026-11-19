@@ -23,7 +23,8 @@ def guardar_tarea(redis, tarea, estado="en_curso", prefijo="00"):
     """tarea:<id> como la dejan el NCT (los datos del bloque) y el TrP (el prefijo)."""
     redis.hset(f"tarea:{tarea}", mapping={
         "previous_hash": TAREA["previous_hash"], "timestamp": TAREA["timestamp"], "altura": TAREA["altura"],
-        "transacciones": json.dumps(TAREA["transacciones"]), "prefijo": prefijo, "estado": estado})
+        "transacciones": json.dumps(TAREA["transacciones"]), "prefijo": prefijo, "estado": estado,
+        "raiz_estado": TAREA["raiz_estado"]})
 
 
 def publicar_rangos(redis, colas, *rangos, estado="en_curso"):
@@ -52,7 +53,8 @@ def test_entrega_el_rango_con_el_texto_del_minero_y_lo_anota_como_prestamo(clien
 
     respuesta = cliente.get("/tasks/next")
 
-    assert respuesta.status_code == 200 and respuesta.json() == {**rango("t1", 0), "bloque": texto()}
+    # con la altura del bloque, para que el minero sepa de qué época son sus shares (BC-82)
+    assert respuesta.status_code == 200 and respuesta.json() == {**rango("t1", 0), "bloque": texto(), "altura": 1}
     vence = redis.zscore("prestamos", "t1:0")
     assert antes + 29 <= vence <= time.time() + 31
     assert redis.hget("prestamo:t1:0", "minero") == CUENTA["minero"]

@@ -17,9 +17,12 @@ def test_con_la_cadena_vacia_carga_el_genesis_con_los_saldos_iniciales(armar, re
     assert bloque["altura"] == "0"
     assert redis.hgetall("saldos") == {CUENTA["alice"]: "100", CUENTA["bob"]: "50", CUENTA["carol"]: "0"}
     ids = [tx["id"] for tx in json.loads(bloque["transactions"])]
-    assert ids == sorted(f"genesis-{CUENTA[n]}" for n in ("alice", "bob", "carol"))
-    texto = contrato._texto(contrato.CEROS, int(bloque["timestamp"]), json.loads(bloque["transactions"]))
-    assert contrato.hash_bloque(texto, 0) == hash_
+    # v3: primero el organizador (los que verifican lo leen de acá) y después las cuentas de prueba
+    assert ids == [f"organizador-{CUENTA['organizador']}"] + sorted(f"genesis-{CUENTA[n]}" for n in ("alice", "bob", "carol"))
+    texto = contrato._texto(contrato.CEROS, int(bloque["timestamp"]), json.loads(bloque["transactions"]),
+                            contrato.RAIZ_VACIA)
+    assert contrato.hash_bloque(texto, 0) == hash_ and bloque["raiz_estado"] == contrato.RAIZ_VACIA
+    assert json.loads(redis.hget("cuentas", CUENTA["organizador"]))["tipo"] == "organizador"
 
 
 def test_las_cuentas_del_genesis_quedan_aprobadas_como_usuarios(armar, redis):
@@ -31,9 +34,10 @@ def test_las_cuentas_del_genesis_quedan_aprobadas_como_usuarios(armar, redis):
     assert redis.hgetall("saldos") == {CUENTA["alice"]: "5", CUENTA["bob"]: "7"}
 
 
-def test_sin_saldos_iniciales_el_genesis_sale_vacio(armar, redis):
+def test_sin_saldos_iniciales_el_genesis_trae_solo_al_organizador(armar, redis):
     armar(saldos_iniciales={}).cargar_genesis()
-    assert redis.llen("cadena") == 1 and not redis.exists("saldos", "cuentas")
+    assert redis.llen("cadena") == 1 and not redis.exists("saldos")
+    assert list(redis.hgetall("cuentas")) == [CUENTA["organizador"]]
 
 
 def test_con_la_cadena_existente_no_toca_nada(armar, redis):

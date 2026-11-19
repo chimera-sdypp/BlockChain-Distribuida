@@ -71,3 +71,8 @@ kubectl -n blockchain port-forward svc/backend 8080:8080   # y los curl de arrib
 ```
 
 La readiness usa `/health`: si el pod no llega a RabbitMQ o a Redis, sale del Service. La liveness usa `/metrics`, para que no lo reinicie mientras RabbitMQ o Redis están caídos.
+
+## Contrato v3 (BC-78, BC-79, BC-80, BC-82)
+
+- `POST /api/transacciones` acepta también las actas del organizador (`alta-<n>`, `baja-<n>`, `permiso-<n>`) y las delegadas (`alta-<clave>-<n>`), con su firma. El panel ya no aprueba ni da de baja: eso escribía `cuentas` sin firma.
+- Lecturas públicas: `GET /api/altas/pendientes`, `/api/cuentas`, `/api/suspendidos`; `GET /api/bloques?orden=asc&desde=<altura>` (para bajar sólo lo nuevo); `GET /api/prueba/<cuenta>` (hoja y rama de Merkle sobre el estado de la punta); `GET /api/epocas/<n>` (la lista de shares con que se pagó la época).

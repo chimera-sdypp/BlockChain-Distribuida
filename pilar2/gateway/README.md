@@ -36,6 +36,8 @@ Por HTTP no hay un canal abierto: si el minero muere a mitad de un rango, Rabbit
 - Cada préstamo tiene un **plazo**: 3 veces lo que debería tardar el rango con la potencia del minero, más 10 s (sin medición, como mucho 120 s). Pasado el plazo, el keep-alive contesta «cortá» y el rango vuelve a la cola. Así nadie retiene un rango mandando keep-alive sin minar.
 - Al terminar cada préstamo se **mide** al minero con sus shares (cada uno cuesta 16^(p−1) hashes): queda en `nodo:<cuenta>` como `medido` y `medido_estado`, y lo usan el TrP y el escalador como `min(bench, medido)`. El detalle, en el [contrato](../CONTRATO.md#lo-que-mide-el-gateway-bc-74).
 
+**`sin_solucion` falsos (BC-75):** un `sin_solucion` en un rango donde no tener solución es casi imposible (P < 10⁻⁶) suspende al minero; si no, el 5 % se reverifica con otro minero, con el texto del primero. Un suspendido recibe 403 hasta que el organizador lo reactive o le dé de baja. El detalle, en el [contrato](../CONTRATO.md#los-que-contestan-sin_solucion-sin-buscar-bc-75). Variables: `UMBRAL_SIN_SOLUCION` y `MUESTREO_SIN_SOLUCION`.
+
 **Tareas cerradas:** el gateway consulta el `estado` de `tarea:<id>`, que escribe el NCT. Si no está `en_curso` (confirmada, sin solución, rechazada o descartada):
 - los rangos de esa tarea que queden en la cola se descartan al entregarlos;
 - al minero que esté con uno, el próximo keep-alive le contesta **«cortá»** y el gateway borra su préstamo.

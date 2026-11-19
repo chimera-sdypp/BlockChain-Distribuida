@@ -6,6 +6,7 @@ transacciones firmadas con nonce por cuenta, emisión, coinbase en la raíz y pa
 
 import hashlib
 import json
+import math
 import re
 import time
 
@@ -51,6 +52,17 @@ PRESTAMO_DE = "prestamo_de:{}"       # minero → su préstamo vivo (<tarea>:<ra
 MEDICION = "medicion:{}"             # lista: los últimos préstamos de cada minero (JSON con trabajo, segundos y shares)
 MEDICION_PRESTAMOS = 20              # cuántos préstamos entran en la medición
 MEDICION_SHARES_MINIMOS = 20         # shares esperados (según su bench) para que la medición cuente
+# BC-75: los mineros que contestan `sin_solucion` sin buscar.
+SUSPENDIDOS = "suspendidos"          # cuenta → JSON {nombre, motivo, evidencia, cuando}: no reciben rangos hasta que
+                                     # el organizador confirme la baja o los reactive
+UMBRAL_SIN_SOLUCION = 1e-6           # un rango sin solución con menos probabilidad que esto es una mentira
+MUESTREO_SIN_SOLUCION = 0.05         # de los demás `sin_solucion`, cuántos se reverifican con otro minero
+REVERIFICACION = 1_000_000           # se suma al número de rango de una reverificación (el TrP no las ve)
+
+
+def prob_sin_solucion(tamano, prefijo):
+    """Probabilidad de que un rango de `tamano` nonces no tenga ningún hash con `prefijo` (BC-75): e^(-N / 16^p)."""
+    return math.exp(-tamano / 16 ** len(prefijo))
 # BC-70: lo que se le saca a tx:<id> al confirmarla. Ya está en el bloque: queda {estado, bloque}.
 CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "motivo")
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"

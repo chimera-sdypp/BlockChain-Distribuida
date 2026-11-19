@@ -13,6 +13,13 @@ from gateway.tests.test_rangos import TAREA, publicar_rangos, rango, sacar, text
 PREFIJO, HASTA = "000", 99_999  # shares con «00»: uno de cada 256 hashes, unos 390 en el rango
 
 
+
+@pytest.fixture
+def cliente(armar):
+    """Sin el chequeo estadístico de BC-75: estos tests devuelven `sin_solucion` en rangos que casi seguro tienen
+    solución, y lo que miran es la cuenta de los shares."""
+    return armar(umbral=0)[1]
+
 def shares_de(nombre="minero", desde=0, hasta=HASTA, prefijo=PREFIJO):
     return list(_shares(nombre, desde, hasta, prefijo))
 

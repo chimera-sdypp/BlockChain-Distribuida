@@ -13,7 +13,8 @@ La API por la que entran las transferencias y se consulta su estado (pasos 1 y 2
 | `POST /api/altas` `{tipo, clave_publica, nombre, firma}` | 202 `{cuenta, estado: "pendiente"}` · 400 (firma o formato) · 409 (ya aprobada) · 429 (hay 1000 pendientes) |
 | `GET /api/organizador/altas` · `GET /api/organizador/cuentas` | Los pedidos pendientes y las cuentas aprobadas (con su saldo). Firmados por el organizador |
 | `POST /api/organizador/aprobar` `{cuenta, nombre?, carga?}` | La aprueba y, si viene `carga` (firmada por el organizador para esa cuenta, sólo a usuarios), la encola · 400 · 404 (sin pedido) |
-| `POST /api/organizador/rechazar` · `POST /api/organizador/baja` `{cuenta}` | Borra el pedido o saca la cuenta de `cuentas` · 404 |
+| `POST /api/organizador/rechazar` · `POST /api/organizador/baja` `{cuenta}` | Borra el pedido o saca la cuenta de `cuentas` (y de `suspendidos`) · 404 |
+| `GET /api/organizador/suspendidos` · `POST /api/organizador/reactivar` `{cuenta}` | Los mineros suspendidos por el gateway con su motivo y evidencia, y reactivar uno (BC-75) · 404 |
 | `GET /api/bloques?limite=20&desde=<altura>` | Los bloques del más nuevo al más viejo, con `altura`, `transactions` como lista y `minero` y `recompensa` sacados de la coinbase |
 | `GET /api/bloques/<hash>` | El bloque con su `altura` · 404 |
 | `GET /api/saldos` · `GET /api/saldos/<usuario>` | Saldos confirmados; un usuario que no existe tiene 0 |

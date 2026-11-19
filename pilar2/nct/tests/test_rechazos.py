@@ -4,7 +4,7 @@ import json
 
 from comun import contrato
 from comun.tests.claves import CUENTA
-from nct.tests.escenario import datos, minar, recibida, saldo, tarea_en_curso
+from nct.tests.escenario import bloque_ajeno, datos, minar, recibida, saldo, tarea_en_curso
 
 
 def rearmada(redis, publicador, vieja):
@@ -61,15 +61,15 @@ def test_si_cambio_la_punta_el_bloque_no_entra_y_la_caja_se_vuelve_a_armar(armar
     nct = armar()
     vieja = tarea_en_curso(redis, nct)
     solucion = minar(redis, vieja)
-    redis.rpush("cadena", "otro-bloque")  # entró otro bloque antes (por ejemplo, de una tarea vencida)
+    otro = bloque_ajeno(redis)  # entró otro bloque antes (por ejemplo, de una tarea vencida)
 
     nct.procesar_solucion(solucion)
 
-    assert redis.lrange("cadena", 1, -1) == ["otro-bloque"]
+    assert redis.lrange("cadena", 1, -1) == [otro]
     assert redis.hget(f"tarea:{vieja}", "estado") == "descartada"
     assert saldo(redis, "minero") == 0
     nueva = rearmada(redis, publicador, vieja)
-    assert nueva["previous_hash"] == "otro-bloque"
+    assert nueva["previous_hash"] == otro
     assert redis.hget(f"tarea:{nueva['tarea']}", "caja") == redis.lindex("cajas", 0)
 
 

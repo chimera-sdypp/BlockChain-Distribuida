@@ -112,45 +112,91 @@ def test_tofu_inicia_lee_y_aplica_la_cantidad():
 
 
 class HashesFalsos:
-    """Los HSET/HGETALL/HSETNX/HDEL que usan las claves de las VMs."""
+    """Los HSET/HGET/HGETALL/HEXISTS/HDEL/GET/SET que usan las claves de las VMs."""
 
     def __init__(self):
-        self.hashes = {}
+        self.hashes, self.valores = {}, {}
 
     def hgetall(self, clave):
         return dict(self.hashes.get(clave, {}))
 
-    def hset(self, clave, mapping):
-        self.hashes.setdefault(clave, {}).update(mapping)
+    def hget(self, clave, campo):
+        return self.hashes.get(clave, {}).get(campo)
 
-    def hsetnx(self, clave, campo, valor):
-        if campo in self.hashes.setdefault(clave, {}):
-            return 0
-        self.hashes[clave][campo] = valor
-        return 1
+    def hexists(self, clave, campo):
+        return campo in self.hashes.get(clave, {})
+
+    def hset(self, clave, campo=None, valor=None, mapping=None):
+        self.hashes.setdefault(clave, {}).update(mapping or {campo: valor})
 
     def hdel(self, clave, campo):
         self.hashes.get(clave, {}).pop(campo, None)
 
+    def get(self, clave):
+        return self.valores.get(clave)
 
-def test_cada_vm_tiene_su_clave_aprobada_como_minero_y_se_da_de_baja_al_borrarla():
-    redis = HashesFalsos()
-    claves = ClavesVMs(redis)
+    def set(self, clave, valor, nx=False):
+        if nx and clave in self.valores:
+            return None
+        self.valores[clave] = valor
+        return True
+
+
+class BackendFalso:
+    """El backend que ve el escalador: valida la firma del acta y lleva el nonce de su clave."""
+
+    def __init__(self):
+        self.recibidas, self.nonces = [], {}
+
+    def nonce(self, cuenta):
+        return self.nonces.get(cuenta, 0)
+
+    def mandar(self, tx):
+        assert contrato.validar_acta(tx, "f" * 64) == [] and contrato.es_delegada(tx)
+        self.recibidas.append(tx)
+        self.nonces[tx["origen"]] = tx["nonce"]
+        return 202, {"id": tx["id"]}
+
+
+def con_permiso(redis, claves, prefijo="minero-cpu-"):
+    redis.hset("permisos", claves.cuenta, prefijo)
+
+
+def test_cada_vm_tiene_su_clave_y_se_da_de_alta_en_la_cadena_con_un_alta_delegada():
+    redis, backend = HashesFalsos(), BackendFalso()
+    claves = ClavesVMs(redis, backend)
+    assert redis.valores["escalador:clave"] == claves.privada  # la genera la primera vez y la guarda
+    con_permiso(redis, claves)
     dos = claves.preparar(2, ahora=AHORA)
     assert sorted(dos) == ["minero-cpu-0", "minero-cpu-1"] and len(set(dos.values())) == 2
-    cuentas = {cuenta: json.loads(d) for cuenta, d in redis.hashes["cuentas"].items()}
-    assert cuentas == {contrato.clave_publica(p): {"tipo": "minero", "nombre": n, "alta": AHORA} for n, p in dos.items()}
-    # otro pod del escalador, o un apply repetido: las mismas claves
-    assert ClavesVMs(redis).preparar(3, ahora=AHORA + 60) == {**dos, "minero-cpu-2": redis.hashes[CLAVES]["minero-cpu-2"]}
+    assert [(tx["destino"], tx["datos"], tx["nonce"]) for tx in backend.recibidas] == [
+        (contrato.clave_publica(dos[n]), f"minero:{n}", i + 1) for i, n in enumerate(sorted(dos))]
+    assert "cuentas" not in redis.hashes  # el escalador no escribe `cuentas`: lo hace el consenso
+    # Ya en la cadena (o en camino): no se vuelven a pedir. Otro pod usa las mismas claves.
+    for privada in dos.values():
+        redis.hset("cuentas", contrato.clave_publica(privada), "{}")
+    tres = ClavesVMs(redis, backend).preparar(3, ahora=AHORA + 60)
+    assert tres == {**dos, "minero-cpu-2": redis.hashes[CLAVES]["minero-cpu-2"]} and len(backend.recibidas) == 3
 
     assert claves.retirar(1) == ["minero-cpu-1", "minero-cpu-2"]
     assert list(redis.hashes[CLAVES]) == ["minero-cpu-0"]
-    assert list(redis.hashes["cuentas"]) == [contrato.clave_publica(dos["minero-cpu-0"])]
+    bajas = [tx for tx in backend.recibidas if tx["id"].startswith("baja-")]
+    assert [tx["destino"] for tx in bajas] == [contrato.clave_publica(dos["minero-cpu-1"])]  # la 2 no estaba en la cadena
+
+
+def test_sin_permiso_no_manda_nada_y_lo_avisa(caplog):
+    redis, backend = HashesFalsos(), BackendFalso()
+    claves = ClavesVMs(redis, backend, privada="1" * 64)
+    with caplog.at_level("ERROR", logger="escalador"):
+        assert len(claves.preparar(1, ahora=AHORA)) == 1
+    assert backend.recibidas == [] and "python -m claves permiso" in caplog.text
 
 
 def test_tofu_le_pasa_las_claves_por_entorno_y_da_de_baja_las_que_sobran():
-    redis, ejecutar = HashesFalsos(), Ejecutar({"apply": "Apply complete!"})
-    tofu = Tofu("/tofu", claves=ClavesVMs(redis), ejecutar=ejecutar)
+    redis, ejecutar, backend = HashesFalsos(), Ejecutar({"apply": "Apply complete!"}), BackendFalso()
+    claves = ClavesVMs(redis, backend)
+    con_permiso(redis, claves)
+    tofu = Tofu("/tofu", claves=claves, ejecutar=ejecutar)
     tofu.aplicar(2)
     pasadas = json.loads(ejecutar.entornos[-1]["TF_VAR_claves"])
     assert pasadas == redis.hashes[CLAVES] and len(pasadas) == 2

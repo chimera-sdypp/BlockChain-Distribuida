@@ -20,7 +20,7 @@ AHORA = 1_800_000_000
 def tarea(id_="t1"):
     t = VECTOR["tarea"]
     return {"tarea": id_, "previous_hash": t["previous_hash"], "altura": t["altura"],
-            "transacciones": t["transacciones"], "timestamp": t["timestamp"]}
+            "transacciones": t["transacciones"], "timestamp": t["timestamp"], "raiz_estado": t["raiz_estado"]}
 
 
 def ajustes(**cambios):
@@ -80,7 +80,8 @@ def test_con_lo_que_anota_el_texto_de_cada_minero_es_el_del_contrato():
     redis = RedisFalso()
     t = tarea()
     redis.hashes["tarea:t1"] = {"previous_hash": t["previous_hash"], "timestamp": str(t["timestamp"]),
-                                "altura": str(t["altura"]), "transacciones": json.dumps(t["transacciones"])}
+                                "altura": str(t["altura"]), "transacciones": json.dumps(t["transacciones"]),
+                                "raiz_estado": t["raiz_estado"]}
     correr(t, redis, ajustar=False, prefijo_base=4)
     texto = contrato.texto_para(contrato.tarea_guardada(redis.hashes["tarea:t1"]), VECTOR["minero"])
     assert texto == VECTOR["texto"]

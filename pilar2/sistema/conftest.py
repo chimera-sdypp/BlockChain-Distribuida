@@ -6,7 +6,8 @@ Se saltean si no está SISTEMA_URL. Las corre k8s/probar_sistema.sh, que arma la
   NAMESPACE     donde está desplegado (blockchain), para aprobar cuentas y las pruebas de falla con kubectl
 
 Contrato v2: las transferencias van firmadas. alice, bob y carol son las cuentas de prueba del génesis
-(comun/tests/claves.py); las demás se generan acá y, si hace falta, se aprueban con k8s/aprobar.sh.
+(comun/tests/claves.py); las demás se generan acá. Contrato v3: se aprueban con un `alta-<n>` firmado por el
+organizador (ORGANIZADOR_ARCHIVO, o la de prueba que usa el k3s), que entra en la cadena.
 """
 
 import json
@@ -29,7 +30,6 @@ URL = os.environ.get("SISTEMA_URL", "").rstrip("/")
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
 NAMESPACE = os.environ.get("NAMESPACE", "blockchain")
 CERRADOS = ("confirmada", "rechazada")
-APROBAR = Path(__file__).parents[1] / "k8s" / "aprobar.sh"
 DEL_GENESIS = ("alice", "bob", "carol")
 
 
@@ -73,11 +73,44 @@ def cuenta(usuario):
     return CUENTA[usuario] if usuario in DEL_GENESIS else usuario
 
 
-def aprobar(cuenta_, tipo="usuario", nombre=""):
-    """Lo que hace el organizador (BC-58): la cuenta entra en `cuentas` del Redis desplegado."""
-    resultado = subprocess.run([str(APROBAR), cuenta_, tipo, nombre], capture_output=True, text=True, timeout=60,
-                               env=dict(os.environ, NAMESPACE=NAMESPACE))
-    assert resultado.returncode == 0, resultado.stderr
+def _organizador():
+    archivo = os.environ.get("ORGANIZADOR_ARCHIVO")
+    return Path(archivo).read_text().strip() if archivo else PRIVADA["organizador"]
+
+
+ORGANIZADOR = _organizador()
+_actas = threading.Lock()  # los nonces de «emision» van en orden: un acta a la vez
+
+
+def acta(tx_de, esperar_bloque=False):
+    """Firma y manda un acta (o carga) del organizador con el nonce de «emision» siguiente; espera que la valide el
+    NCT y, con `esperar_bloque`, que entre en un bloque. `tx_de(numero)` arma la transacción."""
+    with _actas:
+        numero = api("GET", "/api/cuentas/emision")[1]["nonce"] + 1
+        codigo, cuerpo = api("POST", "/api/transacciones", tx_de(numero))
+        assert codigo == 202, cuerpo
+        limite = time.monotonic() + 30
+        while api("GET", f"/api/transacciones/{cuerpo['id']}")[1]["estado"] == "recibida":
+            assert time.monotonic() < limite, "el NCT no validó el acta"
+            time.sleep(0.3)
+    if esperar_bloque:
+        tx, _ = esperar(cuerpo["id"], limite=240)
+        assert tx["estado"] == "confirmada", tx
+    return cuerpo["id"]
+
+
+def aprobar(cuenta_, tipo="usuario", nombre="", esperar_bloque=None):
+    """Lo que hace el organizador (v3): `alta-<n>` firmada. Un minero opera apenas el NCT la valida; un usuario,
+    cuando entra en un bloque (por defecto se espera eso para los usuarios)."""
+    nombre = nombre or cuenta_[:12]
+    esperar_bloque = tipo != "minero" if esperar_bloque is None else esperar_bloque
+    ahora = int(time.time())
+    return acta(lambda n: contrato.alta(ORGANIZADOR, n, cuenta_, tipo, nombre, ahora), esperar_bloque)
+
+
+def dar_de_baja(cuenta_, esperar_bloque=False):
+    ahora = int(time.time())
+    return acta(lambda n: contrato.baja(ORGANIZADOR, n, cuenta_, "prueba", ahora), esperar_bloque)
 
 
 def nuevo_usuario(prefijo="u", aprobada=False, tipo="usuario"):

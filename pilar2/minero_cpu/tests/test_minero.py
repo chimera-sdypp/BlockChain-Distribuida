@@ -350,3 +350,45 @@ def test_con_403_vuelve_al_hello_con_su_alias_y_hace_el_bench_cuando_lo_aprueban
     assert esperar(lambda: falso.de("/bench") and falso.de("/results"))
     assert falso.de("/hello")[0]["alias"] == "cpu-prueba"
     assert [r for r, _ in falso.recibido].index("/hello") < [r for r, _ in falso.recibido].index("/tasks/next")
+
+
+class GatewayDeEpocas:
+    """Contesta /epocas/<n> con lo publicado; anota lo que se pidió."""
+
+    cuenta = CUENTA["minero"]
+
+    def __init__(self, publicadas):
+        self.publicadas, self.pedidos = publicadas, []
+
+    def pedir(self, metodo, ruta, cuerpo=None):
+        self.pedidos.append(ruta)
+        epoca = int(ruta.rsplit("/", 1)[1])
+        if epoca not in self.publicadas:
+            return 200, {"epoca": epoca, "publicada": False, "shares": 0}
+        return 200, {"epoca": epoca, "publicada": True, "shares": self.publicadas[epoca]}
+
+
+def test_el_minero_compara_los_shares_aceptados_con_los_publicados_al_cerrar_la_epoca():
+    """BC-82: si en la lista publicada le contaron menos de los que le aceptó el gateway, lo deja en el log."""
+    minero = Minero(GatewayDeEpocas({0: 7, 1: 3}), "prueba", procesos=1)
+    for altura, aceptados in ((3, 4), (9, 3), (12, 5)):
+        minero._sumar_aceptados({"altura": altura}, {"shares": aceptados})
+    minero.revisar_epocas(1)       # la época 0 se pagó: 7 aceptados, 7 publicados
+    assert minero.contados_de_menos == [] and minero.aceptados == {1: 5}
+    minero.revisar_epocas(1)       # no vuelve a preguntar por la 0
+    minero.revisar_epocas(2)       # la 1: 5 aceptados, 3 publicados
+    assert minero.contados_de_menos == [(1, 5, 3)] and minero.aceptados == {}
+    assert minero.gateway.pedidos == ["/epocas/0", "/epocas/1"]
+    minero.buscador.cerrar()
+
+
+def test_si_el_gateway_no_contesta_la_epoca_el_minero_sigue():
+    """La consulta de la época es un control: un gateway caído no puede frenar el trabajo."""
+    class Caido(GatewayDeEpocas):
+        def pedir(self, metodo, ruta, cuerpo=None):
+            raise OSError("conexión rechazada")
+    minero = Minero(Caido({}), "prueba", procesos=1)
+    minero._sumar_aceptados({"altura": 3}, {"shares": 2})
+    minero.revisar_epocas(1)
+    assert minero.aceptados == {0: 2}  # queda para la próxima
+    minero.buscador.cerrar()

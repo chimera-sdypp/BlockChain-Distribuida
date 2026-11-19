@@ -110,3 +110,11 @@ kubectl apply -k k8s
 ```
 
 Hasta que exista el TrP (BC-21 y BC-22), nadie escribe el `prefijo` en `tarea:<id>` ni publica en `soluciones`. Para probar a mano, se escribe el prefijo, se mina el nonce y se publica la solución (ver `nct/tests/escenario.py`).
+
+## Contrato v3: la cadena manda (BC-79, BC-80, BC-82)
+
+- **Actas:** las altas, bajas y permisos llegan por `transacciones` como las cargas; el NCT verifica la firma y las reglas (`estado.problema_de_acta`) y las mete en la caja. La cuenta entra en `cuentas` recién cuando se confirma el bloque; mientras, un alta validada queda en `altas:en_camino`.
+- **La cadena en memoria:** cada réplica sigue la cadena con `comun/estado.py` (al arrancar verifica todas las firmas, desde el génesis o desde `estado:snapshot`). Antes de armar un bloque saca de la caja lo que no vale contra la cadena (`blockchain_tx_sacadas_de_caja_total`) y pone la `raiz_estado`.
+- **El caché pierde:** al arrancar (con el lock `estado:revision`) y cada `REVISAR_ESTADO_SEGUNDOS` (60) compara `saldos`, `nonces:confirmados`, `cuentas` y `permisos` con la cadena; si difieren, los pisa y suma `blockchain_estado_divergencias_total{campo}`. Al arrancar también recalcula `comprometido` desde las pendientes. Un bloque guardado que no cumple el contrato suma `blockchain_cadena_problemas_total`.
+- **Shares publicados:** en el primer bloque de cada época va `shares-<e>` con la raíz de la lista que queda en `epoca:<e>` y sirve `/api/epocas/<e>`.
+- Variables nuevas: `REVISAR_ESTADO_SEGUNDOS` (60, 0 la apaga) y `SNAPSHOT_CADA` (100).

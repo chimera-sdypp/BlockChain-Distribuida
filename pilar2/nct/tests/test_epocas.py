@@ -1,20 +1,17 @@
-"""BC-63: al empezar cada época, el NCT paga la participación por shares de la anterior."""
+"""BC-63: al empezar cada época, el NCT paga la participación por shares de la anterior. BC-82: con la lista
+de shares comprometida en la cadena (`shares-<e>`), para que cualquiera recalcule el pago."""
 
 import json
 
 from comun import contrato
 from comun.tests.claves import CUENTA
-from nct.tests.escenario import minar, recibida, saldo
-
-FIN_DE_EPOCA = 1793836900  # el timestamp del último bloque de la época que se paga
+from comun import estado as estado_cadena
+from nct.tests.escenario import minar, punta_timestamp, recibida, rellenar, saldo
 
 
 def hasta_la_altura(redis, nct, altura):
-    """Génesis y bloques de relleno hasta que la tarea siguiente sea la de `altura`."""
-    nct.cargar_genesis()
-    for n in range(1, altura):
-        redis.rpush("cadena", f"bloque-{n}")
-    redis.hset(f"bloque:bloque-{altura - 1}", "timestamp", FIN_DE_EPOCA)
+    """Génesis y bloques minados de verdad hasta que la tarea siguiente sea la de `altura`."""
+    rellenar(redis, nct, altura)
 
 
 def shares(redis, epoca, **por_minero):
@@ -43,13 +40,16 @@ def test_el_primer_bloque_de_la_epoca_paga_la_anterior_segun_los_shares(armar, r
     tarea = tarea_de(redis, nct, publicador)
 
     assert tarea["altura"] == 10
-    primeras = tarea["transacciones"][:2]
-    assert primeras == [contrato.participacion(0, m, monto, FIN_DE_EPOCA)
-                        for m, monto in sorted({CUENTA["minero"]: 75, CUENTA["minero2"]: 25}.items())]
-    assert tarea["transacciones"][2]["origen"] == CUENTA["alice"]  # después, las de la caja
+    fin_de_epoca = punta_timestamp(redis)  # el timestamp del último bloque de la época que se paga
     detalle = json.loads(redis.hget("epoca:0", "detalle"))
     assert detalle[CUENTA["minero"]] == {"shares": 30, "racha": 1, "monto": 75}
     assert redis.hget("epoca:0", "fondo") == "100"
+    # Primero la lista de shares comprometida (BC-82), después los pagos y después la caja.
+    assert tarea["transacciones"][0] == contrato.shares_epoca(0, 100, contrato.raiz_shares(detalle), fin_de_epoca)
+    assert redis.hget("epoca:0", "raiz") == contrato.raiz_shares(detalle)
+    assert tarea["transacciones"][1:3] == [contrato.participacion(0, m, monto, fin_de_epoca)
+                                           for m, monto in sorted({CUENTA["minero"]: 75, CUENTA["minero2"]: 25}.items())]
+    assert tarea["transacciones"][3]["origen"] == CUENTA["alice"]
 
 
 def test_en_medio_de_una_epoca_no_se_paga_nada(armar, redis, publicador):
@@ -100,7 +100,12 @@ def test_el_pago_entra_con_el_bloque_y_suma_al_historial(armar, redis, publicado
 
     assert saldo(redis, "minero2") == 100
     assert redis.hget(f"tx:part-0-{CUENTA['minero2']}", "estado") == "confirmada"
+    assert redis.hget("tx:shares-0", "estado") == "confirmada"
     assert redis.hget(f"historial:{CUENTA['minero2']}", "recompensas") == "100"
+    # La cadena entera, con la lista publicada, pasa la verificación estricta de un nodo.
+    reglas = estado_cadena.Reglas(organizador=CUENTA["organizador"], shares=estado_cadena.shares_de_redis(redis))
+    _, malos = estado_cadena.reconstruir((b for _, b in estado_cadena.bloques_de_redis(redis)), reglas)
+    assert malos == []
 
 
 def test_rearmar_la_tarea_da_los_mismos_pagos(armar, redis, publicador):
@@ -113,8 +118,8 @@ def test_rearmar_la_tarea_da_los_mismos_pagos(armar, redis, publicador):
 
     [*_, segunda] = publicador.tareas()
     assert segunda["tarea"] != primera["tarea"]
-    assert [tx for tx in segunda["transacciones"] if tx["id"].startswith("part-")] == \
-        [tx for tx in primera["transacciones"] if tx["id"].startswith("part-")]
+    assert [tx for tx in segunda["transacciones"] if tx["id"].startswith(("part-", "shares-"))] == \
+        [tx for tx in primera["transacciones"] if tx["id"].startswith(("part-", "shares-"))]
 
 
 def test_una_epoca_no_se_paga_dos_veces(armar, redis, publicador):

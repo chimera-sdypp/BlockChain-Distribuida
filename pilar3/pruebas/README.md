@@ -1,4 +1,4 @@
-# Pruebas de carga y escalabilidad (BC-38 a BC-42, BC-59, BC-76)
+# Pruebas de carga y escalabilidad (BC-38 a BC-42, BC-59, BC-76, BC-85)
 
 | Carpeta / archivo | Qué es |
 |---|---|
@@ -11,6 +11,7 @@
 | [`dificultad.py`](dificultad.py) y `grafico_dificultad.py` | BC-60: ajuste de dificultad (convergencia y caída sin GPU) |
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`trampas.py`](trampas.py) | BC-76: mineros que mienten a propósito contra el sistema desplegado |
+| [`operador.py`](operador.py) | BC-85: lo que haría el operador de la nube (tocar Redis, editar o reescribir bloques, inflar shares, un validador que firma dos historias) y que se note |
 | [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
@@ -322,3 +323,27 @@ Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en
 - Con sólo la «GPU» falsa, el escalador pidió 1 VM y, a los 240 s sin bloque, el prefijo bajó de 6 a 5 por emergencia.
 - `bench-bajo` declaró 52,6 kH/s (techo 5). Con el tope en 8, el prefijo de cada bloque fue 5 (ocho bloques), 6 (cinco) y 7: el tiempo pasó el techo. Con la regla anterior se quedaba en 5.
 
+
+## El operador de la nube (BC-85)
+
+[`operador.py`](operador.py) hace de operador tramposo: toca Redis desde un pod del TrP, edita o reescribe bloques con el NCT apagado, infla una lista de shares y hace que un validador firme dos historias. Mira qué ven el NCT, los dos nodos del cluster (`/nodos/0` y `/nodos/1`), un nodo nuevo que arranca de cero y tres validadores locales (puertos 8091 a 8093), y deja todo como estaba. Necesita la cadena v3, la clave de organizador de prueba (la del k3s) y arranca su propio minero CPU.
+
+```bash
+KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/operador.py \
+    --backend http://localhost --gateway http://localhost:8081   # [--solo saldo,alta,editado,reescrita,epoca,invalido,deshacer,sin-validadores]
+```
+
+| Escenario | Qué hace el operador | Qué se comprueba |
+|---|---|---|
+| `saldo` | `HINCRBY saldos` y gastar lo inventado | El NCT lo rechaza contra la cadena, corrige el caché y lo deja en el log |
+| `alta` | `HSET cuentas` sin un alta firmada | La transferencia se rechaza y la revisión saca la cuenta |
+| `editado` | Inflar la coinbase del bloque 2 en Redis | Un nodo nuevo rechaza el bloque 2: el hash no sale |
+| `reescrita` | Reemplazar la punta por otro bloque minado | Los nodos y los validadores ven el conflicto y no firman |
+| `epoca` | 50 shares más para un minero en la lista publicada | La lista no da la raíz que quedó en la cadena |
+| `invalido` | Agregar un bloque con una carga sin la firma del organizador | Los nodos lo rechazan y no se finaliza |
+| `deshacer` | Reemplazar un bloque finalizado y hacer firmar a un validador | 409 y la prueba de la doble firma; los otros dos no firman; la finalidad no retrocede |
+| `sin-validadores` | Apagar los validadores | Los bloques siguen saliendo; al volver, finalizan |
+
+Resultados en [`resultados/operador.csv`](resultados/operador.csv) y el detalle en [`resultados/operador.log`](resultados/operador.log).
+
+**19/11, en el k3s con la v3: 16 de 16.** Lo que el operador sí puede hacer sigue igual: no incluir transacciones, elegir el prefijo y apagar el sistema (ver [el modelo de confianza](../../pilar2/CONTRATO.md#modelo-de-confianza-el-operador-de-la-nube-bc-85)).

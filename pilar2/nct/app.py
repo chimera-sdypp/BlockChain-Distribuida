@@ -6,6 +6,11 @@ coinbase de su ganador adentro (BC-62). Al empezar cada época paga la participa
 la anterior (BC-63). Las 2 réplicas corren lo mismo: se coordinan sólo por Redis, con scripts Lua
 (atómicos) y SET NX.
 
+Contrato v3 (BC-79, BC-80, BC-82): las altas, bajas y permisos son transacciones firmadas que entran en los
+bloques; cada réplica sigue la cadena en memoria (comun/estado.py) y, antes de armar un bloque, saca de la caja lo
+que no vale contra la cadena y pone la raíz de estado. `saldos`, `cuentas`, `nonces:confirmados` y `permisos` son
+caché: al arrancar y cada tanto se comparan con la cadena, y si difieren gana la cadena.
+
 A los scripts se les pasa todo como texto armado en Python: el Lua de Redis guarda los números
 como double y escribiría 10^12 como «1e+12».
 """
@@ -19,7 +24,7 @@ import uuid
 from prometheus_client import Counter, Gauge, Histogram
 from redis import exceptions as redis_errores
 
-from comun import Rabbit, Servicio, config, contrato
+from comun import Rabbit, Servicio, config, contrato, estado as estado_cadena
 
 log = logging.getLogger("nct")
 
@@ -27,18 +32,18 @@ log = logging.getLogger("nct")
 # pasan SALDOS_INICIALES con las cuentas de prueba.
 SALDOS_INICIALES = {}
 
-# Carga el génesis sólo si la cadena está vacía: con 2 réplicas arrancando juntas, entra uno. Las
-# cuentas del génesis quedan aprobadas como usuarios.
+# Carga el génesis sólo si la cadena está vacía: con 2 réplicas arrancando juntas, entra uno. El
+# organizador y las cuentas del génesis quedan en `cuentas` (el caché de lo que dice el bloque 0).
 # KEYS: cadena, saldos, bloque:<hash>, cuentas.
-# ARGV: block_hash, n campos, campo, valor…, n cuentas, (cuenta, saldo, datos de la cuenta)…
+# ARGV: block_hash, n campos, campo, valor…, n saldos, (cuenta, saldo)…, (cuenta, datos de la cuenta)…
 LUA_GENESIS = """
 if redis.call('LLEN', KEYS[1]) > 0 then return 0 end
 local n = tonumber(ARGV[2])
 for i = 3, 2 + 2 * n, 2 do redis.call('HSET', KEYS[3], ARGV[i], ARGV[i + 1]) end
-for i = 4 + 2 * n, #ARGV, 3 do
-  redis.call('HSET', KEYS[2], ARGV[i], ARGV[i + 1])
-  redis.call('HSET', KEYS[4], ARGV[i], ARGV[i + 2])
-end
+local s = tonumber(ARGV[3 + 2 * n])
+local primera = 4 + 2 * n
+for i = primera, primera + 2 * s - 1, 2 do redis.call('HSET', KEYS[2], ARGV[i], ARGV[i + 1]) end
+for i = primera + 2 * s, #ARGV, 2 do redis.call('HSET', KEYS[4], ARGV[i], ARGV[i + 1]) end
 redis.call('RPUSH', KEYS[1], ARGV[1])
 return 1
 """
@@ -47,14 +52,15 @@ return 1
 # veces el mismo saldo ni aceptar dos veces el mismo nonce. Los datos se leen de tx:<id> (lo que
 # guardó el backend), no del mensaje. Si ya no está «recibida» (mensaje reentregado), no cambia nada.
 #   - La firma la verifica Python antes: si falló, ARGV[2] trae el motivo y queda rechazada.
-#   - Una transferencia necesita la cuenta origen aprobada (`cuentas`); una carga (origen «emision»)
-#     no mira saldo ni cuenta, sólo que su número siga a la última carga.
+#   - Una transferencia necesita la cuenta origen aprobada (`cuentas`); una carga o un acta del
+#     organizador (origen «emision») no mira saldo ni cuenta, sólo que su número siga al último. Un acta
+#     delegada (ARGV[4] = 1) tampoco mira la cuenta: el permiso lo verificó Python antes.
 #   - El nonce tiene que ser el último aceptado + 1. Uno menor o igual es un reenvío («nonce
 #     repetido»). Uno mayor llegó antes que el anterior (dos réplicas consumen en paralelo): queda en
 #     espera:<cuenta> hasta que entre el que falta; el ticker rechaza las que esperan de más.
 #   - Al aceptar una, se destraban las que esperaban el nonce siguiente.
 # KEYS: tx:<id>, saldos, comprometido, tx:pendientes, nonces, cuentas, tx:en_espera.
-# ARGV: id, motivo si la firma no sirve (o vacío), ahora.
+# ARGV: id, motivo si la firma no sirve (o vacío), ahora, 1 si es un acta.
 # Devuelve {estado de la tx, (id, estado, motivo) de cada una que cambió…}.
 LUA_VALIDAR = """
 local cambios = {}
@@ -68,7 +74,7 @@ end
 local function aceptar(id)
   local clave = 'tx:' .. id
   local origen, monto, nonce = unpack(redis.call('HMGET', clave, 'origen', 'monto', 'nonce'))
-  if origen ~= 'emision' then
+  if origen ~= 'emision' and tonumber(monto) > 0 then
     local saldo = tonumber(redis.call('HGET', KEYS[2], origen) or '0')
     local comprometido = tonumber(redis.call('HGET', KEYS[3], origen) or '0')
     if saldo - comprometido < tonumber(monto) then
@@ -90,7 +96,7 @@ if estado ~= 'recibida' then return {estado or ''} end
 if ARGV[2] ~= '' then rechazar(id, ARGV[2]) return {'rechazada', unpack(cambios)} end
 local origen, nonce = unpack(redis.call('HMGET', KEYS[1], 'origen', 'nonce'))
 nonce = tonumber(nonce)
-if origen ~= 'emision' and redis.call('HEXISTS', KEYS[6], origen) == 0 then
+if origen ~= 'emision' and ARGV[4] ~= '1' and redis.call('HEXISTS', KEYS[6], origen) == 0 then
   rechazar(id, 'cuenta no aprobada')
   return {'rechazada', unpack(cambios)}
 end
@@ -177,12 +183,17 @@ return 0
 # sería un doble gasto, o un pago de participación repetido). Todo en una sola escritura atómica:
 # con 2 réplicas nunca entran dos bloques sobre la misma punta, y una solución repetida no guarda
 # nada dos veces.
-# Los saldos salen de las transacciones del bloque: una transferencia le resta al origen y le suma
-# al destino; una de emisión (coinbase, participación o carga) sólo le suma al destino. Se anota el
-# historial (BC-54). Cada tx:<id> queda como puntero, {estado: confirmada, bloque} (BC-70): su
-# contenido ya está en el bloque. La coinbase y la participación no tenían tx:<id>: nacen así.
+# El caché del estado (v3) sale de las transacciones del bloque, según su efecto (lo calcula Python):
+#   transferencia: le resta al origen, le suma al destino y baja lo comprometido;
+#   emitir: le suma al destino (coinbase, participación o carga);
+#   alta / baja: la cuenta entra o sale de `cuentas` (y de los pedidos y las altas en camino);
+#   permiso: la clave entra o sale de `permisos`; nada: shares de la época.
+# Y en `nonces:confirmados`, el nonce de quien firmó. Se anota el historial (BC-54). Cada tx:<id> queda
+# como puntero, {estado: confirmada, bloque} (BC-70): su contenido ya está en el bloque. La coinbase,
+# la participación y los shares no tenían tx:<id>: nacen así.
 # KEYS: tarea:<id>, cadena, cajas, saldos, comprometido, tarea:actual, bloque:<hash>.
-# ARGV: id_tarea, block_hash, n campos, campo, valor…, (id, origen, destino, monto, timestamp)…,
+# ARGV: id_tarea, block_hash, n campos, campo, valor…,
+#       (id, efecto, origen, destino, monto, nonce_de, nonce, extra)…,
 #       los campos que se le sacan a tx:<id> y, último, cuántos son.
 # Devuelve {resultado, block_hash, altura}: «confirmada», «repetida» (ya estaba confirmada: con su
 # bloque, para repetir el aviso) o «descartada» (la tarea no seguía en curso, cambió la punta o
@@ -205,24 +216,37 @@ local primera = 4 + 2 * n
 local k = tonumber(ARGV[#ARGV])  -- los campos que se le sacan a tx:<id>, y su cantidad al final
 local ultima = #ARGV - k - 1
 local copiados = {unpack(ARGV, ultima + 1, #ARGV - 1)}
-for i = primera, ultima, 5 do
+for i = primera, ultima, 8 do
   if redis.call('HGET', 'tx:' .. ARGV[i], 'estado') == 'confirmada' then return descartar() end
 end
 local altura = redis.call('LLEN', KEYS[2])
 for i = 4, 3 + 2 * n, 2 do redis.call('HSET', KEYS[7], ARGV[i], ARGV[i + 1]) end
 redis.call('HSET', KEYS[7], 'altura', altura)
 redis.call('RPUSH', KEYS[2], ARGV[2])
-for i = primera, ultima, 5 do
-  local id, origen, destino, monto, timestamp = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3], ARGV[i + 4]
-  local clave = 'tx:' .. id
-  redis.call('HINCRBY', KEYS[4], destino, monto)
-  if origen == 'emision' then
-    if string.sub(id, 1, 3) == 'cb-' then redis.call('HINCRBY', 'historial:' .. destino, 'bloques', 1) end
-    if string.sub(id, 1, 6) ~= 'carga-' then redis.call('HINCRBY', 'historial:' .. destino, 'recompensas', monto) end
-  else
+for i = primera, ultima, 8 do
+  local id, efecto, origen, destino, monto = ARGV[i], ARGV[i + 1], ARGV[i + 2], ARGV[i + 3], ARGV[i + 4]
+  local nonce_de, nonce, extra = ARGV[i + 5], ARGV[i + 6], ARGV[i + 7]
+  if efecto == 'transferencia' then
+    redis.call('HINCRBY', KEYS[4], destino, monto)
     redis.call('HINCRBY', KEYS[4], origen, -tonumber(monto))
     redis.call('HINCRBY', KEYS[5], origen, -tonumber(monto))
+  elseif efecto == 'emitir' then
+    redis.call('HINCRBY', KEYS[4], destino, monto)
+    if string.sub(id, 1, 3) == 'cb-' then redis.call('HINCRBY', 'historial:' .. destino, 'bloques', 1) end
+    if string.sub(id, 1, 6) ~= 'carga-' then redis.call('HINCRBY', 'historial:' .. destino, 'recompensas', monto) end
+  elseif efecto == 'alta' then
+    redis.call('HSET', 'cuentas', destino, extra)
+    redis.call('HDEL', 'altas:pendientes', destino)
+    redis.call('HDEL', 'altas:en_camino', destino)
+  elseif efecto == 'baja' then
+    redis.call('HDEL', 'cuentas', destino)
+    redis.call('HDEL', 'suspendidos', destino)
+    redis.call('HDEL', 'altas:en_camino', destino)
+  elseif efecto == 'permiso' then
+    if extra == '' then redis.call('HDEL', 'permisos', destino) else redis.call('HSET', 'permisos', destino, extra) end
   end
+  if nonce_de ~= '' then redis.call('HSET', 'nonces:confirmados', nonce_de, nonce) end
+  local clave = 'tx:' .. id
   redis.call('HDEL', clave, unpack(copiados))
   redis.call('HSET', clave, 'estado', 'confirmada', 'bloque', ARGV[2])
 end
@@ -230,6 +254,47 @@ if redis.call('LINDEX', KEYS[3], 0) == redis.call('HGET', KEYS[1], 'caja') then 
 redis.call('HSET', KEYS[1], 'estado', 'confirmada', 'block_hash', ARGV[2])
 if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
 return {'confirmada', ARGV[2], altura}
+"""
+
+# Una transacción validada («pendiente») que al armar el bloque no vale contra la cadena (v3): queda
+# rechazada, se le devuelve lo comprometido y el nonce de quien firmó vuelve atrás, así puede firmar
+# otra con ese número. Si era un alta, deja de estar en camino.
+# KEYS: tx:<id>, comprometido, nonces, altas:en_camino. ARGV: motivo, id. Devuelve 1 si la rechazó.
+LUA_RECHAZAR_PENDIENTE = """
+if redis.call('HGET', KEYS[1], 'estado') ~= 'pendiente' then return 0 end
+local origen, destino, monto, nonce = unpack(redis.call('HMGET', KEYS[1], 'origen', 'destino', 'monto', 'nonce'))
+redis.call('HSET', KEYS[1], 'estado', 'rechazada', 'motivo', ARGV[1])
+if origen ~= 'emision' and tonumber(monto) > 0 then redis.call('HINCRBY', KEYS[2], origen, -tonumber(monto)) end
+local ultimo = tonumber(redis.call('HGET', KEYS[3], origen) or '0')
+if ultimo >= tonumber(nonce) then redis.call('HSET', KEYS[3], origen, tonumber(nonce) - 1) end
+if string.sub(ARGV[2], 1, 5) == 'alta-' then redis.call('HDEL', KEYS[4], destino) end
+return 1
+"""
+
+# Recalcula `comprometido` desde las transacciones pendientes (en tx:pendientes y en las cajas).
+# KEYS: tx:pendientes, cajas, comprometido. Devuelve cuántas cuentas cambiaron.
+LUA_COMPROMETIDO = """
+local suma = {}
+local function contar(id)
+  local estado, origen, monto = unpack(redis.call('HMGET', 'tx:' .. id, 'estado', 'origen', 'monto'))
+  if estado == 'pendiente' and origen ~= 'emision' and tonumber(monto) > 0 then
+    suma[origen] = (suma[origen] or 0) + tonumber(monto)
+  end
+end
+for _, id in ipairs(redis.call('LRANGE', KEYS[1], 0, -1)) do contar(id) end
+for _, caja in ipairs(redis.call('LRANGE', KEYS[2], 0, -1)) do
+  for _, id in ipairs(cjson.decode(caja)) do contar(id) end
+end
+local actual, cambios = {}, 0
+local guardado = redis.call('HGETALL', KEYS[3])
+for i = 1, #guardado, 2 do actual[guardado[i]] = tonumber(guardado[i + 1]) end
+for cuenta, monto in pairs(actual) do if (suma[cuenta] or 0) ~= monto then cambios = cambios + 1 end end
+for cuenta, _ in pairs(suma) do if actual[cuenta] == nil then cambios = cambios + 1 end end
+if cambios > 0 then
+  redis.call('DEL', KEYS[3])
+  for cuenta, monto in pairs(suma) do redis.call('HSET', KEYS[3], cuenta, string.format('%d', monto)) end
+end
+return cambios
 """
 
 # Cierra una tarea en curso que no terminó en bloque («sin_solucion» o «rechazada») y le pasa la
@@ -283,11 +348,41 @@ TX_PENDIENTES = Gauge("blockchain_tx_pendientes", "Transacciones validadas que e
 TX_EN_CAJAS = Gauge("blockchain_tx_en_cajas",
                     "Transacciones apiladas en cajas esperando bloque (las dos réplicas reportan lo mismo: usar max)")
 TX_RECHAZADAS = Counter("blockchain_tx_rechazadas", "Transacciones rechazadas por el NCT", ["motivo"])
+# v3: el caché contra la cadena.
+DIVERGENCIAS = Counter("blockchain_estado_divergencias", "Valores del caché de Redis que no coincidían con la cadena "
+                       "(y se corrigieron)", ["campo"])
+CADENA_PROBLEMAS = Counter("blockchain_cadena_problemas", "Bloques de la cadena que no cumplen las reglas del "
+                           "contrato (alguien los tocó en Redis)")
+SACADAS = Counter("blockchain_tx_sacadas_de_caja", "Transacciones validadas que no valían contra la cadena al "
+                  "armar el bloque (el caché estaba mal o la cuenta se dio de baja)")
 
 
 def plano(diccionario):
     """{k: v} → [k1, v1, k2, v2, …] como texto, para pasarle a un script Lua."""
     return [str(x) for par in diccionario.items() for x in par]
+
+
+def movimiento(tx):
+    """Los 8 valores de una transacción del bloque para LUA_CONSENSO: id, efecto, origen, destino, monto,
+    de quién es el nonce (o vacío), el nonce y el extra (los datos de la cuenta en un alta, el prefijo en un permiso)."""
+    tipo = contrato.tipo_de(tx)
+    firmante = contrato.EMISION if tx["origen"] == contrato.EMISION else tx["origen"]
+    efecto, nonce_de, extra = "nada", "", ""
+    if tipo == "transferencia":
+        efecto, nonce_de = "transferencia", tx["origen"]
+    elif tipo in ("coinbase", "participacion"):
+        efecto = "emitir"
+    elif tipo == "carga":
+        efecto, nonce_de = "emitir", contrato.EMISION
+    elif tipo == "alta":
+        tipo_cuenta, nombre = contrato.datos_alta(tx)
+        efecto, nonce_de = "alta", firmante
+        extra = json.dumps({"tipo": tipo_cuenta, "nombre": nombre, "alta": tx["timestamp"]})
+    elif tipo == "baja":
+        efecto, nonce_de = "baja", firmante
+    elif tipo == "permiso":
+        efecto, nonce_de, extra = "permiso", firmante, tx.get("datos", "")
+    return [str(x) for x in (tx["id"], efecto, tx["origen"], tx["destino"], tx["monto"], nonce_de, tx["nonce"], extra)]
 
 
 def campos_bloque(bloque):
@@ -298,14 +393,15 @@ def campos_bloque(bloque):
 def datos_tarea(tarea, transacciones):
     """tarea:<id> como lo devuelve Redis → lo que necesita contrato.texto_para."""
     return {"previous_hash": tarea["previous_hash"], "timestamp": int(tarea["timestamp"]),
-            "altura": int(tarea["altura"]), "prefijo": tarea["prefijo"], "transacciones": transacciones}
+            "altura": int(tarea["altura"]), "prefijo": tarea["prefijo"], "transacciones": transacciones,
+            "raiz_estado": tarea["raiz_estado"]}
 
 
 class Nct:
     def __init__(self, redis, publicador, saldos_iniciales=None, organizador="", wait_replicas=1, wait_ms=1000,
                  ventana=VENTANA, tx_por_caja=TX_POR_CAJA, tarea_vence=TAREA_VENCE, espera_nonce=ESPERA_NONCE,
                  fondo_epoca=contrato.FONDO_EPOCA, tarea_guarda=contrato.TAREA_GUARDA,
-                 emergencia=contrato.EMERGENCIA_SEGUNDOS):
+                 emergencia=contrato.EMERGENCIA_SEGUNDOS, revisar_cada=60, snapshot_cada=100):
         self.redis, self.publicador = redis, publicador
         self.saldos_iniciales = SALDOS_INICIALES if saldos_iniciales is None else saldos_iniciales
         self.organizador = organizador
@@ -315,6 +411,14 @@ class Nct:
         # BC-73: una tarea sin bloque vence a los `emergencia` segundos (0 = sólo a los `tarea_vence`) y se
         # rearma la misma caja; el TrP le baja un carácter por cada `emergencia` desde que se armó la caja.
         self.emergencia = emergencia
+        # v3: la cadena en memoria (verificando firmas sólo al arrancar) y cada cuánto se compara el caché con ella.
+        self.revisar_cada, self._ultima_revision = revisar_cada, 0.0
+        self.reglas = estado_cadena.Reglas(organizador=organizador, fondo_epoca=fondo_epoca,
+                                           shares=estado_cadena.shares_de_redis(redis), verificar_firmas=False)
+        self.seguidor = estado_cadena.Seguidor(redis, self.reglas, snapshot_cada=snapshot_cada,
+                                               al_problema=self._problema_en_la_cadena)
+        self._rechazar_pendiente = redis.register_script(LUA_RECHAZAR_PENDIENTE)
+        self._comprometido = redis.register_script(LUA_COMPROMETIDO)
         self._armada = redis.register_script(LUA_ARMADA)
         self._genesis = redis.register_script(LUA_GENESIS)
         self._validar = redis.register_script(LUA_VALIDAR)
@@ -335,15 +439,17 @@ class Nct:
         """
         timestamp = int(time.time())
         saldos = {cuenta: d["saldo"] if isinstance(d, dict) else d for cuenta, d in self.saldos_iniciales.items()}
-        bloque = contrato.bloque_genesis(saldos, timestamp)
+        nombres = {cuenta: d.get("nombre", "") for cuenta, d in self.saldos_iniciales.items() if isinstance(d, dict)}
+        bloque = contrato.bloque_genesis(saldos, timestamp, organizador=self.organizador, nombres=nombres)
         campos = campos_bloque(bloque)
-        cuentas = []
-        for cuenta, datos in sorted(self.saldos_iniciales.items()):
-            nombre = datos.get("nombre", "") if isinstance(datos, dict) else ""
-            cuentas += [cuenta, saldos[cuenta], json.dumps({"tipo": "usuario", "nombre": nombre, "alta": timestamp})]
+        cuentas = {cuenta: {"tipo": "usuario", "nombre": nombres.get(cuenta, ""), "alta": timestamp}
+                   for cuenta in saldos}
+        if self.organizador:
+            cuentas[self.organizador] = {"tipo": "organizador", "nombre": "organizador", "alta": timestamp}
         cargado = self._genesis(
             keys=[contrato.CADENA, contrato.SALDOS, contrato.BLOQUE.format(bloque["block_hash"]), contrato.CUENTAS],
-            args=[bloque["block_hash"], len(campos), *plano(campos), len(saldos), *map(str, cuentas)])
+            args=[bloque["block_hash"], len(campos), *plano(campos), len(saldos), *plano(dict(sorted(saldos.items()))),
+                  *plano({c: json.dumps(d) for c, d in sorted(cuentas.items())})])
         if cargado:
             log.info("Génesis cargado: %s con %d cuentas", bloque["block_hash"], len(saldos))
         return bool(cargado)
@@ -366,11 +472,12 @@ class Nct:
             # la cola (comun/rabbit.py). Las colas quorum lo descartan tras 20 entregas.
             self.redis.connection_pool.disconnect()
             raise redis_errores.ConnectionError(f"la transacción {id_} no está en Redis")
-        problema = "" if guardada.get("estado") != "recibida" or self._firma_valida(id_, guardada) else FIRMA_INVALIDA
+        problema = "" if guardada.get("estado") != "recibida" else self._problema(id_, guardada)
+        acta = "1" if contrato.es_acta({"id": id_, "origen": guardada.get("origen")}) else "0"
         estado, *cambios = self._validar(
             keys=[contrato.TX.format(id_), contrato.SALDOS, contrato.COMPROMETIDO, contrato.PENDIENTES,
                   contrato.NONCES, contrato.CUENTAS, contrato.EN_ESPERA],
-            args=[id_, problema, time.time()])
+            args=[id_, problema, time.time(), acta])
         if estado == "en_espera":
             log.info("Transacción %s: su nonce llegó antes que el anterior, espera su turno", id_)
             return estado
@@ -384,17 +491,40 @@ class Nct:
             log.warning("La transacción %s no se valida: está %s", id_, estado or "sin estado")
             return None
         for i in range(0, len(cambios), 3):
+            if cambios[i + 1] == "pendiente" and cambios[i].startswith("alta-"):
+                self._en_camino(cambios[i])
             self._avisar_estado(*cambios[i:i + 3])
         return estado
 
-    def _firma_valida(self, id_, guardada):
+    def _problema(self, id_, guardada):
+        """El motivo por el que no vale (firma, o las reglas de un acta contra el caché), o vacío."""
         try:
             tx = contrato.transaccion_guardada(id_, guardada)
         except (KeyError, ValueError):
-            return False  # le falta un campo o no es un número: no puede tener una firma que sirva
+            return FIRMA_INVALIDA  # le falta un campo o no es un número: no puede tener una firma que sirva
+        if contrato.es_acta(tx):
+            if contrato.validar_acta(tx, self.organizador):
+                return FIRMA_INVALIDA
+            return estado_cadena.problema_de_acta(tx, self._cuenta_en_cache, self._permiso_en_cache,
+                                                  self.organizador) or ""
         if contrato.es_emision(tx):
-            return not contrato.validar_carga(tx, self.organizador)
-        return not contrato.validar_transaccion_firmada(tx)
+            return "" if not contrato.validar_carga(tx, self.organizador) else FIRMA_INVALIDA
+        return "" if not contrato.validar_transaccion_firmada(tx) else FIRMA_INVALIDA
+
+    def _cuenta_en_cache(self, cuenta):
+        datos = self.redis.hget(contrato.CUENTAS, cuenta)
+        return json.loads(datos) if datos else None
+
+    def _permiso_en_cache(self, clave):
+        return self.redis.hget(contrato.PERMISOS, clave)
+
+    def _en_camino(self, id_):
+        """Un alta validada: el minero ya puede entrar al gateway (puede minar el bloque que la confirma)."""
+        tx = self.redis.hgetall(contrato.TX.format(id_))
+        if tx.get("destino") and tx.get("datos"):
+            tipo, nombre = contrato.datos_alta(tx)
+            self.redis.hset(contrato.ALTAS_EN_CAMINO, tx["destino"],
+                            json.dumps({"tipo": tipo, "nombre": nombre, "tx": id_}))
 
     def _avisar_estado(self, id_, estado, motivo=""):
         aviso = {"id": id_, "estado": estado}
@@ -422,9 +552,59 @@ class Nct:
         if not self.redis.set(TICKER, marca, nx=True, ex=max(1, self.ventana - 1)):
             return False
         self.vencer_espera()
+        if self.revisar_cada and time.time() - self._ultima_revision >= self.revisar_cada:
+            self.revisar_cache()
         self.cerrar_cajas()
         self.armar_si_libre()
         return True
+
+    # ── BC-80: el estado desde la cadena ──
+
+    def arrancar(self):
+        """Al arrancar: la cadena en memoria (verificando todas las firmas una vez) y el caché comparado con ella."""
+        inicio = time.monotonic()
+        self.reglas.verificar_firmas = True
+        try:
+            desde = self.seguidor.arrancar()
+        finally:
+            self.reglas.verificar_firmas = False
+        log.info("Cadena recorrida desde la altura %d hasta la %d en %.1f s (raíz de estado %s)", desde,
+                 self.seguidor.estado.altura, time.monotonic() - inicio, self.seguidor.estado.raiz())
+        if self.redis.set(contrato.ESTADO_REVISION, uuid.uuid4().hex, nx=True, ex=120):
+            self.revisar_cache()
+            cambios = self._comprometido(keys=[contrato.PENDIENTES, contrato.CAJAS, contrato.COMPROMETIDO])
+            if cambios:
+                DIVERGENCIAS.labels("comprometido").inc(cambios)
+                log.warning("`comprometido` no coincidía con las transacciones pendientes en %d cuentas: recalculado",
+                            cambios)
+
+    def revisar_cache(self):
+        """Compara `saldos`, `nonces:confirmados`, `cuentas` y `permisos` con la cadena y, si difieren, gana la
+        cadena. Devuelve {campo: [(clave, cadena, caché)]} de lo que corrigió."""
+        self._ultima_revision = time.time()
+        for _ in range(5):
+            with self.seguidor.lock:
+                estado = self.seguidor.ponerse_al_dia()
+                cache = estado_cadena.cache_de_redis(self.redis)
+                if cache["altura"] != estado.altura:
+                    continue  # entró un bloque en el medio
+                diferentes = estado_cadena.diferencias(estado, cache)
+                if not diferentes:
+                    return {}
+                if not estado_cadena.reparar(self.redis, estado, diferentes):
+                    continue
+            for campo, lista in diferentes.items():
+                DIVERGENCIAS.labels(campo).inc(len(lista))
+                for clave, cadena, guardado in lista[:20]:
+                    log.error("Caché distinto de la cadena en %s[%s]: la cadena dice %s y Redis decía %s; gana la cadena",
+                              campo, clave, json.dumps(cadena), json.dumps(guardado))
+            return diferentes
+        log.warning("No se pudo comparar el caché con la cadena: entraban bloques en el medio")
+        return {}
+
+    def _problema_en_la_cadena(self, altura, problemas):
+        CADENA_PROBLEMAS.inc()
+        log.error("El bloque %d de la cadena no cumple el contrato: %s", altura, "; ".join(problemas[:5]))
 
     def cerrar_cajas(self):
         cajas = self._cerrar_cajas(keys=[contrato.PENDIENTES, contrato.CAJAS], args=[self.tx_por_caja])
@@ -463,15 +643,14 @@ class Nct:
         ninguna, la caja sale de la fila, se suelta la marca y devuelve False: no publica nada.
         En el primer bloque de cada época van primero los pagos de participación de la anterior.
         """
-        tuberia = self.redis.pipeline()  # MULTI: la punta y la altura, de la misma cadena
-        tuberia.lindex(contrato.CADENA, -1)
-        tuberia.llen(contrato.CADENA)
-        punta, altura = tuberia.execute()
-        transacciones = self._transacciones(json.loads(caja))
+        with self.seguidor.lock:
+            estado = self.seguidor.ponerse_al_dia()
+            punta, altura, raiz_estado = estado.punta, estado.altura + 1, estado.raiz()
+            transacciones = self._filtrar(estado, self._transacciones(json.loads(caja)))
         if not transacciones:
             self._sacar_caja(keys=[contrato.CAJAS], args=[caja])
             self._soltar(keys=[TAREA_ACTUAL], args=[id_tarea])
-            log.warning("Una caja tenía sólo transacciones ya confirmadas: se saca de la fila")
+            log.warning("Una caja no tenía transacciones que valgan: se saca de la fila")
             return False
         if contrato.es_primer_bloque_de_epoca(altura):
             transacciones = self.participacion(contrato.epoca(altura) - 1, punta) + transacciones
@@ -487,13 +666,25 @@ class Nct:
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "altura": altura,
             "transacciones": json.dumps(transacciones), "caja": caja, "estado": "en_curso", "publicada": time.time(),
-            "armada": armada})
+            "armada": armada, "raiz_estado": raiz_estado})
         self.publicador.publicar(COLA_TAREAS, {"tarea": id_tarea, "previous_hash": punta, "altura": altura,
                                                "transacciones": transacciones, "timestamp": timestamp,
-                                               "armada": armada})
+                                               "armada": armada, "raiz_estado": raiz_estado})
         log.info("Tarea %s publicada: bloque %d con %d transacciones sobre %s",
                  id_tarea, altura, len(transacciones), punta)
         return True
+
+    def _filtrar(self, estado, transacciones):
+        """Las de la caja que valen contra la cadena (v3). Las que no (el caché estaba mal, o la cuenta se dio de baja
+        mientras esperaban) quedan rechazadas con el motivo: así el NCT nunca arma un bloque que los nodos rechacen."""
+        validas, rechazadas = estado_cadena.filtrar(estado, transacciones)
+        for tx, motivo in rechazadas:
+            if self._rechazar_pendiente(keys=[contrato.TX.format(tx["id"]), contrato.COMPROMETIDO, contrato.NONCES,
+                                              contrato.ALTAS_EN_CAMINO], args=[motivo, tx["id"]]):
+                SACADAS.inc()
+                log.error("La transacción %s no vale contra la cadena y sale de la caja: %s", tx["id"], motivo)
+                self._avisar_estado(tx["id"], "rechazada", "no vale contra la cadena")
+        return validas
 
     def _transacciones(self, ids):
         """Las transacciones de una caja que todavía no están en la cadena, completas y en su orden,
@@ -531,10 +722,14 @@ class Nct:
         montos = contrato.repartir(self.fondo_epoca, shares, rachas)
         detalle = {minero: {"shares": shares[minero], "racha": rachas[minero], "monto": montos.get(minero, 0)}
                    for minero in sorted(shares)}
-        self.redis.hset(contrato.EPOCA.format(epoca), mapping={"fondo": self.fondo_epoca, "detalle": json.dumps(detalle)})
+        raiz = contrato.raiz_shares(detalle)
+        self.redis.hset(contrato.EPOCA.format(epoca), mapping={"fondo": self.fondo_epoca, "detalle": json.dumps(detalle),
+                                                               "raiz": raiz})
         if montos:
             log.info("Época %d: se reparten %d entre %d mineros", epoca, sum(montos.values()), len(montos))
-        pagos = [contrato.participacion(epoca, minero, monto, int(timestamp or 0)) for minero, monto in montos.items()]
+        # BC-82: la lista de shares queda comprometida en la cadena (shares-<época>), y cualquiera la recalcula.
+        pagos = [contrato.shares_epoca(epoca, self.fondo_epoca, raiz, int(timestamp or 0))] if shares else []
+        pagos += [contrato.participacion(epoca, minero, monto, int(timestamp or 0)) for minero, monto in montos.items()]
         # Un pago que ya está en la cadena no se vuelve a proponer: el consenso descartaría el bloque.
         tuberia = self.redis.pipeline(transaction=False)
         for pago in pagos:
@@ -601,9 +796,8 @@ class Nct:
         del_bloque = contrato.transacciones_del_bloque(datos_tarea(tarea, transacciones), minero)
         bloque = {"previous_hash": tarea["previous_hash"], "timestamp": tarea["timestamp"],
                   "transactions": json.dumps(del_bloque), "nonce": mensaje["nonce"], "block_hash": hash_,
-                  "prefijo": prefijo, "duracion": round(duracion, 3)}
-        movimientos = [str(x) for tx in del_bloque
-                       for x in (tx["id"], tx["origen"], tx["destino"], tx["monto"], tx["timestamp"])]
+                  "prefijo": prefijo, "duracion": round(duracion, 3), "raiz_estado": tarea["raiz_estado"]}
+        movimientos = [x for tx in del_bloque for x in movimiento(tx)]
         resultado, *datos = self._consenso(
             keys=[contrato.TAREA.format(id_tarea), contrato.CADENA, contrato.CAJAS, contrato.SALDOS,
                   contrato.COMPROMETIDO, TAREA_ACTUAL, contrato.BLOQUE.format(hash_)],
@@ -697,8 +891,11 @@ def main():
               espera_nonce=config.entero("ESPERA_NONCE_SEGUNDOS", ESPERA_NONCE),
               fondo_epoca=config.entero("FONDO_EPOCA", contrato.FONDO_EPOCA),
               tarea_guarda=config.entero("TAREA_GUARDA_SEGUNDOS", contrato.TAREA_GUARDA),
-              emergencia=config.entero("EMERGENCIA_SEGUNDOS", contrato.EMERGENCIA_SEGUNDOS))
+              emergencia=config.entero("EMERGENCIA_SEGUNDOS", contrato.EMERGENCIA_SEGUNDOS),
+              revisar_cada=config.entero("REVISAR_ESTADO_SEGUNDOS", 60),
+              snapshot_cada=config.entero("SNAPSHOT_CADA", 100))
     nct.cargar_genesis()
+    nct.arrancar()
     servicio.servir_http(en_hilo=True)
     publicador.conectar()
     servicio.rabbit.conectar()  # la de /health

@@ -6,7 +6,7 @@ metadata:
 spec:
   selector:
     matchExpressions:
-      - { key: app, operator: In, values: [backend, frontend, nct, trp, gateway, escalador] }
+      - { key: app, operator: In, values: [backend, frontend, nct, trp, gateway, escalador, nodo] }
   podMetricsEndpoints:
     - { port: http, path: /metrics, interval: 10s }
 ---

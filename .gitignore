@@ -40,3 +40,6 @@ pilar1/hit6/corrida-*.log
 
 # Logs de los mineros de la prueba de trampas (BC-76)
 pilar3/pruebas/resultados/trampas-logs/
+
+# Logs de los nodos de la prueba del operador (BC-85)
+pilar3/pruebas/resultados/operador-logs/

@@ -25,7 +25,8 @@ def guardada(rangos=3):
     """tarea:<id> como la dejan el NCT y el TrP."""
     t = VECTOR["tarea"]
     return {"previous_hash": t["previous_hash"], "timestamp": str(t["timestamp"]), "altura": str(t["altura"]),
-            "transacciones": json.dumps(t["transacciones"]), "prefijo": PREFIJO, "rangos": str(rangos)}
+            "transacciones": json.dumps(t["transacciones"]), "prefijo": PREFIJO, "rangos": str(rangos),
+            "raiz_estado": t["raiz_estado"]}
 
 
 class RedisFalso:

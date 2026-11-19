@@ -8,6 +8,10 @@ Redis y no cambian).
 Contrato v2: cada pedido va firmado con la clave del minero (BC-57) y sólo atiende a los mineros
 aprobados en `cuentas`. A cada uno le arma su propio texto, con su coinbase en la raíz (BC-62), y le
 cuenta los shares que manda (BC-63).
+
+Contrato v3 (BC-79): un minero opera si su alta está en la cadena (`cuentas`) o si ya la validó el NCT y va a entrar
+en el próximo bloque (`altas:en_camino`): así una VM nueva puede minar el bloque que trae su propia alta. Con cada
+rango va la `altura`, para que el minero sepa de qué época son sus shares y los compare con lo publicado (BC-82).
 """
 
 import json
@@ -206,8 +210,8 @@ class Gateway:
             RECHAZOS.labels("firma").inc()
             log.warning("Pedido %s %s rechazado: %s", metodo, ruta, motivo)
             return None, (401, motivo)
-        datos = self.redis.hget(contrato.CUENTAS, minero)
-        if not datos or json.loads(datos).get("tipo") != "minero":
+        datos = self.cuenta(minero)
+        if datos.get("tipo") != "minero":
             RECHAZOS.labels("no_aprobado").inc()
             log.warning("Pedido %s %s de %s, que no es un minero aprobado", metodo, ruta, minero)
             self.pedir_alta(minero, cuerpo)
@@ -218,6 +222,14 @@ class Gateway:
             return None, (403, f"la cuenta {minero} está suspendida ({suspension['motivo']}): "
                                "el organizador decide si la reactiva o le da de baja")
         return minero, None
+
+    def cuenta(self, minero):
+        """{tipo, nombre, alta} de la cuenta en la cadena o, si su alta todavía está en camino, la de ese pedido."""
+        tuberia = self.redis.pipeline(transaction=False)
+        tuberia.hget(contrato.CUENTAS, minero)
+        tuberia.hget(contrato.ALTAS_EN_CAMINO, minero)
+        aprobada, en_camino = tuberia.execute()
+        return json.loads(aprobada or en_camino or "{}")
 
     def suspender(self, minero, motivo, evidencia):
         """BC-75: el minero deja de recibir rangos hasta que el organizador decida. Su préstamo vivo vuelve a la cola."""
@@ -259,7 +271,7 @@ class Gateway:
                 or datos.get("tipo") not in TIPOS or not isinstance(datos.get("placa"), str):
             return 400, {"error": "hace falta {minero (el de X-Minero), tipo: gpu | cpu, placa}"}
         nodo = contrato.NODO.format(minero)
-        cuenta = json.loads(self.redis.hget(contrato.CUENTAS, minero) or "{}")
+        cuenta = self.cuenta(minero)
         alias = cuenta.get("nombre") or minero[:12]
         ahora = int(time.time())
         self.redis.hset(nodo, mapping={"tipo": datos["tipo"], "placa": datos["placa"][:100], "alias": alias,
@@ -362,8 +374,27 @@ class Gateway:
             self._cortar_por_plazo(minero, miembro, prestamo, mensaje)
             return None
         texto = self.texto(mensaje["tarea"], prestamo.get("texto_de") or minero)
+        return self._para_el_minero(mensaje, texto) if texto is not None else None
+
+    def _para_el_minero(self, mensaje, texto):
+        """El rango como lo recibe el minero: con su texto y la altura del bloque (BC-82), sin lo interno."""
         limpio = {k: v for k, v in mensaje.items() if k not in ("reverifica", "rango_original")}
-        return {**limpio, "bloque": texto} if texto is not None else None
+        datos = self._tarea(mensaje["tarea"])
+        return {**limpio, "bloque": texto, **({"altura": datos["altura"]} if datos else {})}
+
+    def epoca(self, minero, datos, n=None):
+        """GET /epocas/<n>: cuántos shares de `minero` quedaron publicados en la época (BC-82), para que los compare
+        con los que le aceptó el gateway."""
+        try:
+            numero = int(n)
+        except (TypeError, ValueError):
+            return 400, {"error": "la época es un entero"}
+        guardado = self.redis.hgetall(contrato.EPOCA.format(numero))
+        if not guardado:
+            return 200, {"epoca": numero, "publicada": False, "shares": 0}
+        detalle = json.loads(guardado.get("detalle") or "{}")
+        return 200, {"epoca": numero, "publicada": True, "shares": detalle.get(minero, {}).get("shares", 0),
+                     "raiz": guardado.get("raiz") or contrato.raiz_shares(detalle)}
 
     def plazo(self, minero, mensaje):
         """Segundos que tiene `minero` para recorrer el rango (BC-74): PLAZO_FACTOR veces lo que debería tardar
@@ -409,7 +440,7 @@ class Gateway:
                       ahora + self.plazo(minero, mensaje), texto_de]):
             raise YaTienePrestamo(minero)
         log.info("Rango %s prestado a %s%s", miembro, minero, f" (reverifica a {texto_de})" if texto_de else "")
-        return {k: v for k, v in mensaje.items() if k not in ("reverifica", "rango_original")} | {"bloque": texto}
+        return self._para_el_minero(mensaje, texto)
 
     # ── Lo que mide el gateway (BC-74) ──
 
@@ -858,7 +889,7 @@ def agregar_rutas(app, gateway):
                 datos = json.loads(cuerpo) if cuerpo else None
             except ValueError:
                 datos = None
-            return responder(*await run_in_threadpool(atender, minero, datos))
+            return responder(*await run_in_threadpool(atender, minero, datos, **request.path_params))
         return pedido
 
     app.post("/hello")(ruta("POST", gateway.hello))
@@ -866,6 +897,7 @@ def agregar_rutas(app, gateway):
     app.post("/results")(ruta("POST", gateway.resultado))
     app.post("/keepalive")(ruta("POST", gateway.keepalive))
     app.get("/tasks/next")(ruta("GET", gateway.siguiente))
+    app.get("/epocas/{n}")(ruta("GET", gateway.epoca))
 
     @app.get("/mineros")
     async def mineros():

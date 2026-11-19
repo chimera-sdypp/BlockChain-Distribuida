@@ -46,7 +46,8 @@ def test_una_cadena_de_52_bloques_da_todo_igual(redis, larga):
     assert informe.bloques == 53 and informe.avisos == []
     assert informe.tipos["coinbase"] == 52 and informe.tipos["carga"] == 8
     assert informe.tipos["participación"] == 10  # épocas 0 a 4, dos mineros cada una
-    assert informe.tipos["transferencia"] == 88 and informe.tipos["génesis"] == 3
+    assert informe.tipos["shares"] == 5          # y la lista de cada una, comprometida en la cadena (BC-82)
+    assert informe.tipos["transferencia"] == 88 and informe.tipos["génesis"] == 3 and informe.tipos["organizador"] == 1
     assert informe.saldos == {c: int(s) for c, s in redis.hgetall("saldos").items() if int(s)}
 
 
@@ -54,9 +55,16 @@ def test_un_saldo_cambiado_a_mano_en_redis_se_detecta(redis, larga):
     redis.hincrby("saldos", CUENTA["carol"], 1000)
     informe = auditar.auditar(redis, CUENTA["organizador"])
     assert not informe.ok
-    assert [texto for _, texto in informe.problemas] == [f"saldo de {CUENTA['carol']}: la cadena dice "
+    assert [texto for _, texto in informe.problemas] == [f"saldos de {CUENTA['carol']}: la cadena dice "
                                                          f"{informe.saldos[CUENTA['carol']]} y Redis "
                                                          f"{informe.saldos[CUENTA['carol']] + 1000}"]
+
+
+def test_con_reparar_gana_la_cadena(redis, larga):
+    redis.hincrby("saldos", CUENTA["carol"], 1000)
+    redis.hset("cuentas", CUENTA["zoe"], json.dumps({"tipo": "usuario", "nombre": "zoe", "alta": 1}))
+    assert auditar.auditar(redis, CUENTA["organizador"], reparar=True).reparado
+    assert auditar.auditar(redis, CUENTA["organizador"]).ok
 
 
 def bloque(redis, hashes, altura):
@@ -70,7 +78,7 @@ def test_un_monto_cambiado_adentro_de_un_bloque_rompe_su_hash(redis, larga):
     txs[1]["monto"] += 1
     redis.hset(clave, "transactions", json.dumps(txs))
     problemas = auditar.auditar(redis, CUENTA["organizador"]).problemas
-    assert (5, "el hash no sale del texto (la raíz de sus transacciones) y el nonce") in problemas
+    assert (5, "el hash no sale del texto (raíz de transacciones y de estado) y el nonce") in problemas
 
 
 def test_una_coinbase_inflada_se_detecta(redis, larga):
@@ -82,22 +90,22 @@ def test_una_coinbase_inflada_se_detecta(redis, larga):
     assert any("coinbase" in t for t in textos)
 
 
-def test_un_reparto_de_epoca_cambiado_se_detecta(redis, larga):
+def test_una_lista_de_shares_publicada_cambiada_se_detecta(redis, larga):
     detalle = json.loads(redis.hget("epoca:2", "detalle"))
-    detalle[CUENTA["minero"]]["monto"] += 5
+    detalle[CUENTA["minero"]]["shares"] += 5
     redis.hset("epoca:2", "detalle", json.dumps(detalle))
     textos = [t for _, t in auditar.auditar(redis, CUENTA["organizador"]).problemas]
-    assert any("epoca:2" in t for t in textos)
+    assert any("la lista publicada de la época 2 no da la raíz" in t for t in textos)
 
 
-def test_sin_organizador_avisa_que_no_verifico_las_cargas(redis, larga):
+def test_sin_organizador_lo_toma_del_genesis_y_lo_avisa(redis, larga):
     informe = auditar.auditar(redis)
-    assert informe.ok and any("organizador" in aviso for aviso in informe.avisos)
+    assert informe.ok and any("sale del génesis" in aviso for aviso in informe.avisos)
 
 
-def test_una_carga_de_otro_organizador_se_detecta(redis, larga):
+def test_otro_organizador_que_el_conocido_se_detecta(redis, larga):
     informe = auditar.auditar(redis, CUENTA["alice"])
-    assert any("carga carga-1 inválida" in t for _, t in informe.problemas)
+    assert any("el organizador del génesis" in t for _, t in informe.problemas)
 
 
 def test_lo_que_muestra(redis, larga):

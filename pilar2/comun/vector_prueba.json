@@ -1,58 +1,205 @@
 {
-  "descripcion": "El mismo texto + nonce tiene que dar el mismo MD5 en Python y en CUDA. Claves: comun/tests/claves.py",
-  "cuentas": {
-    "alice": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
-    "bob": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
-    "carol": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
-    "minero": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771"
-  },
-  "genesis": {
-    "saldos": {
-      "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": 1000,
-      "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": 1000
-    },
-    "timestamp": 1793836800,
-    "block_hash": "7105193a54e7eff67ebe5334026c9053"
-  },
-  "tarea": {
-    "previous_hash": "7105193a54e7eff67ebe5334026c9053",
-    "timestamp": 1793836860,
-    "altura": 1,
-    "prefijo": "0000",
-    "transacciones": [
-      {
-        "id": "d9b477f1968b9218d72c40068bc7351d",
-        "origen": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
-        "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
-        "monto": 250,
-        "nonce": 1,
-        "timestamp": 1793836830,
-        "firma": "4a05278c3de57e4ffd62cd6d75aadad7a87b5d8515b0b4fdda0a29f95f9fecfc4da671658b6782aa1fa439c7ed738db199d051486158ec7f48e6651b5d2ed109"
-      },
-      {
-        "id": "d3afb236ab943bb3ccab322fe5333e70",
-        "origen": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
-        "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
-        "monto": 75,
-        "nonce": 1,
-        "timestamp": 1793836841,
-        "firma": "7a773c7886a8b921fc080e16cf2e624b68a27f1012ec70dd0d2c14e9673d569279759c5456537894449296ef9bd78bafe181578bff8573bd988f5cd0a7134301"
-      }
-    ]
-  },
+ "descripcion": "Contrato v3. El mismo texto + nonce tiene que dar el mismo MD5 en Python, CUDA y la billetera del navegador. Claves: comun/tests/claves.py. Generado con comun/tests/generar_vector.py",
+ "cuentas": {
+  "alice": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+  "bob": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+  "carol": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
   "minero": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
-  "coinbase": {
+  "organizador": "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117"
+ },
+ "genesis": {
+  "saldos": {
+   "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": 1000,
+   "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": 1000
+  },
+  "nombres": {
+   "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": "alice",
+   "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": "bob"
+  },
+  "organizador": "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117",
+  "timestamp": 1793836800,
+  "block_hash": "98250011763c68136cdd5239de153480",
+  "bloque": {
+   "previous_hash": "00000000000000000000000000000000",
+   "timestamp": 1793836800,
+   "transactions": [
+    {
+     "id": "organizador-e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117",
+     "origen": "emision",
+     "destino": "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117",
+     "monto": 0,
+     "nonce": 0,
+     "timestamp": 1793836800,
+     "firma": ""
+    },
+    {
+     "id": "genesis-0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+     "origen": "emision",
+     "destino": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+     "monto": 1000,
+     "nonce": 0,
+     "timestamp": 1793836800,
+     "firma": "",
+     "datos": "usuario:alice"
+    },
+    {
+     "id": "genesis-8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+     "origen": "emision",
+     "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+     "monto": 1000,
+     "nonce": 0,
+     "timestamp": 1793836800,
+     "firma": "",
+     "datos": "usuario:bob"
+    }
+   ],
+   "nonce": 0,
+   "block_hash": "98250011763c68136cdd5239de153480",
+   "prefijo": "",
+   "minero": "",
+   "recompensa": 0,
+   "altura": 0,
+   "raiz_estado": "00000000000000000000000000000000"
+  }
+ },
+ "estado_genesis": {
+  "hojas": [
+   "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1:usuario:1000:0",
+   "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5:usuario:1000:0",
+   "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117:organizador:0:0"
+  ],
+  "raiz": "59ce7d5fdcbdbab54dc4eaa22f814984",
+  "prueba_alice": {
+   "hoja": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1:usuario:1000:0",
+   "rama": [
+    {
+     "lado": "der",
+     "hash": "ed049123b3ef01f4f5eca78dc0c3d96c"
+    },
+    {
+     "lado": "der",
+     "hash": "c781dd132ee5b92cbd69dbb12ddfe88b"
+    }
+   ],
+   "raiz": "59ce7d5fdcbdbab54dc4eaa22f814984"
+  }
+ },
+ "tarea": {
+  "previous_hash": "98250011763c68136cdd5239de153480",
+  "timestamp": 1793837105,
+  "altura": 1,
+  "prefijo": "0000",
+  "transacciones": [
+   {
+    "id": "d9b477f1968b9218d72c40068bc7351d",
+    "origen": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+    "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+    "monto": 250,
+    "nonce": 1,
+    "timestamp": 1793836830,
+    "firma": "4a05278c3de57e4ffd62cd6d75aadad7a87b5d8515b0b4fdda0a29f95f9fecfc4da671658b6782aa1fa439c7ed738db199d051486158ec7f48e6651b5d2ed109"
+   },
+   {
+    "id": "d3afb236ab943bb3ccab322fe5333e70",
+    "origen": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+    "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
+    "monto": 75,
+    "nonce": 1,
+    "timestamp": 1793836841,
+    "firma": "7a773c7886a8b921fc080e16cf2e624b68a27f1012ec70dd0d2c14e9673d569279759c5456537894449296ef9bd78bafe181578bff8573bd988f5cd0a7134301"
+   },
+   {
+    "id": "alta-1",
+    "origen": "emision",
+    "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
+    "monto": 0,
+    "nonce": 1,
+    "timestamp": 1793836845,
+    "datos": "usuario:carol",
+    "firma": "102e7709b30f6a8a16fd615f61ca169a53fdccc4adb1eae6d485e4ca408aa53aa57983a85fc1436b3db0adcc4399731c7cd2e40738cc767a9b6a9754f72d6601"
+   }
+  ],
+  "raiz_estado": "59ce7d5fdcbdbab54dc4eaa22f814984"
+ },
+ "minero": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
+ "coinbase": {
+  "id": "cb-1-c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
+  "origen": "emision",
+  "destino": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
+  "monto": 40,
+  "nonce": 0,
+  "timestamp": 1793837105,
+  "firma": ""
+ },
+ "raiz_transacciones": "d7fd5b7eb38b2f99f6eebb3b1ffacf56",
+ "raiz": "1baa42b085b9f502ac0c07d84c67f813",
+ "texto": "98250011763c68136cdd5239de153480;1793837105;1baa42b085b9f502ac0c07d84c67f813;",
+ "nonce": 54420,
+ "block_hash": "0000c33250af265699b3c0721aad3d1b",
+ "bloque": {
+  "previous_hash": "98250011763c68136cdd5239de153480",
+  "timestamp": 1793837105,
+  "transactions": [
+   {
     "id": "cb-1-c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
     "origen": "emision",
     "destino": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
     "monto": 40,
     "nonce": 0,
-    "timestamp": 1793836860,
+    "timestamp": 1793837105,
     "firma": ""
-  },
-  "raiz": "1a465342405c708679dd6848601746e7",
-  "texto": "7105193a54e7eff67ebe5334026c9053;1793836860;1a465342405c708679dd6848601746e7;",
-  "nonce": 54068,
-  "block_hash": "0000838af561f709b423629230de3bab",
-  "texto_de_alice": "7105193a54e7eff67ebe5334026c9053;1793836860;3140e2fc35bab77980455f4e2641b227;"
+   },
+   {
+    "id": "d9b477f1968b9218d72c40068bc7351d",
+    "origen": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
+    "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+    "monto": 250,
+    "nonce": 1,
+    "timestamp": 1793836830,
+    "firma": "4a05278c3de57e4ffd62cd6d75aadad7a87b5d8515b0b4fdda0a29f95f9fecfc4da671658b6782aa1fa439c7ed738db199d051486158ec7f48e6651b5d2ed109"
+   },
+   {
+    "id": "d3afb236ab943bb3ccab322fe5333e70",
+    "origen": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
+    "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
+    "monto": 75,
+    "nonce": 1,
+    "timestamp": 1793836841,
+    "firma": "7a773c7886a8b921fc080e16cf2e624b68a27f1012ec70dd0d2c14e9673d569279759c5456537894449296ef9bd78bafe181578bff8573bd988f5cd0a7134301"
+   },
+   {
+    "id": "alta-1",
+    "origen": "emision",
+    "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
+    "monto": 0,
+    "nonce": 1,
+    "timestamp": 1793836845,
+    "datos": "usuario:carol",
+    "firma": "102e7709b30f6a8a16fd615f61ca169a53fdccc4adb1eae6d485e4ca408aa53aa57983a85fc1436b3db0adcc4399731c7cd2e40738cc767a9b6a9754f72d6601"
+   }
+  ],
+  "nonce": 54420,
+  "block_hash": "0000c33250af265699b3c0721aad3d1b",
+  "prefijo": "0000",
+  "altura": 1,
+  "raiz_estado": "59ce7d5fdcbdbab54dc4eaa22f814984"
+ },
+ "estado_bloque": {
+  "hojas": [
+   "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1:usuario:750:1",
+   "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5:usuario:1175:1",
+   "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f:usuario:75:0",
+   "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771:-:40:0",
+   "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117:organizador:0:0",
+   "emision:-:0:1"
+  ],
+  "raiz": "9be95368ae69aab5cb4ea262099e6cec",
+  "saldos": {
+   "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": 750,
+   "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": 1175,
+   "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771": 40,
+   "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f": 75
+  }
+ },
+ "texto_de_alice": "98250011763c68136cdd5239de153480;1793837105;aea47d9de79a3e5484fef089b8718f6c;"
 }

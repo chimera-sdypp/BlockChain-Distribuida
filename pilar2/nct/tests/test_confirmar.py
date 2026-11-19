@@ -31,7 +31,7 @@ def test_una_solucion_valida_guarda_el_bloque_con_su_coinbase_mueve_saldos_y_avi
     coinbase, *transferencias = json.loads(bloque["transactions"])
     assert coinbase == contrato.coinbase(1, CUENTA["minero"], 20, int(bloque["timestamp"]))
     assert [tx["monto"] for tx in transferencias] == [30, 20]
-    texto = contrato._texto(genesis, int(bloque["timestamp"]), json.loads(bloque["transactions"]))
+    texto = contrato._texto(genesis, int(bloque["timestamp"]), json.loads(bloque["transactions"]), bloque["raiz_estado"])
     assert contrato.hash_bloque(texto, solucion["nonce"]) == solucion["hash"]
     # alice 100 → 70; bob 50 + 30 − 20 = 60; carol 0 + 20; el minero cobra 10 × largo del prefijo.
     assert {n: saldo(redis, n) for n in ("alice", "bob", "carol", "minero")} == {
@@ -112,7 +112,7 @@ def test_una_coinbase_inflada_no_entra(armar, redis):
     id_tarea = tarea_en_curso(redis, nct, prefijo="00")
     tarea = datos(redis, id_tarea)
     inflada = [contrato.coinbase(1, CUENTA["minero"], 10**6, tarea["timestamp"]), *tarea["transacciones"]]
-    texto = contrato._texto(tarea["previous_hash"], tarea["timestamp"], inflada)
+    texto = contrato._texto(tarea["previous_hash"], tarea["timestamp"], inflada, tarea["raiz_estado"])
 
     nct.procesar_solucion(minar(redis, id_tarea, texto=texto))
 

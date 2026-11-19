@@ -43,6 +43,36 @@ spec:
             summary: "{{ $value }} minero(s) suspendido(s) esperan la decisión del organizador"
             description: En el panel del organizador, «Mineros suspendidos», está la evidencia; reactivar o confirmar la baja.
 
+        # Contrato v3 (BC-80, BC-83, BC-86): que no haya que confiar en quien opera la nube.
+        - alert: CacheDistintoDeLaCadena
+          expr: sum(increase(blockchain_estado_divergencias_total[10m])) > 0
+          labels: { severity: critical }
+          annotations:
+            summary: El caché de Redis no coincidía con la cadena
+            description: Alguien tocó saldos, cuentas, nonces o permisos en Redis. El NCT lo corrigió desde la cadena.
+
+        - alert: NodoRechazoUnBloque
+          expr: sum(increase(blockchain_nodo_rechazos_total[10m])) > 0 or sum(increase(blockchain_nodo_conflictos_total[10m])) > 0
+          labels: { severity: critical }
+          annotations:
+            summary: Un nodo verificador rechazó un bloque o vio la historia reescrita
+            description: Ver /nodos/<n>/api/rechazos. Un bloque que no cumple el contrato llegó a la cadena.
+
+        - alert: NodosNoCoinciden
+          expr: (max(blockchain_nodo_altura) - min(blockchain_nodo_altura)) > 3 or (count(count_values("punta", blockchain_nodo_punta)) > 1 and max(blockchain_nodo_altura) == min(blockchain_nodo_altura))
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: Los nodos verificadores no están en la misma punta
+
+        - alert: FinalidadAtrasada
+          expr: max(blockchain_validadores) > 0 and (max(blockchain_nodo_altura) - max(blockchain_altura_finalizada)) > 10
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: Hay validadores pero los bloques no se finalizan
+            description: Más de 10 bloques sin las firmas de 2/3 de los validadores (caídos, o se niegan a firmar).
+
         - alert: ServicioCaido
           # El escalador apagado (0 réplicas) es su estado normal: KEDA lo prende cuando hace falta.
           expr: |

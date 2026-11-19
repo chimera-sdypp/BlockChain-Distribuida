@@ -17,10 +17,12 @@ on:
       - "pilar2/trp/**"
       - "pilar2/gateway/**"
       - "pilar2/escalador/**"
+      - "pilar2/nodo/**"
       - "pilar2/comun/**"
       - "pilar2/Dockerfile"
       - "pilar2/k8s/*.yaml"
       - "pilar2/k8s/escalador/**"
+      - "pilar2/k8s/nodo/**"
       - "pilar3/k8s/apps/**"
       - "pilar3/k8s/nodegroup-apps.yaml"
       - "pilar3/vms/instancias/**"
@@ -34,10 +36,12 @@ on:
       - "pilar2/trp/**"
       - "pilar2/gateway/**"
       - "pilar2/escalador/**"
+      - "pilar2/nodo/**"
       - "pilar2/comun/**"
       - "pilar2/Dockerfile"
       - "pilar2/k8s/*.yaml"
       - "pilar2/k8s/escalador/**"
+      - "pilar2/k8s/nodo/**"
       - "pilar3/k8s/apps/**"
       - "pilar3/k8s/nodegroup-apps.yaml"
       - "pilar3/vms/instancias/**"
@@ -70,7 +74,7 @@ jobs:
     needs: [gitleaks]
     runs-on: ubuntu-latest
     outputs:
-      apps: ${{ inputs.todas && '["backend","frontend","nct","trp","gateway","escalador"]' || steps.filtro.outputs.changes }}
+      apps: ${{ inputs.todas && '["backend","frontend","nct","trp","gateway","escalador","nodo"]' || steps.filtro.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
       - id: filtro
@@ -86,6 +90,7 @@ jobs:
             trp: [pilar2/trp/**, pilar2/comun/**, pilar2/Dockerfile]
             gateway: [pilar2/gateway/**, pilar2/comun/**, pilar2/Dockerfile]
             escalador: [pilar2/escalador/**, pilar2/comun/**]
+            nodo: [pilar2/nodo/**, pilar2/comun/**, pilar2/Dockerfile]
 
   app:
     name: ${{ matrix.app }}
@@ -195,11 +200,12 @@ jobs:
           fi
           sed -i "s/IP_GATEWAY/$ip/" gateway-ip.yaml
           echo "images:" >> kustomization.yaml
-          for app in backend frontend nct trp gateway escalador; do
+          for app in backend frontend nct trp gateway escalador nodo; do
+            tipo=deployment; [ "$app" = nodo ] && tipo=statefulset
             if echo "$CAMBIADAS" | jq -e --arg a "$app" 'index($a) != null' > /dev/null; then
               imagen="$REGISTRO/$app:$GITHUB_SHA"
             else
-              imagen=$(kubectl -n blockchain get deployment "$app" \
+              imagen=$(kubectl -n blockchain get "$tipo" "$app" \
                 -o jsonpath="{.spec.template.spec.containers[?(@.name=='$app')].image}" 2>/dev/null || true)
               if [ -z "$imagen" ]; then
                 echo "::error::$app no está en el cluster y no se construyó: correr el pipeline a mano con «todas»."
@@ -216,3 +222,4 @@ jobs:
           for app in backend frontend nct trp gateway; do
             kubectl -n blockchain rollout status deployment/$app --timeout=5m
           done
+          kubectl -n blockchain rollout status statefulset/nodo --timeout=5m

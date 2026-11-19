@@ -1,33 +1,36 @@
 #!/bin/bash
-# Aprueba una cuenta en el Redis del sistema desplegado, salteando el panel del organizador (/organizador):
-# sirve para scripts y pruebas. Un minero sin aprobar recibe 403 del gateway; un usuario sin aprobar no puede
-# transferir (el NCT la rechaza con «cuenta no aprobada»).
+# Aprueba o da de baja una cuenta en el sistema desplegado (contrato v3, BC-79): firma un `alta-<n>` o un
+# `baja-<n>` con la clave del organizador y lo manda al backend, como `python -m claves aprobar`. Nada se escribe
+# directo en Redis: la cuenta queda aprobada cuando el alta entra en un bloque (un minero ya puede minar apenas el
+# NCT la valida). Para scripts y pruebas; el organizador de verdad usa la herramienta de claves.
 #
-#   pilar2/k8s/aprobar.sh <cuenta> <usuario | minero> [nombre]      # con el KUBECONFIG del sistema
-#   pilar2/k8s/aprobar.sh <cuenta> baja                             # la saca de `cuentas`
+#   pilar2/k8s/aprobar.sh <cuenta> <usuario | minero | validador> [nombre]
+#   pilar2/k8s/aprobar.sh <cuenta> baja
 #
-# Le habla al primario de Redis con kubectl exec (el que diga Sentinel): la clave de Redis no sale del pod.
-# NAMESPACE (por defecto blockchain).
+# SISTEMA_URL: el backend (por defecto http://localhost, el Ingress del k3s). ORGANIZADOR_ARCHIVO: la privada del
+# organizador; si no está, la de prueba (comun/tests/claves.py), que es la que usa el k3s. PYTHON: el intérprete.
 set -euo pipefail
 
-NAMESPACE=${NAMESPACE:-blockchain}
 cuenta=${1:-} tipo=${2:-} nombre=${3:-}
 error() { echo "Error: $*" >&2; exit 1; }
-
 [[ $cuenta =~ ^[0-9a-f]{64}$ ]] || error "la cuenta es la clave pública en hex (64 caracteres en minúscula)"
-[[ $tipo =~ ^(usuario|minero|organizador|baja)$ ]] || error "el tipo es usuario, minero, organizador o baja"
-[[ -z $nombre || $nombre =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || error "el nombre: de 1 a 32 letras, números, «_», «.» o «-»"
+[[ $tipo =~ ^(usuario|minero|validador|baja)$ ]] || error "el tipo es usuario, minero, validador o baja"
+nombre=${nombre:-${cuenta:0:12}}
+[[ $nombre =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || error "el nombre: de 1 a 32 letras, números, «_», «.» o «-»"
 
-k() { kubectl -n "$NAMESPACE" "$@"; }
-primario=$(k exec redis-0 -c sentinel -- redis-cli -p 26379 sentinel get-master-addr-by-name mymaster | head -1)
-[[ -n $primario ]] || error "Sentinel no dijo cuál es el primario de Redis"
+cd "$(dirname "$0")/.."
+PYTHON=${PYTHON:-$( [[ -x .venv/bin/python ]] && echo .venv/bin/python || echo python3 )}
+URL=${SISTEMA_URL:-http://localhost}
+archivo=${ORGANIZADOR_ARCHIVO:-}
+if [[ -z $archivo ]]; then
+    archivo=$(mktemp)
+    trap 'rm -f "$archivo"' EXIT
+    chmod 600 "$archivo"
+    "$PYTHON" -c "import hashlib; print(hashlib.sha256(b'chimera-prueba-organizador').hexdigest())" > "$archivo"
+fi
 
 if [[ $tipo == baja ]]; then
-    k exec redis-0 -c redis -- redis-cli -h "$primario" HDEL cuentas "$cuenta" > /dev/null
-    echo "Dada de baja: $cuenta"
-    exit 0
+    "$PYTHON" -m claves baja "$archivo" --cuenta "$cuenta" --motivo "aprobar.sh" --url "$URL"
+    exit
 fi
-datos=$(printf '{"tipo": "%s", "nombre": "%s", "alta": %d}' "$tipo" "$nombre" "$(date +%s)")
-k exec redis-0 -c redis -- redis-cli -h "$primario" HSET cuentas "$cuenta" "$datos" > /dev/null
-k exec redis-0 -c redis -- redis-cli -h "$primario" HDEL altas:pendientes "$cuenta" > /dev/null
-echo "Aprobada como $tipo: $cuenta ${nombre:+($nombre)}"
+"$PYTHON" -m claves aprobar "$archivo" --cuenta "$cuenta" --tipo "$tipo" --nombre "$nombre" --url "$URL"

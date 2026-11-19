@@ -11,8 +11,8 @@ import redis as redislib
 from fastapi.testclient import TestClient
 
 from backend import app as backend
-from comun import Rabbit, config, contrato, web
-from comun.tests.claves import CUENTA, Billetera, carga, firmada
+from comun import Rabbit, config, contrato, estado, web
+from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -146,25 +146,35 @@ def guardar_bloque(redis, bloque):
 
 
 def armar_cadena(redis, largo):
-    """Génesis más largo−1 bloques de prueba, como los arma el NCT; devuelve los hashes en orden de altura."""
+    """Génesis más largo−1 bloques válidos (v3, con su raíz de estado), como los arma el NCT, y el caché de los
+    saldos como lo deja el consenso. Devuelve los hashes en orden de altura."""
     genesis = contrato.bloque_genesis({CUENTA["alice"]: 1000, CUENTA["bob"]: 1000}, 1793836800)
+    actual = estado.Estado()
+    estado.aplicar_bloque(actual, genesis)
     guardar_bloque(redis, genesis)
     hashes, billetera = [genesis["block_hash"]], Billetera()
     for altura in range(1, largo):
         tarea = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "altura": altura, "prefijo": "0",
-                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura)]}
+                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura)],
+                 "raiz_estado": actual.raiz()}
         transacciones = contrato.transacciones_del_bloque(tarea, CUENTA["minero"])
+        texto = contrato.texto_para(tarea, CUENTA["minero"])
+        nonce = next(n for n in range(10**6) if contrato.hash_bloque(texto, n).startswith("0"))
         bloque = {"previous_hash": hashes[-1], "timestamp": tarea["timestamp"], "transactions": transacciones,
-                  "nonce": altura, "block_hash": contrato.hash_bloque(contrato.texto_para(tarea, CUENTA["minero"]), altura),
-                  "prefijo": "0", "altura": altura}
+                  "nonce": nonce, "block_hash": contrato.hash_bloque(texto, nonce), "prefijo": "0", "altura": altura,
+                  "raiz_estado": tarea["raiz_estado"]}
+        assert estado.aplicar_bloque(actual, bloque)[0] == []
         guardar_bloque(redis, bloque)
         hashes.append(bloque["block_hash"])
-    return hashes
+    redis.hset("saldos", mapping=actual.saldos)
+    redis.hset("nonces:confirmados", mapping=actual.nonces)
+    redis.hset("cuentas", mapping={c: json.dumps(d) for c, d in actual.cuentas.items()})
+    return hashes, actual
 
 
 def test_bloques_del_mas_nuevo_al_mas_viejo_con_altura(entorno):
     cliente, _, redis = entorno
-    hashes = armar_cadena(redis, 3)
+    hashes, _ = armar_cadena(redis, 3)
 
     bloques = cliente.get("/api/bloques").json()
 
@@ -172,7 +182,7 @@ def test_bloques_del_mas_nuevo_al_mas_viejo_con_altura(entorno):
     assert [b["block_hash"] for b in bloques] == hashes[::-1]
     punta = bloques[0]
     assert punta["previous_hash"] == hashes[1]
-    assert (punta["nonce"], punta["timestamp"]) == (2, 1793836802)
+    assert punta["timestamp"] == 1793836802
     coinbase, transferencia = punta["transactions"]
     assert coinbase == contrato.coinbase(2, CUENTA["minero"], 10, 1793836802)
     assert (transferencia["monto"], transferencia["nonce"]) == (2, 2)
@@ -183,7 +193,7 @@ def test_bloques_del_mas_nuevo_al_mas_viejo_con_altura(entorno):
 
 def test_bloques_paginados(entorno):
     cliente, _, redis = entorno
-    hashes = armar_cadena(redis, 5)
+    hashes, _ = armar_cadena(redis, 5)
 
     primera = cliente.get("/api/bloques", params={"limite": 2}).json()
     segunda = cliente.get("/api/bloques", params={"limite": 2, "desde": 2}).json()
@@ -207,7 +217,7 @@ def test_bloques_con_parametros_invalidos_da_400(entorno, params):
 
 def test_bloque_por_hash_con_su_altura(entorno):
     cliente, _, redis = entorno
-    hashes = armar_cadena(redis, 3)
+    hashes, _ = armar_cadena(redis, 3)
 
     bloque = cliente.get(f"/api/bloques/{hashes[1]}").json()
 
@@ -289,3 +299,99 @@ def test_cajas_vacias(entorno):
 # ── Mineros (BC-28) ──
 
 
+
+
+def test_bloques_en_orden_ascendente_para_bajar_solo_lo_nuevo(entorno):
+    cliente, _, redis = entorno
+    hashes, _ = armar_cadena(redis, 5)
+    assert [b["altura"] for b in cliente.get("/api/bloques", params={"orden": "asc"}).json()] == [0, 1, 2, 3, 4]
+    assert [b["block_hash"] for b in cliente.get("/api/bloques", params={"orden": "asc", "desde": 3, "limite": 1}).json()] \
+        == [hashes[3]]
+    assert cliente.get("/api/bloques", params={"orden": "asc", "desde": 9}).json() == []
+    assert cliente.get("/api/bloques", params={"orden": "otro"}).status_code == 400
+
+
+def test_la_prueba_de_merkle_da_la_raiz_que_va_a_llevar_el_bloque_siguiente(entorno):
+    cliente, _, redis = entorno
+    _, actual = armar_cadena(redis, 4)
+    respuesta = cliente.get(f"/api/prueba/{CUENTA['alice']}").json()
+    assert respuesta["altura"] == 3 and respuesta["raiz"] == actual.raiz()
+    assert respuesta["hoja"] == f"{CUENTA['alice']}:usuario:{actual.saldos[CUENTA['alice']]}:3"
+    assert estado.raiz_de_rama(respuesta["hoja"], respuesta["rama"]) == actual.raiz()
+    redis.hincrby("saldos", CUENTA["alice"], 1000)  # alguien tocó el caché: la raíz ya no es la de la cadena
+    assert cliente.get(f"/api/prueba/{CUENTA['alice']}").json()["raiz"] == actual.raiz()  # mismo bloque: en memoria
+    assert cliente.get(f"/api/prueba/{CUENTA['zoe']}").json()["hoja"] is None
+    assert cliente.get("/api/prueba/alice").status_code == 400
+
+
+def test_la_lista_de_shares_de_una_epoca_da_su_raiz(entorno):
+    cliente, _, redis = entorno
+    detalle = {CUENTA["minero"]: {"shares": 7, "racha": 2, "monto": 100}}
+    redis.hset("epoca:3", mapping={"fondo": 100, "detalle": json.dumps(detalle)})
+    respuesta = cliente.get("/api/epocas/3").json()
+    assert respuesta == {"epoca": 3, "fondo": 100, "raiz": contrato.raiz_shares(detalle), "detalle": detalle,
+                         "lista": [f"{CUENTA['minero']}:7:2"]}
+    assert cliente.get("/api/epocas/4").status_code == 404 and cliente.get("/api/epocas/x").status_code == 400
+
+
+# ── BC-86: firmas de los validadores y finalidad ──
+
+def con_validadores(redis, *nombres):
+    for nombre in nombres:
+        redis.hset("cuentas", CUENTA[nombre], json.dumps({"tipo": "validador", "nombre": nombre, "alta": 1}))
+
+
+def test_dos_de_tres_validadores_finalizan_el_bloque_y_se_avisa(entorno):
+    cliente, _, redis = entorno
+    hashes, _ = armar_cadena(redis, 4)
+    con_validadores(redis, "v1", "v2", "v3")
+    assert cliente.get("/api/finalidad").json()["altura"] == -1
+
+    uno = cliente.post("/api/firmas", json=contrato.firma_bloque(PRIVADA["v1"], 3, hashes[3]))
+    assert uno.json() == {"resultado": "aceptada", "finalizada": -1}
+    dos = cliente.post("/api/firmas", json=contrato.firma_bloque(PRIVADA["v2"], 2, hashes[2]))
+    assert dos.json()["finalizada"] == 2  # v1 firmó la 3 (que incluye la 2) y v2 la 2
+
+    final = cliente.get("/api/finalidad").json()
+    assert (final["altura"], final["block_hash"], final["umbral"]) == (2, hashes[2], 2)
+    bloques = {b["altura"]: b for b in cliente.get("/api/bloques").json()}
+    assert bloques[2]["finalizado"] and not bloques[3]["finalizado"]
+    assert [f["validador"] for f in bloques[3]["firmas"]] == [CUENTA["v1"]]
+    assert cliente.post("/api/firmas", json=contrato.firma_bloque(PRIVADA["v1"], 3, hashes[3])).json()["resultado"] \
+        == "repetida"
+
+
+def test_una_firma_de_quien_no_es_validador_o_de_otro_bloque_no_cuenta(entorno):
+    cliente, _, redis = entorno
+    hashes, _ = armar_cadena(redis, 3)
+    con_validadores(redis, "v1")
+    assert cliente.post("/api/firmas", json=contrato.firma_bloque(PRIVADA["alice"], 1, hashes[1])).status_code == 403
+    assert cliente.post("/api/firmas", json=contrato.firma_bloque(PRIVADA["v1"], 1, "f" * 32)).status_code == 409
+    trucha = {**contrato.firma_bloque(PRIVADA["v1"], 1, hashes[1]), "altura": 2}
+    assert cliente.post("/api/firmas", json=trucha).status_code == 400
+
+
+def test_una_doble_firma_deja_la_prueba(entorno):
+    cliente, _, redis = entorno
+    hashes, _ = armar_cadena(redis, 3)
+    con_validadores(redis, "v1")
+    assert cliente.post("/api/firmas", json=contrato.firma_bloque(PRIVADA["v1"], 2, hashes[2])).status_code == 200
+    redis.lset("cadena", 2, "e" * 32)  # el operador reescribe la altura 2 y el validador firma lo nuevo
+    otra = contrato.firma_bloque(PRIVADA["v1"], 2, "e" * 32)
+    assert cliente.post("/api/firmas", json=otra).status_code == 409
+    [prueba] = cliente.get("/api/finalidad").json()["dobles"]
+    assert prueba["primera"]["block_hash"] == hashes[2] and prueba["segunda"]["block_hash"] == "e" * 32
+
+
+# ── BC-78: CORS para la billetera descargada (origen «null») ──
+
+def test_las_rutas_publicas_tienen_cors_y_el_panel_no(entorno):
+    cliente, _, _ = entorno
+    origen = {"Origin": "null"}
+    assert cliente.get("/api/bloques", headers=origen).headers["access-control-allow-origin"] == "*"
+    previo = cliente.options("/api/transacciones", headers={**origen, "Access-Control-Request-Method": "POST",
+                                                            "Access-Control-Request-Headers": "content-type"})
+    assert previo.status_code == 204 and "POST" in previo.headers["access-control-allow-methods"]
+    assert "access-control-allow-origin" not in cliente.get("/api/organizador/altas", headers=origen).headers
+    firmas = cliente.options("/api/firmas", headers={**origen, "Access-Control-Request-Method": "POST"})
+    assert "access-control-allow-origin" not in firmas.headers

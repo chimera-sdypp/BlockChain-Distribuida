@@ -1,22 +1,13 @@
 # Herramientas
 
-## Auditoría de la cadena (BC-61)
+## Auditoría de la cadena (BC-61, BC-80)
 
 ```bash
 cd pilar2
-REDIS_HOST=... REDIS_CLAVE=... python -m herramientas.auditar --organizador <cuenta del organizador>
+REDIS_HOST=... REDIS_CLAVE=... python -m herramientas.auditar --organizador <cuenta del organizador> [--reparar]
 ```
 
-Recorre la cadena desde el génesis sin confiar en nada de lo que guardó el sistema, y verifica:
-
-- cada hash: sale del texto (`previous_hash;timestamp;raíz;`) y el nonce, cumple el prefijo y encadena con el anterior;
-- la coinbase: es la primera transacción, del ganador y por `10 × largo del prefijo`;
-- cada transferencia: la firma, que el nonce sea el siguiente de su cuenta y que el origen tuviera saldo;
-- cada carga: la firma del organizador (`--organizador` u `ORGANIZADOR_CLAVE`) y que su número siga al anterior;
-- cada pago de participación: que esté en el primer bloque de la época y coincida con `epoca:<n>`, cuyos montos tienen que salir de repartir el fondo según sus shares y rachas;
-- que ninguna transacción esté en dos bloques.
-
-Después recalcula todos los saldos y los compara con `saldos` de Redis, y que `nonces` no esté atrás de la cadena. Sale con 0 si da todo igual y con 1 si encontró algo.
+Recorre la cadena desde el génesis con [`comun/estado.py`](../comun/estado.py), el mismo código que usan el NCT y los nodos verificadores, y verifica cada hash (con la raíz de transacciones y la de estado), la coinbase, cada firma y nonce, las altas, bajas y permisos, las cargas, y cada pago de participación contra la lista de shares publicada (`epoca:<n>`) y la raíz que quedó en la cadena (`shares-<n>`). Después compara el caché de Redis (`saldos`, `nonces:confirmados`, `cuentas`, `permisos`) con el estado que sale de la cadena y que `nonces` no esté atrás. Sale con 0 si da todo igual y con 1 si encontró algo; con `--reparar`, gana la cadena y pisa el caché (lo mismo que hace el NCT solo cada 60 s).
 
 **Para la demo:** `HINCRBY saldos <cuenta> 1000` en Redis, y la auditoría lo encuentra: los saldos no se creen, salen de la cadena.
 

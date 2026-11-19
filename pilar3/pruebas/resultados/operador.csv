@@ -1,0 +1,17 @@
+escenario,comprobacion,esperado,observado,ok
+saldo,gastar el saldo inventado,rechazada (no vale contra la cadena),"202 → rechazada (8fd6cdb3583e3ee1c1e291b6292ab81b: el origen no tiene saldo (tiene 1000, gasta 501000))",sí
+saldo,el NCT corrige el caché desde la cadena,el saldo vuelve y queda en el log y la métrica,"saldo 1000 (antes 1000), 1 línea(s) «Caché distinto»",sí
+saldo,los nodos siguen sin rechazar nada,ningún bloque malo llegó a la cadena,"rechazado: [None, None]",sí
+alta,transferir con un alta escrita a mano,rechazada,202 → rechazada (e79ba807c78843c5dcc7737dc4cbb818: el origen no tiene un alta en la cadena (cuenta no aprobada)),sí
+alta,la revisión saca la cuenta de `cuentas`,aprobada: false,aprobada: False,sí
+editado,un nodo nuevo baja la cadena con el bloque 2 editado,rechaza el bloque 2,"altura 1, rechazado 2: el hash no sale del texto (raíz de transacciones y de estado) y el nonce",sí
+reescrita,los nodos del cluster ven la historia reescrita,conflicto en la altura de la punta,"[56, 56]",sí
+reescrita,los validadores no firman la cadena nueva,conflicto y ninguna firma nueva,conflicto en 3 de 3,sí
+epoca,la lista de la época 0 con 50 shares más para un minero,un nodo nuevo la rechaza,rechazado en 10: la lista publicada de la época 0 no da la raíz de la cadena (1c3ad28b7fec1f12bb7c249b677743af),sí
+invalido,los nodos rechazan el bloque,rechazado con el motivo,"['carga carga-40 inválida: firma: no es la del organizador', 'carga carga-40 inválida: firma: no es la del organizador']",sí
+invalido,el bloque inválido no se finaliza,finalizada < 57,finalizada 56,sí
+deshacer,un validador que firma otro bloque en la altura finalizada 57,409 y queda la prueba de la doble firma,"409, 1 prueba(s)",sí
+deshacer,los otros dos validadores no firman la historia nueva,conflicto,"[True, True]",sí
+deshacer,la finalidad no retrocede,sigue en 57 o más,57,sí
+sin-validadores,con los validadores apagados salen bloques,2 bloques o más,de 57 a 59; finalizada sigue en 57,sí
+sin-validadores,"al volver, se ponen al día y finalizan",finalizada ≥ 59,59,sí

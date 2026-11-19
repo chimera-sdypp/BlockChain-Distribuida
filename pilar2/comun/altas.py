@@ -2,6 +2,9 @@
 
 Lo usan el backend (POST /api/altas y el panel) y el gateway (un minero firmado y sin aprobar queda
 pedido solo). Cada paso es un Lua, así dos réplicas que atienden lo mismo a la vez no se pisan.
+
+Contrato v3 (BC-79): acá ya no se aprueba ni se da de baja. `cuentas` es caché de la cadena: una cuenta entra o
+sale sólo cuando se confirma el bloque con su `alta-<n>` o su `baja-<n>`, firmadas por el organizador.
 """
 
 import json
@@ -15,7 +18,9 @@ ALTAS_MAXIMAS = 1000  # pedidos pendientes como mucho: un pedido sólo cuesta ge
 # Con renombrar, un pedido que ya estaba toma el nombre del nuevo (BC-71: el alias del /hello le gana al
 # principio de la cuenta con que lo anotó un keep-alive).
 LUA_PEDIR = """
-if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then return 'aprobada' end
+if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 or redis.call('HEXISTS', 'altas:en_camino', ARGV[1]) == 1 then
+  return 'aprobada'
+end
 local previo = redis.call('HGET', KEYS[2], ARGV[1])
 if previo then
   if ARGV[4] == '1' then
@@ -33,20 +38,6 @@ redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 return 'nueva'
 """
 
-# KEYS: cuentas, altas:pendientes  ARGV: cuenta, alta (segundos Unix), nombre ('' = el del pedido)
-# Devuelve la cuenta aprobada en JSON, o nada si no había pedido.
-LUA_APROBAR = """
-local pedido = redis.call('HGET', KEYS[2], ARGV[1])
-if not pedido then return false end
-pedido = cjson.decode(pedido)
-local nombre = ARGV[3]
-if nombre == '' then nombre = pedido.nombre or '' end
-local datos = cjson.encode({tipo = pedido.tipo, nombre = nombre, alta = tonumber(ARGV[2])})
-redis.call('HSET', KEYS[1], ARGV[1], datos)
-redis.call('HDEL', KEYS[2], ARGV[1])
-return datos
-"""
-
 # KEYS: el hash  ARGV: cuenta. Devuelve lo que había (JSON) y lo borra; nada si no estaba.
 LUA_SACAR = """
 local datos = redis.call('HGET', KEYS[1], ARGV[1])
@@ -60,7 +51,6 @@ class Altas:
     def __init__(self, redis, maximas=ALTAS_MAXIMAS):
         self.redis, self.maximas = redis, maximas
         self._pedir = redis.register_script(LUA_PEDIR)
-        self._aprobar = redis.register_script(LUA_APROBAR)
         self._sacar = redis.register_script(LUA_SACAR)
 
     def pedir(self, cuenta, tipo, nombre, ahora=None, renombrar=False):
@@ -72,25 +62,9 @@ class Altas:
         return self._pedir(keys=[contrato.CUENTAS, contrato.ALTAS_PENDIENTES],
                            args=[cuenta, pedido, self.maximas, "1" if renombrar else "0"])
 
-    def aprobar(self, cuenta, nombre="", ahora=None):
-        """Pasa el pedido a `cuentas` con la fecha de alta. Devuelve {tipo, nombre, alta}, o None si no había pedido."""
-        datos = self._aprobar(keys=[contrato.CUENTAS, contrato.ALTAS_PENDIENTES],
-                              args=[cuenta, int(time.time() if ahora is None else ahora), nombre])
-        return json.loads(datos) if datos else None
-
     def rechazar(self, cuenta):
         """Borra el pedido. Devuelve lo que se había pedido, o None."""
         datos = self._sacar(keys=[contrato.ALTAS_PENDIENTES], args=[cuenta])
-        return json.loads(datos) if datos else None
-
-    def baja(self, cuenta):
-        """Saca la cuenta de `cuentas`: el gateway deja de atenderla y el NCT rechaza sus transferencias.
-
-        El saldo queda donde está (congelado). Si estaba suspendida, deja de estarlo. Devuelve los datos que
-        tenía, o None si no estaba aprobada.
-        """
-        datos = self._sacar(keys=[contrato.CUENTAS], args=[cuenta])
-        self.redis.hdel(contrato.SUSPENDIDOS, cuenta)
         return json.loads(datos) if datos else None
 
     # ── BC-75: suspensión ──

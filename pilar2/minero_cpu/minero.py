@@ -116,6 +116,36 @@ class Minero:
         # El gateway no lo conoce (403) o perdió su nodo (`presentarse` en el keep-alive): pasa si la cadena
         # se reinicia con el minero andando. Entre un rango y el siguiente repite el /hello y el bench (BC-71).
         self.presentarse_de_nuevo = threading.Event()
+        # BC-82: los shares que el gateway dijo aceptar en cada época, para compararlos con lo que se publica.
+        self.aceptados, self.contados_de_menos = {}, []
+
+    def _sumar_aceptados(self, rango, respuesta):
+        if rango and "altura" in rango and respuesta and isinstance(respuesta.get("shares"), int):
+            epoca = contrato.epoca(rango["altura"])
+            with self._lock:
+                self.aceptados[epoca] = self.aceptados.get(epoca, 0) + respuesta["shares"]
+
+    def revisar_epocas(self, epoca_actual):
+        """Las épocas anteriores a `epoca_actual` ya se pagaron: compara lo aceptado con lo publicado (BC-82)."""
+        with self._lock:
+            cerradas = sorted(e for e in self.aceptados if e < epoca_actual)
+        for epoca in cerradas:
+            try:
+                codigo, publicada = self.gateway.pedir("GET", f"/epocas/{epoca}")
+            except (urllib.error.URLError, OSError, ClaveRechazada) as error:
+                # Es un control, no el trabajo: si el gateway no contesta, se pregunta con el próximo rango.
+                log.debug("No pude preguntar por la época %d: %r", epoca, error)
+                return
+            if codigo != 200 or not publicada or not publicada.get("publicada"):
+                continue
+            with self._lock:
+                aceptados = self.aceptados.pop(epoca, 0)
+            if publicada["shares"] < aceptados:
+                self.contados_de_menos.append((epoca, aceptados, publicada["shares"]))
+                log.warning("Época %d: el gateway me aceptó %d shares y en la lista publicada figuran %d",
+                            epoca, aceptados, publicada["shares"])
+            else:
+                log.info("Época %d: %d shares aceptados, %d publicados", epoca, aceptados, publicada["shares"])
 
     # --- Al arrancar -----------------------------------------------------------------------
     def presentarse(self):
@@ -158,6 +188,8 @@ class Minero:
             return False
         with self._lock:
             self.rango = rango
+        if "altura" in rango:
+            self.revisar_epocas(contrato.epoca(rango["altura"]))
         log.info("Tarea %s rango %s: [%d, %d] prefijo %s", rango["tarea"], rango["rango"],
                  rango["desde"], rango["hasta"], rango["prefijo"])
         nonce, cortado = self.buscador.buscar(rango["bloque"], rango["desde"], rango["hasta"], rango["prefijo"])
@@ -174,7 +206,8 @@ class Minero:
         else:
             resultado.update(nonce=nonce, hash=contrato.hash_bloque(rango["bloque"], nonce))
             log.info("Encontré nonce %d: %s (%d shares)", nonce, resultado["hash"], len(shares))
-        self._insistir("POST", "/results", resultado)
+        _, respuesta = self._insistir("POST", "/results", resultado)
+        self._sumar_aceptados(rango, respuesta)
         return True
 
     def trabajar(self):
@@ -206,6 +239,7 @@ class Minero:
                 continue
             except ClaveRechazada:
                 continue  # lo informa el hilo principal
+            self._sumar_aceptados(rango, respuesta)
             if codigo == 403 or (respuesta and respuesta.get("presentarse")):
                 self.presentarse_de_nuevo.set()
             if respuesta and respuesta.get("cortar") and rango is self.rango and rango is not None:

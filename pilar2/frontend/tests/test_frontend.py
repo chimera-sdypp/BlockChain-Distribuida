@@ -121,7 +121,7 @@ def test_la_metrica_de_clientes_sube_y_baja(servidor):
 
 @pytest.mark.parametrize("ruta, tipo, texto", [
     ("/alta", "text/html", "/api/altas"),
-    ("/organizador", "text/html", "X-Organizador"),
+    ("/organizador", "text/html", "python -m claves"),  # v3: no pide la clave, da los comandos
     ("/comun.js", "text/javascript", "pedidoFirmado"),
     ("/estilos.css", "text/css", "--acento"),
 ])

@@ -2,14 +2,15 @@
 
 import threading
 
-from comun import contrato
+from comun import contrato, estado
+from comun.tests.claves import CUENTA
 
 from .conftest import api, bloques, esperar, firmada, nuevo_usuario, saldo, transferir
 
 
 def verificar_bloque(bloque):
     """NCT.3, otra vez desde afuera: el hash sale del texto (con la coinbase en la raíz) y el nonce, y cumple el prefijo."""
-    texto = contrato._texto(bloque["previous_hash"], bloque["timestamp"], bloque["transactions"])
+    texto = contrato.texto_de_bloque(bloque)  # v3: con la raíz de estado
     assert contrato.hash_bloque(texto, bloque["nonce"]) == bloque["block_hash"]
     assert contrato.cumple(bloque["block_hash"], bloque["prefijo"])
     coinbase = bloque["transactions"][0]
@@ -82,6 +83,29 @@ def test_doble_gasto_con_el_mismo_nonce_entra_una(minero):
     cerradas = sorted((t["estado"], t.get("motivo", "")) for t in (esperar(id_)[0] for id_ in ids))
     assert cerradas == [("confirmada", ""), ("rechazada", "nonce repetido")]
     assert saldo(usuario) == 0
+
+
+def test_la_cadena_entera_pasa_la_verificacion_de_un_nodo():
+    """v3: bajada desde el génesis, la cadena cumple cada regla del contrato (comun/estado.py, en modo estricto, con
+    las listas de shares publicadas) y el estado que sale de ella es el que muestra la API."""
+    todos, desde = [], 0
+    while True:
+        lote = api("GET", f"/api/bloques?orden=asc&desde={desde}&limite=100")[1]
+        if not lote:
+            break
+        todos += lote
+        desde += len(lote)
+
+    def shares(epoca):
+        codigo, cuerpo = api("GET", f"/api/epocas/{epoca}")
+        return cuerpo["detalle"] if codigo == 200 else None
+
+    resultado, malos = estado.reconstruir(todos, estado.Reglas(shares=shares))
+    assert malos == [] and resultado.altura == len(todos) - 1
+    prueba = api("GET", f"/api/prueba/{CUENTA['alice']}")[1]
+    if prueba["altura"] == resultado.altura:  # si no entró otro bloque en el medio
+        assert prueba["raiz"] == resultado.raiz()
+        assert saldo("alice") == resultado.saldos.get(CUENTA["alice"], 0)
 
 
 def test_la_cadena_esta_integra():

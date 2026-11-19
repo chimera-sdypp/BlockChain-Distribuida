@@ -1,6 +1,6 @@
-"""BC-58 en el sistema desplegado: pedir el alta, aprobarla desde el panel con saldo inicial y operar.
+"""BC-58 y BC-79 en el sistema desplegado: pedir el alta, aprobarla con un acta firmada (y saldo inicial) y operar.
 
-El panel necesita la privada del organizador: ORGANIZADOR_ARCHIVO (la privada en hex) o, si no está, la
+Las actas se firman con la privada del organizador: ORGANIZADOR_ARCHIVO (la privada en hex) o, si no está, la
 de prueba (`organizador` de comun/tests/claves.py), que es la que usa el k3s. Si el sistema no la acepta
 (GKE tiene otro organizador), se saltean.
 """
@@ -20,19 +20,11 @@ from comun import contrato
 from comun.tests.claves import PRIVADA
 from minero_cpu.minero import Gateway, Minero
 
-from .conftest import GATEWAY_URL, PRIVADAS, URL, api, esperar, firmada, saldo
-
-
-def _organizador():
-    archivo = os.environ.get("ORGANIZADOR_ARCHIVO")
-    return Path(archivo).read_text().strip() if archivo else PRIVADA["organizador"]
-
-
-ORGANIZADOR = _organizador()
+from .conftest import GATEWAY_URL, ORGANIZADOR, PRIVADAS, URL, acta, api, aprobar, dar_de_baja, esperar, firmada, saldo
 
 
 def panel(metodo, ruta, datos=None, privada=ORGANIZADOR):
-    """Un pedido al panel firmado como lo hace la página: X-Organizador, X-Tiempo y X-Firma."""
+    """Un pedido al panel (lo que no va a la cadena: rechazar y reactivar), firmado con X-Organizador."""
     cuerpo = json.dumps(datos).encode() if datos is not None else b""
     encabezados = contrato.firmar_pedido(privada, metodo, ruta, cuerpo, quien=contrato.ORGANIZADOR)
     pedido = urllib.request.Request(URL + ruta, data=cuerpo or None, method=metodo,
@@ -60,35 +52,30 @@ def pedir_alta(tipo="usuario"):
     return privada, cuenta, nombre
 
 
-def carga(cuenta, monto):
-    numero = api("GET", "/api/cuentas/emision")[1]["nonce"] + 1
-    return contrato.carga(ORGANIZADOR, numero, cuenta, monto, int(time.time()))
-
-
-def test_un_usuario_aprobado_desde_el_panel_con_saldo_puede_transferir(minero):
+def test_un_usuario_aprobado_con_un_acta_y_saldo_puede_transferir(minero):
     privada, cuenta, nombre = pedir_alta()
     PRIVADAS[cuenta] = privada
     assert api("GET", f"/api/cuentas/{cuenta}")[1]["alta_pedida"] is True
-    assert cuenta in [p["cuenta"] for p in panel("GET", "/api/organizador/altas")[1]["pendientes"]]
+    assert cuenta in [p["cuenta"] for p in api("GET", "/api/altas/pendientes")[1]["pendientes"]]
 
-    codigo, aprobada = panel("POST", "/api/organizador/aprobar", {"cuenta": cuenta, "carga": carga(cuenta, 50)})
-
-    assert codigo == 200, aprobada
-    tx, _ = esperar(aprobada["carga"], limite=240)        # la carga entra en un bloque
-    assert tx["estado"] == "confirmada", tx
+    aprobar(cuenta, "usuario", nombre)                     # el alta entra en un bloque
+    assert api("GET", f"/api/cuentas/{cuenta}")[1]["aprobada"] is True
+    assert cuenta not in [p["cuenta"] for p in api("GET", "/api/altas/pendientes")[1]["pendientes"]]
+    ahora = int(time.time())
+    acta(lambda n: contrato.carga(ORGANIZADOR, n, cuenta, 50, ahora), esperar_bloque=True)
     assert saldo(cuenta) == 50
     transferencia, _ = esperar(api("POST", "/api/transacciones", firmada(cuenta, "bob", 5))[1]["id"], limite=240)
     assert transferencia["estado"] == "confirmada", transferencia
     assert saldo(cuenta) == 45
 
 
-def test_una_carga_firmada_por_otra_clave_queda_rechazada():
+def test_un_acta_o_una_carga_firmada_por_otra_clave_no_entra():
     _, cuenta, _ = pedir_alta()
-    trucha = contrato.carga(PRIVADA["alice"], 1, cuenta, 1000, int(time.time()))
-    codigo, cuerpo = panel("POST", "/api/organizador/aprobar", {"cuenta": cuenta, "carga": trucha})
-    assert codigo == 400 and "organizador" in json.dumps(cuerpo, ensure_ascii=False)
-    codigo, cuerpo = api("POST", "/api/transacciones", trucha)
-    assert codigo == 400 and "organizador" in cuerpo["errores"][0]
+    ahora = int(time.time())
+    for trucha in (contrato.carga(PRIVADA["alice"], 1, cuenta, 1000, ahora),
+                   contrato.alta(PRIVADA["alice"], 1, cuenta, "usuario", "trucha", ahora)):
+        codigo, cuerpo = api("POST", "/api/transacciones", trucha)
+        assert codigo == 400 and "organizador" in cuerpo["errores"][0]
     assert panel("POST", "/api/organizador/rechazar", {"cuenta": cuenta})[0] == 200
 
 
@@ -106,7 +93,7 @@ def test_un_minero_nuevo_queda_pedido_y_al_aprobarlo_empieza_a_trabajar():
     try:
         limite = time.monotonic() + 30
         while True:
-            pendientes = panel("GET", "/api/organizador/altas")[1]["pendientes"]
+            pendientes = api("GET", "/api/altas/pendientes")[1]["pendientes"]
             pedido = next((p for p in pendientes if p["cuenta"] == cuenta), None)
             if pedido:
                 break
@@ -114,7 +101,7 @@ def test_un_minero_nuevo_queda_pedido_y_al_aprobarlo_empieza_a_trabajar():
             time.sleep(1)
         assert pedido["tipo"] == "minero" and pedido["nombre"] == alias
 
-        assert panel("POST", "/api/organizador/aprobar", {"cuenta": cuenta})[0] == 200
+        aprobar(cuenta, "minero", alias)                   # validada por el NCT: ya puede minar
         hilo.join(timeout=90)                              # el /hello pasa y resuelve la tarea modelo
         assert not hilo.is_alive(), "el minero aprobado no terminó de presentarse"
         with urllib.request.urlopen(GATEWAY_URL.rstrip("/") + "/mineros", timeout=10) as respuesta:
@@ -122,4 +109,4 @@ def test_un_minero_nuevo_queda_pedido_y_al_aprobarlo_empieza_a_trabajar():
         assert mineros[cuenta]["alias"] == alias and mineros[cuenta]["bench"] > 0
     finally:
         nuevo.detener()
-        panel("POST", "/api/organizador/baja", {"cuenta": cuenta})
+        dar_de_baja(cuenta)

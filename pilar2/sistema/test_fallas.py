@@ -28,12 +28,22 @@ def logs_gateway():
 
 
 def test_minero_muerto_a_mitad_de_un_rango(minero, tmp_path):
-    """El préstamo vence a los 30 s, el gateway devuelve el rango a la cola y otro resuelve el bloque."""
+    """El préstamo vence a los 30 s, el gateway devuelve el rango a la cola y otro resuelve el bloque.
+
+    La víctima es la trampa «retener» (toma el rango y no lo mina): con un prefijo bajo, una víctima que mina de verdad
+    encuentra el nonce antes de que la maten y la prueba no prueba nada."""
     minero.parar()  # que el rango lo tome la víctima
+    try:
+        _victima_muere(minero, tmp_path)
+    finally:
+        minero.arrancar()  # si la prueba falla, las que siguen no se quedan sin minero
+
+
+def _victima_muere(minero, tmp_path):
     privada, victima = minero_aprobado("victima")
     salida = tmp_path / "victima.log"
     entorno = dict(os.environ, GATEWAY_URL=GATEWAY_URL, CLAVE_PRIVADA=privada, MINERO_ID="victima", PROCESOS="1",
-                   LOGS_DIR=str(tmp_path))
+                   LOGS_DIR=str(tmp_path), TRAMPA="retener")
     with salida.open("w") as archivo:
         proceso = subprocess.Popen([sys.executable, "-m", "minero_cpu"], cwd=PILAR2, env=entorno,
                                    stdout=archivo, stderr=subprocess.STDOUT, start_new_session=True)

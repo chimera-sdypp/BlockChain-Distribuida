@@ -7,9 +7,9 @@ import time
 import pytest
 from redis.exceptions import ConnectionError
 
-from comun.tests.claves import CUENTA, PRIVADA, carga
 from comun import contrato
-from nct.tests.escenario import guardar_recibida, recibida
+from comun.tests.claves import CUENTA, PRIVADA, carga
+from nct.tests.escenario import confirmar, guardar_recibida, recibida
 
 
 def estado(redis, tx):
@@ -112,11 +112,12 @@ def test_una_cuenta_no_aprobada_no_puede_transferir(armar, redis):
 
 
 def test_un_usuario_dado_de_baja_no_puede_transferir(armar, redis):
-    """BC-58: la baja saca la cuenta de `cuentas`; el saldo queda, pero ya no puede operar."""
-    from comun.altas import Altas
+    """BC-58 y BC-79: la baja (en la cadena) saca la cuenta de `cuentas`; el saldo queda, pero ya no puede operar."""
+    from comun.tests.claves import PRIVADA
     nct = armar()
     nct.cargar_genesis()
-    assert Altas(redis).baja(CUENTA["alice"])["tipo"] == "usuario"
+    confirmar(redis, nct, [contrato.baja(PRIVADA["organizador"], 1, CUENTA["alice"], "se fue", 1793836800)])
+    assert not redis.hexists("cuentas", CUENTA["alice"])
     tx = recibida(redis, "alice", "bob", 1)
 
     nct.validar(tx)

@@ -67,3 +67,13 @@ Probado el 09/11 (contrato v1) con `VMS_ACTIVAS=0` y el minero CPU local haciend
 | 56 s | El minero resuelve el bloque: no queda trabajo |
 | 171 s | Baja a 0 VMs (120 s sin trabajo) |
 | ~3,5 min después de parar el minero | KEDA lo apaga (15 s hasta darlo por caído + 180 s de cooldown) |
+
+## Permiso en la cadena (contrato v3, BC-79)
+
+El escalador ya no escribe `cuentas`. Tiene su propia clave (`ESCALADOR_CLAVE`, o la que genera la primera vez y guarda en `escalador:clave`; la pública sale en el log al arrancar) y, para cada VM nueva, firma un **alta delegada** (`alta-<su clave>-<n>`) que manda al backend (`BACKEND_URL`). Al borrar la VM, una baja delegada. Para eso necesita, una sola vez, el permiso del organizador:
+
+```bash
+python -m claves permiso organizador.clave --clave <clave del escalador> --prefijo minero-cpu- --url https://…
+```
+
+Con ese permiso sólo puede dar de alta y de baja mineros `minero-cpu-*`: no aprueba usuarios ni carga saldo. El gateway deja minar a la VM apenas el NCT valida su alta, así puede minar el bloque que la confirma aunque no haya otros mineros.

@@ -52,26 +52,52 @@ import json, sys
 print(sum(1 for m in json.load(sys.stdin) if m.get("vivo") and str(m.get("alias") or "").startswith("minero-cpu-")))'
 }
 
-# Lo mismo que hace el escalador antes de cada apply (ClavesVMs, BC-57): la clave de cada VM
-# minero-cpu-0..N-1 (las guardadas en escalador:claves o nuevas), aprobada como minero en `cuentas`;
-# las de las VMs que sobran, dadas de baja. Corre en un pod del TrP, que tiene el contrato y Redis.
+# Lo mismo que hace el escalador antes de cada apply (ClavesVMs, BC-57 y BC-79): la clave de cada VM
+# minero-cpu-0..N-1 (las guardadas en escalador:claves o nuevas) y, para las que no están en la cadena, un alta
+# delegada firmada con la clave del escalador (necesita su permiso: `python -m claves permiso`); las de las VMs que
+# sobran, una baja delegada. Corre en un pod del TrP, que tiene el contrato, Redis y llega al backend.
 # Devuelve {nombre: privada} en JSON, para TF_VAR_claves.
 claves_vms() {
     k exec -i deploy/trp -- python - "$1" <<'EOF'
-import json, sys, time
+import json, sys, time, urllib.request
 from comun import config, contrato, redisdb
 
-CLAVES, PREFIJO = "escalador:claves", "minero-cpu-"
+CLAVES, PREFIJO, BACKEND = "escalador:claves", "minero-cpu-", "http://backend:8080"
 cantidad, redis = int(sys.argv[1]), redisdb.conectar(config.cargar("preparar"))
+privada = redis.get("escalador:clave")
+if not privada or redis.hget(contrato.PERMISOS, contrato.clave_publica(privada)) is None:
+    sys.exit("El escalador no tiene clave o permiso en la cadena: ver pilar2/escalador/README.md")
+escalador = contrato.clave_publica(privada)
+
+
+def pedir(metodo, ruta, cuerpo=None):
+    datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
+    pedido = urllib.request.Request(BACKEND + ruta, data=datos, method=metodo, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(pedido, timeout=10) as respuesta:
+        return json.loads(respuesta.read() or b"null")
+
+
+nonce = pedir("GET", f"/api/cuentas/{escalador}")["nonce"]
+
+
+def acta(tipo, cuenta, datos):
+    global nonce
+    nonce += 1
+    tx = contrato.acta(privada, tipo, nonce, cuenta, datos, int(time.time()), delegada=True)
+    pedir("POST", "/api/transacciones", tx)
+
+
 guardadas = redis.hgetall(CLAVES)
 claves = {f"{PREFIJO}{n}": guardadas.get(f"{PREFIJO}{n}") or contrato.nueva_clave()[0] for n in range(cantidad)}
 redis.hset(CLAVES, mapping=claves) if claves else None
-for nombre, privada in claves.items():
-    datos = json.dumps({"tipo": "minero", "nombre": nombre, "alta": int(time.time())})
-    redis.hsetnx(contrato.CUENTAS, contrato.clave_publica(privada), datos)
-for nombre, privada in guardadas.items():
+for nombre, clave in claves.items():
+    cuenta = contrato.clave_publica(clave)
+    if not redis.hexists(contrato.CUENTAS, cuenta) and not redis.hexists(contrato.ALTAS_EN_CAMINO, cuenta):
+        acta("alta", cuenta, f"minero:{nombre}")
+for nombre, clave in guardadas.items():
     if nombre.startswith(PREFIJO) and nombre[len(PREFIJO):].isdigit() and int(nombre[len(PREFIJO):]) >= cantidad:
-        redis.hdel(contrato.CUENTAS, contrato.clave_publica(privada))
+        if redis.hexists(contrato.CUENTAS, contrato.clave_publica(clave)):
+            acta("baja", contrato.clave_publica(clave), "la VM se borró")
         redis.hdel(CLAVES, nombre)
 print(json.dumps(claves))
 EOF

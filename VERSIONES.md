@@ -1,8 +1,20 @@
 # Versiones
 
-Versión actual: **0.6.1** (19/11/2026)
+Versión actual: **0.7.0** (19/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.7.0 — 19/11/2026
+
+Billetera propia, todo en la cadena y nodos que verifican (epic BC-77, #76). **Contrato v3: pide una cadena nueva.**
+
+- **Actas en la cadena** (BC-79): altas, bajas y permisos son transacciones firmadas por el organizador (`alta-<n>`, `baja-<n>`, `permiso-<n>`); el panel ya no pide la privada. El escalador tiene su propia clave con permiso para `minero-cpu-*`.
+- **Estado desde la cadena** (BC-80): `comun/estado.py`; Redis es caché y el NCT lo revisa cada 60 s. Cada bloque lleva la raíz de estado (raíz = MD5(raíz_tx|raíz_estado)); vector v3 verificado en Python, md5sum y CUDA.
+- **Shares publicados** (BC-82): la raíz de la lista de cada época queda en `shares-<e>` y la lista en `/api/epocas/<n>`.
+- **Nodos verificadores** (BC-83): `python -m nodo`, con su copia en SQLite y atestaciones firmadas; 2 en el cluster (`/nodos/0` y `/nodos/1`).
+- **Validadores** (BC-86): opcionales, dados de alta por acta; con 2 de 3 firmas el bloque queda finalizado y una doble firma deja la prueba.
+- **Billetera** (BC-78, BC-84): `python -m claves` y `billetera.html` descargable (con su SHA-256 en el release), que verifica la cadena en el navegador.
+- **Pruebas** (BC-85): `pilar3/pruebas/operador.py`, 8 ataques del operador: 16 de 16 en el k3s. Modelo de confianza en `pilar2/CONTRATO.md`.
 
 ## 0.6.1 — 19/11/2026
 

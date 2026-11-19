@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Billetera Chimera</title>
+<!-- BC-78 y BC-84: la billetera que se baja una vez y se abre desde el disco. Un solo archivo, sin nada externo:
+     la clave se genera y firma acá, y el saldo lo calcula este navegador verificando la cadena entera.
+     Se arma con `python billetera/armar.py` (incrusta verificador.js); el SHA-256 del release dice que es ésta. -->
+<style>
+  :root { --fondo: #f7f7f5; --texto: #1d1d1b; --suave: #6b6b66; --borde: #d8d8d2; --tarjeta: #fff; --bien: #1f7a3a;
+          --mal: #b3261e; --aviso: #8a5a00; --acento: #2b5fb3; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fondo: #18181a; --texto: #ececea; --suave: #a0a09a; --borde: #38383c; --tarjeta: #222226; --bien: #5cc27a;
+            --mal: #ff7b72; --aviso: #e0b050; --acento: #7aa7f0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--texto); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.5rem; margin: 8px 0; } h2 { font-size: 1.1rem; margin: 0 0 8px; }
+  section { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 8px; padding: 14px; margin: 12px 0; }
+  label { display: block; margin: 6px 0; } input, select, textarea, button { font: inherit; }
+  input, select, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--borde); border-radius: 6px;
+                            background: var(--fondo); color: var(--texto); }
+  textarea { min-height: 64px; } button { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--acento);
+                                          background: var(--acento); color: #fff; cursor: pointer; margin: 4px 4px 4px 0; }
+  button.secundario { background: transparent; color: var(--acento); } button:disabled { opacity: .5; cursor: default; }
+  .mono { font-family: ui-monospace, monospace; word-break: break-all; } .suave { color: var(--suave); }
+  .bien { color: var(--bien); } .mal { color: var(--mal); font-weight: 600; } .aviso { color: var(--aviso); }
+  .fila { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+  table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--borde); vertical-align: top; }
+  .chip { display: inline-block; padding: 0 8px; border-radius: 999px; border: 1px solid currentColor; font-size: .85em; }
+  .grande { font-size: 1.6rem; font-weight: 600; } #registro { max-height: 180px; overflow: auto; font-size: .85em; }
+  .tabla { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Billetera Chimera</h1>
+  <p class="suave">Esta página no la sirve nadie: la bajaste y la abriste desde tu disco. Tu clave privada se genera y se
+    usa acá, y nunca sale de este navegador. El saldo no se le cree al servidor: se baja la cadena, se verifica bloque por
+    bloque (hashes, firmas, nonces, saldos, actas y pagos) y se compara con nodos que corre otra gente.</p>
+
+  <section>
+    <h2>Dónde</h2>
+    <div class="fila">
+      <label>El backend <input id="url" class="mono" spellcheck="false"></label>
+      <label>La clave del organizador (vacía: la del génesis) <input id="organizador" class="mono" spellcheck="false"></label>
+    </div>
+    <label>Nodos para comparar (uno por renglón: <span class="mono">url [clave del nodo]</span>)
+      <textarea id="nodos" class="mono" spellcheck="false"></textarea></label>
+    <button id="guardar" class="secundario" type="button">Guardar</button>
+  </section>
+
+  <section>
+    <h2>Tu clave</h2>
+    <p id="cuenta" class="mono suave">Sin clave cargada.</p>
+    <div class="fila">
+      <label>Nombre del archivo <input id="nombre-archivo" value="mi-cuenta" spellcheck="false"></label>
+      <label>O cargá tu .jwk <input id="archivo" type="file" accept=".jwk,.json,application/json"></label>
+    </div>
+    <button id="generar" type="button">Generar una clave nueva y bajarla</button>
+    <p class="suave">Guardá bien el archivo: sin él no podés usar la cuenta. Es el mismo formato que
+      <span class="mono">python -m claves exportar</span>, y la herramienta de claves lo lee.</p>
+  </section>
+
+  <section>
+    <h2>Pedir el alta</h2>
+    <div class="fila">
+      <label>Tu nombre (alias) <input id="alias" maxlength="32" spellcheck="false"></label>
+      <label>Soy <select id="tipo"><option value="usuario">usuario</option><option value="minero">minero</option>
+        <option value="validador">validador</option></select></label>
+    </div>
+    <button id="pedir" type="button">Pedir el alta</button>
+    <p id="msg-alta" class="suave"></p>
+  </section>
+
+  <section>
+    <h2>Transferir</h2>
+    <div class="fila">
+      <label>Destino (cuenta) <input id="destino" class="mono" spellcheck="false" maxlength="64"></label>
+      <label>Monto <input id="monto" type="number" min="1" step="1"></label>
+    </div>
+    <button id="transferir" type="button">Firmar y mandar</button>
+    <p id="msg-tx" class="suave"></p>
+  </section>
+
+  <section>
+    <h2>Saldo verificado por tu navegador</h2>
+    <button id="verificar" type="button">Bajar lo nuevo y verificar</button>
+    <button id="olvidar" class="secundario" type="button">Olvidar la copia y verificar desde el génesis</button>
+    <p><span id="saldo" class="grande">—</span> <span id="saldo-estado" class="suave"></span></p>
+    <div id="resumen" class="suave"></div>
+    <h3>Comparación</h3>
+    <div class="tabla"><table><thead><tr><th>con</th><th>altura</th><th>resultado</th></tr></thead><tbody id="comparacion"></tbody></table></div>
+    <h3>Tus movimientos</h3>
+    <div class="tabla"><table><thead><tr><th>bloque</th><th>tipo</th><th>con</th><th>monto</th><th>estado</th></tr></thead>
+      <tbody id="movimientos"></tbody></table></div>
+    <h3>Registro</h3>
+    <div id="registro" class="mono suave"></div>
+  </section>
+</main>
+
+<script>
+/*VERIFICADOR*/
+</script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const POR_DEFECTO = "https://blockchain-chimera.duckdns.org";
+const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
+const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const deB64url = (t) => Uint8Array.from(atob(t.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const corto = (h) => (h ? `${h.slice(0, 10)}…` : "—");
+const codificador = new TextEncoder();
+
+function el(etiqueta, atributos = {}, ...hijos) {
+  const nodo = document.createElement(etiqueta);
+  for (const [k, v] of Object.entries(atributos)) k === "clase" ? (nodo.className = v) : nodo.setAttribute(k, v);
+  for (const h of hijos) nodo.append(h);
+  return nodo;
+}
+function anotar(texto, clase = "") {
+  $("registro").prepend(el("div", { clase }, `${new Date().toLocaleTimeString()}  ${texto}`));
+}
+
+// ── Configuración (localStorage, si el navegador lo deja) ──
+function leer(clave, otro) { try { return localStorage.getItem(clave) ?? otro; } catch { return otro; } }
+function escribir(clave, valor) { try { localStorage.setItem(clave, valor); } catch { /* sin almacenamiento */ } }
+$("url").value = leer("billetera:url", POR_DEFECTO);
+$("organizador").value = leer("billetera:organizador", "");
+$("nodos").value = leer("billetera:nodos", "") || `${$("url").value}/nodos/0\n${$("url").value}/nodos/1`;
+$("guardar").addEventListener("click", () => {
+  escribir("billetera:url", base()); escribir("billetera:organizador", $("organizador").value.trim());
+  escribir("billetera:nodos", $("nodos").value); anotar("Guardado.");
+});
+const base = () => $("url").value.trim().replace(/\/+$/, "");
+
+async function api(ruta, opciones, raiz = base()) {
+  const respuesta = await fetch(raiz + ruta, opciones);
+  const cuerpo = await respuesta.json().catch(() => ({}));
+  return { ok: respuesta.ok, status: respuesta.status, cuerpo };
+}
+const errorDe = (c) => [].concat(c.errores ? Object.values(c.errores).flat() : [], c.error ? [c.error] : []).join("; ") || "sin detalle";
+
+// ── La clave (Ed25519 con WebCrypto) ──
+let clave = null;  // {privada: CryptoKey, cuenta}
+
+async function usarJwk(jwk) {
+  const privada = await crypto.subtle.importKey("jwk", { kty: "OKP", crv: "Ed25519", d: jwk.d, x: jwk.x },
+                                                { name: "Ed25519" }, false, ["sign"]);
+  clave = { privada, cuenta: hex(deB64url(jwk.x)) };
+  $("cuenta").replaceChildren("Tu cuenta: ", el("span", { clase: "mono" }, clave.cuenta));
+  $("cuenta").className = "mono";
+}
+const firmar = async (texto) => hex(await crypto.subtle.sign({ name: "Ed25519" }, clave.privada, codificador.encode(texto)));
+
+$("generar").addEventListener("click", async () => {
+  try {
+    const par = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const { kty, crv, d, x } = await crypto.subtle.exportKey("jwk", par.privateKey);
+    const contenido = JSON.stringify({ kty, crv, d, x });
+    const enlace = el("a", { href: URL.createObjectURL(new Blob([contenido], { type: "application/json" })),
+                             download: `${$("nombre-archivo").value || "mi-cuenta"}.jwk` });
+    document.body.append(enlace); enlace.click(); enlace.remove();
+    await usarJwk({ d, x });
+    anotar("Clave nueva generada y bajada.");
+  } catch (error) { anotar(`Este navegador no genera claves Ed25519: ${error.message}`, "mal"); }
+});
+$("archivo").addEventListener("change", async (e) => {
+  try { await usarJwk(JSON.parse(await e.target.files[0].text())); anotar("Clave cargada."); }
+  catch (error) { anotar(`No es un .jwk Ed25519: ${error.message}`, "mal"); }
+});
+
+// ── Alta y transferencia ──
+$("pedir").addEventListener("click", async () => {
+  if (!clave) return anotar("Primero cargá o generá una clave.", "mal");
+  const tipo = $("tipo").value, nombre = $("alias").value.trim();
+  if (!Verificador.nombreValido(nombre)) return ($("msg-alta").textContent = "El nombre: de 1 a 32 letras, números, «_», «.» o «-».");
+  const pedido = { tipo, clave_publica: clave.cuenta, nombre, firma: await firmar(`alta:${tipo}:${clave.cuenta}:${nombre}`) };
+  const { ok, status, cuerpo } = await api("/api/altas", { method: "POST", headers: { "content-type": "application/json" },
+                                                          body: JSON.stringify(pedido) });
+  $("msg-alta").textContent = ok ? "Pedido. Queda aprobado cuando el organizador firma tu alta y entra en un bloque."
+                                 : `No se pudo (${status}): ${errorDe(cuerpo)}`;
+});
+
+$("transferir").addEventListener("click", async () => {
+  if (!clave) return anotar("Primero cargá o generá una clave.", "mal");
+  const destino = $("destino").value.trim(), monto = Number($("monto").value);
+  if (!Verificador.cuentaValida(destino) || !Number.isInteger(monto) || monto < 1) return ($("msg-tx").textContent = "Destino: una cuenta (64 hex). Monto: entero ≥ 1.");
+  const cuenta = await api(`/api/cuentas/${clave.cuenta}`);
+  if (!cuenta.ok) return ($("msg-tx").textContent = `No se pudo leer tu nonce: ${errorDe(cuenta.cuerpo)}`);
+  const tx = { origen: clave.cuenta, destino, monto, nonce: cuenta.cuerpo.nonce + 1, timestamp: Math.floor(Date.now() / 1000) };
+  tx.firma = await firmar(Verificador.mensajeTransaccion(tx));
+  const { ok, status, cuerpo } = await api("/api/transacciones", { method: "POST", headers: { "content-type": "application/json" },
+                                                                  body: JSON.stringify(tx) });
+  if (!ok) return ($("msg-tx").textContent = `No entró (${status}): ${errorDe(cuerpo)}`);
+  $("msg-tx").textContent = `Mandada: ${cuerpo.id}. Verificá el saldo cuando entre en un bloque.`;
+  seguir(cuerpo.id);
+});
+async function seguir(id) {
+  for (let i = 0; i < 120; i++) {
+    const { ok, cuerpo } = await api(`/api/transacciones/${id}`);
+    if (ok && (cuerpo.estado === "confirmada" || cuerpo.estado === "rechazada")) {
+      $("msg-tx").textContent = `${id}: ${cuerpo.estado}${cuerpo.motivo ? ` (${cuerpo.motivo})` : ""}${cuerpo.estado === "confirmada" ? ". Verificá el saldo." : ""}`;
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
+// ── La copia verificada, en IndexedDB (si no se puede, en memoria) ──
+const memoria = new Map();
+async function base_datos() {
+  return new Promise((resolver, rechazar) => {
+    const pedido = indexedDB.open("billetera-chimera", 1);
+    pedido.onupgradeneeded = () => pedido.result.createObjectStore("copias");
+    pedido.onsuccess = () => resolver(pedido.result);
+    pedido.onerror = () => rechazar(pedido.error);
+  });
+}
+async function guardarCopia(clave_, copia) {
+  memoria.set(clave_, copia);
+  try {
+    const db = await base_datos();
+    await new Promise((r, x) => { const t = db.transaction("copias", "readwrite"); t.objectStore("copias").put(copia, clave_);
+                                  t.oncomplete = r; t.onerror = () => x(t.error); });
+    db.close();
+  } catch { /* sin IndexedDB: queda en memoria */ }
+}
+async function leerCopia(clave_) {
+  try {
+    const db = await base_datos();
+    const copia = await new Promise((r, x) => { const p = db.transaction("copias").objectStore("copias").get(clave_);
+                                                p.onsuccess = () => r(p.result); p.onerror = () => x(p.error); });
+    db.close();
+    return copia || memoria.get(clave_) || null;
+  } catch { return memoria.get(clave_) || null; }
+}
+const copiaVacia = () => ({ estado: Verificador.estadoNuevo(), hashes: {}, movimientos: [], firmas: [], detalles: {} });
+
+// Baja lo nuevo (orden ascendente), verifica cada bloque contra la copia y la guarda. Si uno no cierra, para.
+async function sincronizar(copia) {
+  const reglas = { organizador: $("organizador").value.trim(), detalles: copia.detalles,
+    shares: async (e) => { const r = await api(`/api/epocas/${e}`); return r.ok ? r.cuerpo.detalle : null; } };
+  let nuevos = 0;
+  while (true) {
+    const desde = copia.estado.altura + 1;
+    const { ok, status, cuerpo } = await api(`/api/bloques?orden=asc&desde=${desde}&limite=100`);
+    if (!ok) throw new Error(`el backend contestó ${status} a /api/bloques`);
+    if (!cuerpo.length) break;
+    for (const bloque of cuerpo) {
+      const { problemas, avisos } = await Verificador.aplicarBloque(copia.estado, bloque, reglas);
+      if (problemas.length) {
+        copia.detalles = reglas.detalles;
+        return { nuevos, rechazado: { altura: copia.estado.altura + 1, hash: bloque.block_hash, problemas } };
+      }
+      for (const aviso of avisos) anotar(`Bloque ${copia.estado.altura}: ${aviso}`, "aviso");
+      copia.hashes[copia.estado.altura] = bloque.block_hash;
+      for (const f of bloque.firmas || []) copia.firmas.push({ ...f, altura: bloque.altura, block_hash: bloque.block_hash });
+      for (const tx of bloque.transactions) copia.movimientos.push({ altura: bloque.altura, tx });
+      nuevos += 1;
+    }
+    if (cuerpo.length < 100) break;
+  }
+  copia.detalles = reglas.detalles;
+  return { nuevos, rechazado: null };
+}
+
+function fila(con, altura, texto, clase) {
+  $("comparacion").append(el("tr", {}, el("td", { clase: "mono" }, con), el("td", {}, String(altura)), el("td", { clase }, texto)));
+}
+
+async function verificar(desdeCero = false) {
+  const boton = $("verificar"); boton.disabled = true;
+  $("comparacion").replaceChildren();
+  const id = `${base()}|${$("organizador").value.trim()}`;
+  try {
+    const copia = desdeCero ? copiaVacia() : (await leerCopia(id)) || copiaVacia();
+    const inicio = performance.now();
+    const { nuevos, rechazado } = await sincronizar(copia);
+    await guardarCopia(id, copia);
+    const e = copia.estado, raiz = Verificador.raiz(e);
+    anotar(`${nuevos} bloques nuevos verificados en ${((performance.now() - inicio) / 1000).toFixed(1)} s; altura ${e.altura}.`);
+    if (rechazado) {
+      anotar(`El bloque ${rechazado.altura} (${rechazado.hash}) NO verifica: ${rechazado.problemas.join("; ")}`, "mal");
+      fila("la cadena", rechazado.altura, `bloque rechazado: ${rechazado.problemas[0]}`, "mal");
+    }
+    // Finalidad: firmas de los bloques bajados más las últimas de cada validador, verificadas acá.
+    const final = await api("/api/finalidad");
+    const firmas = [...copia.firmas, ...Object.values(final.ok ? final.cuerpo.firmas || {} : {})];
+    const finalidad = await Verificador.finalidad(e, firmas, copia.hashes);
+    $("resumen").replaceChildren(
+      el("div", {}, `Altura verificada ${e.altura}, punta `, el("span", { clase: "mono" }, corto(e.punta)), ", raíz de estado ",
+         el("span", { clase: "mono" }, corto(raiz))),
+      el("div", {}, finalidad.validadores
+        ? `Finalizado hasta el bloque ${finalidad.altura} (${finalidad.firmasValidas} de ${finalidad.validadores} validadores, hacen falta ${finalidad.umbral}).`
+        : "Sin validadores en la cadena: nada se finaliza (los bloques sólo se confirman)."));
+    if (!clave) { $("saldo").textContent = "—"; $("saldo-estado").textContent = "cargá tu clave para ver tu saldo"; boton.disabled = false; return; }
+    const c = clave.cuenta, mio = e.saldos[c] || 0;
+    $("saldo").textContent = String(mio);
+    $("saldo-estado").textContent = e.cuentas[c] ? `(${e.cuentas[c].tipo} ${e.cuentas[c].nombre}, verificado por tu navegador)` : "(sin alta en la cadena)";
+    await comparar(copia, c, mio, raiz);
+    pintarMovimientos(copia, c, finalidad.altura);
+  } catch (error) {
+    anotar(`No se pudo verificar: ${error.message}`, "mal");
+  }
+  boton.disabled = false;
+}
+
+async function comparar(copia, c, mio, raiz) {
+  const e = copia.estado;
+  const hojaPropia = (Verificador.hojas(e).find(([k]) => k === c) || [null, null])[1];
+  try {
+    const prueba = await api(`/api/prueba/${c}`);
+    if (!prueba.ok) fila("backend /api/prueba", "—", `no respondió (${prueba.status})`, "aviso");
+    else {
+      const p = prueba.cuerpo;
+      const rama = p.hoja ? Verificador.raizDeRama(p.hoja, p.rama) === p.raiz : true;
+      if (!rama) fila("backend /api/prueba", p.altura, "la rama de Merkle no da su raíz", "mal");
+      else if (p.altura !== e.altura) fila("backend /api/prueba", p.altura, "otra altura: verificá de nuevo", "aviso");
+      else if (p.raiz !== raiz || p.hoja !== hojaPropia) fila("backend /api/prueba", p.altura, `NO coincide: el servidor dice ${p.hoja || "nada"}`, "mal");
+      else fila("backend /api/prueba", p.altura, "coincide (hoja y raíz de estado, con su rama de Merkle)", "bien");
+    }
+    const cuenta = await api(`/api/cuentas/${c}`);
+    if (cuenta.ok) {
+      const saldo = cuenta.cuerpo.saldo;
+      fila("backend /api/cuentas", "—", saldo === mio ? `saldo ${saldo}: coincide` : `dice ${saldo} y la cadena da ${mio}`,
+           saldo === mio ? "bien" : "mal");
+    }
+  } catch (error) { fila("backend", "—", `no respondió: ${error.message}`, "aviso"); }
+  let coinciden = 0;
+  for (const renglon of $("nodos").value.split("\n").map((r) => r.trim()).filter(Boolean)) {
+    const [url, fija] = renglon.split(/\s+/);
+    try {
+      const { ok, cuerpo: a } = await api("/api/atestacion", undefined, url.replace(/\/+$/, ""));
+      if (!ok) { fila(url, "—", "no respondió", "aviso"); continue; }
+      if (fija && a.nodo !== fija) { fila(url, a.altura, "la atestación es de otra clave que la que anotaste", "mal"); continue; }
+      if (!(await Verificador.verificarFirma(a.nodo, Verificador.mensajeAtestacion(a), a.firma))) {
+        fila(url, a.altura, "la firma de la atestación no sirve", "mal"); continue;
+      }
+      if (a.altura > e.altura) fila(url, a.altura, "va adelante: verificá de nuevo para comparar", "aviso");
+      else if (a.altura === e.altura && a.punta === e.punta && a.raiz === raiz) { coinciden += 1; fila(url, a.altura, `coincide (nodo ${corto(a.nodo)})`, "bien"); }
+      else if (a.altura < e.altura && copia.hashes[a.altura] === a.punta) { coinciden += 1; fila(url, a.altura, "coincide hasta donde llega (va atrás)", "bien"); }
+      else fila(url, a.altura, `NO coincide: su punta es ${corto(a.punta)}`, "mal");
+    } catch (error) { fila(url, "—", `no respondió: ${error.message}`, "aviso"); }
+  }
+  if (coinciden < 2) anotar(`Coinciden ${coinciden} nodos: para no depender de uno solo, sumá al menos dos.`, "aviso");
+}
+
+function pintarMovimientos(copia, c, finalizada) {
+  const filas = copia.movimientos.filter(({ tx }) => tx.origen === c || tx.destino === c).slice(-50).reverse()
+    .map(({ altura, tx }) => el("tr", {}, el("td", {}, String(altura)), el("td", {}, Verificador.tipoDe(tx)),
+      el("td", { clase: "mono" }, corto(tx.origen === c ? tx.destino : tx.origen)),
+      el("td", { clase: tx.origen === c ? "mal" : "bien" }, `${tx.origen === c ? "−" : "+"}${tx.monto}`),
+      el("td", {}, el("span", { clase: `chip ${altura <= finalizada ? "bien" : ""}` }, altura <= finalizada ? "finalizada" : "confirmada"))));
+  $("movimientos").replaceChildren(...(filas.length ? filas : [el("tr", {}, el("td", { colspan: "5", clase: "suave" }, "Sin movimientos."))]));
+}
+
+$("verificar").addEventListener("click", () => verificar(false));
+$("olvidar").addEventListener("click", () => verificar(true));
+if (!window.isSecureContext || !crypto.subtle) anotar("Este navegador no tiene WebCrypto en esta página: abrila desde el disco o por HTTPS.", "mal");
+</script>
+</body>
+</html>

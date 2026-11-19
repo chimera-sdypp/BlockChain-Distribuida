@@ -1,7 +1,10 @@
 """Contrato entre los servicios: cuentas, transacciones firmadas, bloque, recompensas y nombres de colas y claves.
 
-La especificación completa está en pilar2/CONTRATO.md: es la versión 2 (cuentas con clave Ed25519,
-transacciones firmadas con nonce por cuenta, emisión, coinbase en la raíz y participación por shares).
+La especificación completa está en pilar2/CONTRATO.md: es la versión 3. La v2 trajo las cuentas con clave
+Ed25519, las transacciones firmadas con nonce por cuenta, la emisión, la coinbase en la raíz y la participación
+por shares. La v3 (BC-79, BC-80 y BC-82) pone todo en la cadena: las altas, bajas y permisos son transacciones
+firmadas, cada bloque se compromete con el estado (la raíz de estado) y con los shares de la época que paga.
+`saldos`, `cuentas`, `nonces:confirmados` y `permisos` de Redis son caché: la verdad es la cadena.
 """
 
 import hashlib
@@ -35,7 +38,8 @@ ESTADOS_TX = ("recibida", "pendiente", "confirmada", "rechazada")
 # Versión 2
 CUENTAS = "cuentas"                  # cuenta → JSON {tipo, nombre, alta}
 ALTAS_PENDIENTES = "altas:pendientes"  # cuenta → JSON {tipo, nombre, pedida}
-NONCES = "nonces"                    # cuenta → último nonce aceptado (pendiente o confirmado); «emision» → última carga
+NONCES = "nonces"                    # cuenta → último nonce aceptado (pendiente o confirmado); «emision» → la última
+                                     # carga o acta del organizador
 ESPERA = "espera:{}"                 # sorted set por cuenta: las que llegaron antes que un nonce anterior (score = nonce)
 EN_ESPERA = "tx:en_espera"           # sorted set: id → cuándo entró en espera (para rechazar las que no se destraban)
 SHARES = "shares:{}"                 # sorted set de la época: minero → shares aceptados (ZINCRBY)
@@ -65,14 +69,23 @@ def prob_sin_solucion(tamano, prefijo):
     """Probabilidad de que un rango de `tamano` nonces no tenga ningún hash con `prefijo` (BC-75): e^(-N / 16^p)."""
     return math.exp(-tamano / 16 ** len(prefijo))
 # BC-70: lo que se le saca a tx:<id> al confirmarla. Ya está en el bloque: queda {estado, bloque}.
-CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "motivo")
+CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "datos", "motivo")
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"
 CAMPOS_HISTORIAL = ("alta", "bloques", "recompensas", "shares", "rangos", "segundos_conectado", "ultimo_aviso",
                     "hashes_por_segundo", "conectado")
 CONECTADOS = "mineros:conectados"    # conjunto: los mineros con conectado = 1, para darlos por desconectados
-TIPOS_CUENTA = ("usuario", "minero", "organizador")
+TIPOS_CUENTA = ("usuario", "minero", "organizador", "validador")
+# Versión 3: el estado que sale de la cadena (lo reconstruye comun/estado.py; Redis es caché)
+NONCES_CONFIRMADOS = "nonces:confirmados"  # cuenta → último nonce que está en la cadena; «emision» → la última acta o carga
+PERMISOS = "permisos"                # clave → prefijo de nombre de los mineros que puede dar de alta y de baja (BC-79)
+ALTAS_EN_CAMINO = "altas:en_camino"  # cuenta → JSON {tipo, nombre, tx}: altas validadas que todavía no entraron en un
+                                     # bloque. El gateway deja minar a un minero en camino: puede minar su propia alta
+ESTADO_SNAPSHOT = "estado:snapshot"  # JSON del estado a una altura (comun/estado.py), para no recorrer todo al arrancar
+ESTADO_REVISION = "estado:revision"  # lock: una sola réplica del NCT compara el caché con la cadena a la vez
+EPOCA_PUBLICADA = "epoca:{}"         # el mismo epoca:<n>: la lista de shares que se publica (BC-82)
 
 CEROS = "0" * 32
+RAIZ_VACIA = CEROS  # la raíz de estado de un árbol sin hojas (la del génesis: el estado antes del bloque 0)
 # Los saldos van a Redis con HINCRBY (entero de 64 bits, hasta ~9,2 × 10^18): con este tope no se desborda.
 MONTO_MAXIMO = 10**12
 NONCE_MAXIMO = 2**63 - 1
@@ -100,7 +113,8 @@ def recompensa(prefijo, base=10):
 
 # ── Cuentas y firmas (v2) ──
 
-EMISION = "emision"  # reservada: es el origen de la plata nueva (génesis, carga, coinbase y participación)
+EMISION = "emision"  # reservada: el origen de la plata nueva (génesis, carga, coinbase y participación) y de las actas
+                     # del organizador (alta, baja y permiso)
 CUENTA = re.compile(r"^[0-9a-f]{64}$")  # clave pública Ed25519 en hex, en minúscula
 FIRMA = re.compile(r"^[0-9a-f]{128}$")
 
@@ -193,6 +207,8 @@ def validar_transaccion_firmada(datos):
         errores.append("timestamp: entero, segundos Unix")
     if not isinstance(datos.get("firma"), str) or not FIRMA.match(datos["firma"]):
         errores.append("firma: Ed25519 en hex (128 caracteres en minúscula)")
+    if datos.get("datos", "") != "":
+        errores.append("datos: una transferencia no lleva datos (no van firmados)")
     if errores:
         return errores
     if datos["origen"] == datos["destino"]:
@@ -206,9 +222,12 @@ def validar_transaccion_firmada(datos):
 
 # ── Transacciones de emisión (v2): origen «emision», con un id fijo que no se puede repetir ──
 
-def _emision(id_, destino, monto, nonce, timestamp, firma=""):
-    return {"id": id_, "origen": EMISION, "destino": destino, "monto": monto, "nonce": nonce,
-            "timestamp": timestamp, "firma": firma}
+def _emision(id_, destino, monto, nonce, timestamp, firma="", datos=""):
+    tx = {"id": id_, "origen": EMISION, "destino": destino, "monto": monto, "nonce": nonce,
+          "timestamp": timestamp, "firma": firma}
+    if datos:
+        tx["datos"] = datos
+    return tx
 
 
 def carga(privada_organizador, numero, destino, monto, timestamp):
@@ -231,6 +250,8 @@ def validar_carga(tx, organizador):
         errores.append("id: tiene que ser carga-<n>, con n = nonce desde 1")
     if not _entero(tx.get("timestamp"), 0, NONCE_MAXIMO):
         errores.append("timestamp: entero, segundos Unix")
+    if tx.get("datos", "") != "":
+        errores.append("datos: una carga no lleva datos")
     if not errores and not verificar_firma(organizador, mensaje_transaccion(tx), tx.get("firma")):
         errores.append("firma: no es la del organizador")
     return errores
@@ -254,18 +275,161 @@ def es_coinbase(tx):
     return es_emision(tx) and str(tx.get("id", "")).startswith("cb-")
 
 
+# Los tipos de transacción, por el prefijo del id. Las de origen «emision» las arma el sistema o las firma el
+# organizador; las actas (alta, baja, permiso) son las decisiones del organizador (BC-79).
+_TIPOS_EMISION = (("genesis-", "genesis"), ("organizador-", "organizador"), ("cb-", "coinbase"), ("carga-", "carga"),
+                  ("part-", "participacion"), ("shares-", "shares"), ("alta-", "alta"), ("baja-", "baja"),
+                  ("permiso-", "permiso"))
+ACTAS = ("alta", "baja", "permiso")
+MOTIVO_MAXIMO = 100
+
+
+def tipo_de(tx):
+    """transferencia, genesis, organizador, coinbase, carga, participacion, shares, alta, baja, permiso o desconocida.
+
+    Una alta o baja con origen en una cuenta es **delegada**: la firma la clave a la que el organizador le dio un
+    permiso (el escalador, para las VMs), y sólo vale para mineros con ese prefijo de nombre.
+    """
+    id_ = str(tx.get("id", ""))
+    if tx.get("origen") != EMISION:
+        return next((acta for acta in ("alta", "baja") if id_.startswith(f"{acta}-")), "transferencia")
+    return next((tipo for prefijo, tipo in _TIPOS_EMISION if id_.startswith(prefijo)), "desconocida")
+
+
+def es_acta(tx):
+    return tipo_de(tx) in ACTAS
+
+
+def es_delegada(tx):
+    return es_acta(tx) and tx.get("origen") != EMISION
+
+
+def id_acta(tipo, origen, numero):
+    """`alta-<n>` (del organizador: n es el nonce de «emision», el mismo de las cargas) o `alta-<clave>-<n>`
+    (delegada: n es el nonce de la clave que firma)."""
+    return f"{tipo}-{numero}" if origen == EMISION else f"{tipo}-{origen}-{numero}"
+
+
+def mensaje_acta(tx):
+    """Lo que firma el organizador (o la clave con permiso): el tipo adelante, así una firma de carga no sirve de alta."""
+    return f"{tipo_de(tx)}:{tx['origen']}:{tx['destino']}:{tx['nonce']}:{tx['timestamp']}:{tx.get('datos', '')}"
+
+
+def acta(privada_hex, tipo, numero, destino, datos, timestamp, delegada=False):
+    """Una decisión firmada que va en la cadena: alta, baja o permiso (BC-79)."""
+    origen = clave_publica(privada_hex) if delegada else EMISION
+    tx = {"id": id_acta(tipo, origen, numero), "origen": origen, "destino": destino, "monto": 0, "nonce": numero,
+          "timestamp": timestamp, "datos": datos}
+    tx["firma"] = firmar(privada_hex, mensaje_acta(tx))
+    return tx
+
+
+def alta(privada_hex, numero, cuenta, tipo, nombre, timestamp, delegada=False):
+    """`alta-<n>`: la cuenta queda aprobada como `tipo` cuando el bloque se confirma."""
+    return acta(privada_hex, "alta", numero, cuenta, f"{tipo}:{nombre}", timestamp, delegada)
+
+
+def baja(privada_hex, numero, cuenta, motivo, timestamp, delegada=False):
+    """`baja-<n>`: la cuenta deja de operar cuando el bloque se confirma (el saldo queda donde está)."""
+    return acta(privada_hex, "baja", numero, cuenta, motivo, timestamp, delegada)
+
+
+def permiso(privada_hex, numero, clave, prefijo, timestamp):
+    """`permiso-<n>`: `clave` puede dar de alta y de baja mineros cuyo nombre empieza con `prefijo`. Vacío: lo revoca."""
+    return acta(privada_hex, "permiso", numero, clave, prefijo, timestamp)
+
+
+def datos_alta(tx):
+    """(tipo, nombre) de un alta o de una transacción del génesis."""
+    tipo, _, nombre = str(tx.get("datos", "")).partition(":")
+    return tipo, nombre
+
+
+def validar_acta(tx, organizador):
+    """Formato y firma de un acta; vacío si sirve. Lo que depende del estado (el permiso, a quién se da de baja) lo
+    controlan el NCT y comun/estado.py."""
+    if not isinstance(tx, dict):
+        return ["el cuerpo tiene que ser un objeto JSON"]
+    tipo, origen = tipo_de(tx), tx.get("origen")
+    if tipo not in ACTAS:
+        return ["id: alta-<n>, baja-<n> o permiso-<n>"]
+    errores = []
+    if origen != EMISION and (not cuenta_valida(origen) or tipo == "permiso"):
+        errores.append("origen: «emision» (el organizador) o la clave con permiso, sólo en altas y bajas")
+    if not cuenta_valida(tx.get("destino")):
+        errores.append("destino: clave pública Ed25519 en hex (64 caracteres en minúscula)")
+    if tx.get("monto") != 0 or isinstance(tx.get("monto"), bool):
+        errores.append("monto: 0 (un acta no mueve plata)")
+    if not _entero(tx.get("nonce"), 1, NONCE_MAXIMO) or tx.get("id") != id_acta(tipo, origen, tx.get("nonce")):
+        errores.append(f"id: {tipo}-<n> (o {tipo}-<clave>-<n> si es delegada), con n = nonce desde 1")
+    if not _entero(tx.get("timestamp"), 0, NONCE_MAXIMO):
+        errores.append("timestamp: entero, segundos Unix")
+    datos = tx.get("datos", "")
+    if not isinstance(datos, str):
+        errores.append("datos: texto")
+    elif tipo == "alta":
+        tipo_cuenta, separador, nombre = datos.partition(":")
+        if not separador or tipo_cuenta not in TIPOS_ALTA or not nombre_valido(nombre):
+            errores.append(f"datos: <tipo>:<nombre>, con tipo {' | '.join(TIPOS_ALTA)} y un nombre de 1 a 32 caracteres")
+    elif tipo == "baja":
+        if len(datos) > MOTIVO_MAXIMO or "|" in datos or "\n" in datos:
+            errores.append(f"datos: el motivo, hasta {MOTIVO_MAXIMO} caracteres, sin «|» ni saltos de línea")
+    elif datos and not nombre_valido(datos):
+        errores.append("datos: el prefijo de nombre (de 1 a 32 letras, números, «_», «.» o «-»), o vacío para revocar")
+    if errores:
+        return errores
+    firmante = organizador if origen == EMISION else origen
+    if not firmante:
+        return ["no hay ORGANIZADOR_CLAVE: nadie puede firmar actas"]
+    if not verificar_firma(firmante, mensaje_acta(tx), tx.get("firma")):
+        return ["firma: no es la del organizador" if origen == EMISION else "firma: no es la del origen"]
+    return []
+
+
+def validar_de_entrada(datos, organizador):
+    """Lo que valida el backend al recibir: una transferencia, una carga o un acta. Lista de errores; vacía si sirve."""
+    if isinstance(datos, dict) and (datos.get("origen") == EMISION or es_acta(datos)):
+        if es_acta(datos):
+            return validar_acta(datos, organizador)
+        if not organizador:
+            return ["origen: «emision» es para las cargas y las actas, y no hay ORGANIZADOR_CLAVE"]
+        return validar_carga(datos, organizador)
+    return validar_transaccion_firmada(datos)
+
+
+# ── Shares de la época, publicados y en la cadena (BC-82) ──
+
+def lista_shares(detalle):
+    """`minero:shares:racha` de cada minero con shares, ordenados: lo que se publica en /api/epocas/<n>."""
+    return [f"{minero}:{d['shares']}:{d['racha']}" for minero, d in sorted(detalle.items()) if d.get("shares", 0) > 0]
+
+
+def raiz_shares(detalle):
+    return md5("|".join(lista_shares(detalle)))
+
+
+def shares_epoca(epoca_, fondo, raiz, timestamp):
+    """`shares-<época>`: compromete en la cadena la lista de shares (y el fondo) con que se pagó la época."""
+    return _emision(f"shares-{epoca_}", "", 0, 0, timestamp, datos=f"{fondo}:{raiz}")
+
+
 def transaccion_guardada(id_, campos):
     """tx:<id> como lo devuelve Redis (todo texto) → la transacción con sus tipos, como va en el bloque."""
-    return {"id": id_, "origen": campos["origen"], "destino": campos["destino"], "monto": int(campos["monto"]),
-            "nonce": int(campos.get("nonce", 0)), "timestamp": int(campos["timestamp"]),
-            "firma": campos.get("firma", "")}
+    tx = {"id": id_, "origen": campos["origen"], "destino": campos["destino"], "monto": int(campos["monto"]),
+          "nonce": int(campos.get("nonce", 0)), "timestamp": int(campos["timestamp"]),
+          "firma": campos.get("firma", "")}
+    if campos.get("datos"):
+        tx["datos"] = campos["datos"]
+    return tx
 
 
 # ── Bloque (v2) ──
 
 def serializar_transaccion(tx):
-    """id:origen:destino:monto:nonce:timestamp:firma (las de emisión salvo la carga, con la firma vacía)."""
-    return f"{tx['id']}:{tx['origen']}:{tx['destino']}:{tx['monto']}:{tx['nonce']}:{tx['timestamp']}:{tx['firma']}"
+    """id:origen:destino:monto:nonce:timestamp:datos:firma (v3). `datos` va vacío salvo en las actas, el génesis y
+    los shares de la época; la firma, vacía en las de emisión que no firma nadie (génesis, coinbase, participación)."""
+    return (f"{tx['id']}:{tx['origen']}:{tx['destino']}:{tx['monto']}:{tx['nonce']}:{tx['timestamp']}:"
+            f"{tx.get('datos', '')}:{tx['firma']}")
 
 
 def raiz_transacciones(transacciones):
@@ -273,8 +437,19 @@ def raiz_transacciones(transacciones):
     return md5("|".join(serializar_transaccion(tx) for tx in transacciones))
 
 
-def _texto(previous_hash, timestamp, transacciones):
-    return f"{previous_hash};{timestamp};{raiz_transacciones(transacciones)};"
+def raiz_bloque(transacciones, raiz_estado):
+    """Lo que va en el texto (v3): MD5(raíz de transacciones | raíz de estado). Sigue en 32 caracteres, así el texto
+    mide 77 y los mineros no cambian."""
+    return md5(f"{raiz_transacciones(transacciones)}|{raiz_estado}")
+
+
+def _texto(previous_hash, timestamp, transacciones, raiz_estado):
+    return f"{previous_hash};{timestamp};{raiz_bloque(transacciones, raiz_estado)};"
+
+
+def texto_de_bloque(bloque):
+    """El texto de un bloque guardado (con `raiz_estado`): lo que recalculan los que verifican."""
+    return _texto(bloque["previous_hash"], bloque["timestamp"], bloque["transactions"], bloque["raiz_estado"])
 
 
 def transacciones_del_bloque(tarea, minero):
@@ -286,27 +461,37 @@ def transacciones_del_bloque(tarea, minero):
 def texto_para(tarea, minero):
     """El string que mina `minero` (el nonce se le concatena al final, en decimal).
 
-    `tarea` necesita previous_hash, timestamp, altura, prefijo y transacciones. Lleva la raíz y no las
-    transacciones, así mide siempre 77 caracteres (el minero CUDA acepta hasta 120). Como la coinbase
-    está en la raíz, cada minero mina un texto distinto: un nonce no le sirve a otro.
+    `tarea` necesita previous_hash, timestamp, altura, prefijo, transacciones y raiz_estado (la del estado al
+    cerrar el bloque anterior, igual para todos). Lleva la raíz y no las transacciones, así mide siempre 77
+    caracteres (el minero CUDA acepta hasta 120). Como la coinbase está en la raíz, cada minero mina un texto
+    distinto: un nonce no le sirve a otro.
     """
-    return _texto(tarea["previous_hash"], tarea["timestamp"], transacciones_del_bloque(tarea, minero))
+    return _texto(tarea["previous_hash"], tarea["timestamp"], transacciones_del_bloque(tarea, minero),
+                  tarea["raiz_estado"])
 
 
 def tarea_guardada(campos):
     """tarea:<id> como lo devuelve Redis (todo texto) → lo que necesita `texto_para`."""
     return {"previous_hash": campos["previous_hash"], "timestamp": int(campos["timestamp"]),
             "altura": int(campos["altura"]), "prefijo": campos["prefijo"],
-            "transacciones": json.loads(campos["transacciones"])}
+            "transacciones": json.loads(campos["transacciones"]), "raiz_estado": campos["raiz_estado"]}
 
 
-def bloque_genesis(saldos, timestamp):
-    """Bloque 0: sin minar (nonce 0, sin prefijo ni coinbase); reparte los saldos iniciales desde «emision»."""
-    transacciones = [_emision(f"genesis-{cuenta}", cuenta, monto, 0, timestamp)
-                     for cuenta, monto in sorted(saldos.items())]
-    texto = _texto(CEROS, timestamp, transacciones)
+def bloque_genesis(saldos, timestamp, organizador="", nombres=None):
+    """Bloque 0: sin minar (nonce 0, sin prefijo ni coinbase).
+
+    v3: primero `organizador-<cuenta>` (la clave del organizador queda en la cadena: los que verifican la leen de
+    acá) y después un `genesis-<cuenta>` por cada saldo inicial, que además le da el alta como usuario con su nombre
+    (`datos` = usuario:<nombre>). Su raíz de estado es la del árbol vacío.
+    """
+    nombres = nombres or {}
+    transacciones = [_emision(f"organizador-{organizador}", organizador, 0, 0, timestamp)] if organizador else []
+    transacciones += [_emision(f"genesis-{cuenta}", cuenta, monto, 0, timestamp, datos=f"usuario:{nombres.get(cuenta, '')}")
+                      for cuenta, monto in sorted(saldos.items())]
+    texto = _texto(CEROS, timestamp, transacciones, RAIZ_VACIA)
     return {"previous_hash": CEROS, "timestamp": timestamp, "transactions": transacciones, "nonce": 0,
-            "block_hash": hash_bloque(texto, 0), "prefijo": "", "minero": "", "recompensa": 0, "altura": 0}
+            "block_hash": hash_bloque(texto, 0), "prefijo": "", "minero": "", "recompensa": 0, "altura": 0,
+            "raiz_estado": RAIZ_VACIA}
 
 
 def potencia_efectiva(nodo):
@@ -414,7 +599,7 @@ def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MI
 
 # ── Pedidos de alta (v2, BC-58) ──
 
-TIPOS_ALTA = ("usuario", "minero")  # el organizador no pide el alta: es ORGANIZADOR_CLAVE
+TIPOS_ALTA = ("usuario", "minero", "validador")  # el organizador no pide el alta: está en el génesis
 
 
 def mensaje_alta(tipo, cuenta, nombre):
@@ -446,3 +631,59 @@ def validar_pedido_alta(datos):
                            datos.get("firma")):
         return ["firma: no es la de clave_publica sobre alta:tipo:clave_publica:nombre"]
     return []
+
+
+# ── Nodos verificadores y validadores (BC-83, BC-86) ──
+
+FIRMAS = "firmas:{}"                 # hash por altura: validador → JSON {block_hash, firma, cuando}
+FIRMAS_ULTIMA = "firmas:ultima"      # sorted set: validador → la última altura que firmó en esta cadena
+FIRMAS_DOBLES = "firmas:dobles"      # lista: las pruebas de doble firma (dos bloques distintos a la misma altura)
+FINALIZADA = "finalizada"            # hash {altura, block_hash}: el último bloque finalizado
+BLOQUE_FINALIZADO = "bloque.finalizado"
+
+
+def mensaje_firma_bloque(altura, block_hash):
+    """Lo que firma un validador: «verifiqué la cadena hasta este bloque». Firmar uno firma también los anteriores."""
+    return f"firma:{altura}:{block_hash}"
+
+
+def firma_bloque(privada_hex, altura, block_hash):
+    return {"validador": clave_publica(privada_hex), "altura": altura, "block_hash": block_hash,
+            "firma": firmar(privada_hex, mensaje_firma_bloque(altura, block_hash))}
+
+
+def validar_firma_bloque(datos):
+    """Formato y firma de un POST /api/firmas; vacío si sirve. Que sea un validador de la cadena lo mira quien recibe."""
+    if not isinstance(datos, dict):
+        return ["el cuerpo tiene que ser un objeto JSON"]
+    errores = []
+    if not cuenta_valida(datos.get("validador")):
+        errores.append("validador: clave pública Ed25519 en hex")
+    if not _entero(datos.get("altura"), 0, NONCE_MAXIMO):
+        errores.append("altura: entero desde 0")
+    if not isinstance(datos.get("block_hash"), str) or not re.fullmatch(r"[0-9a-f]{32}", datos["block_hash"]):
+        errores.append("block_hash: MD5 en hex")
+    if errores:
+        return errores
+    if not verificar_firma(datos["validador"], mensaje_firma_bloque(datos["altura"], datos["block_hash"]),
+                           datos.get("firma")):
+        return ["firma: no es la del validador sobre firma:<altura>:<block_hash>"]
+    return []
+
+
+def umbral_finalidad(validadores):
+    """Firmas que finalizan un bloque: 2/3 de los validadores, redondeando para arriba (2 de 3). Sin validadores, nada."""
+    return math.ceil(2 * validadores / 3) if validadores else 0
+
+
+def altura_finalizada(validadores, ultimas):
+    """La mayor altura firmada por al menos el umbral de `validadores` (un conjunto), según `ultimas` (validador → la
+    última altura que firmó). -1 si nada está finalizado."""
+    umbral = umbral_finalidad(len(validadores))
+    alturas = sorted((ultimas[v] for v in validadores if v in ultimas), reverse=True)
+    return alturas[umbral - 1] if umbral and len(alturas) >= umbral else -1
+
+
+def mensaje_atestacion(nodo, altura, punta, raiz, tiempo):
+    """Lo que firma un nodo verificador al decir hasta dónde verificó (BC-83): así se puede citar lo que dijo."""
+    return f"atestacion:{nodo}:{altura}:{punta}:{raiz}:{tiempo}"

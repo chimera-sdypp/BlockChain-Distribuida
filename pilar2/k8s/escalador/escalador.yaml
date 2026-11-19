@@ -35,6 +35,8 @@ spec:
             - { name: SEGUNDOS_POR_BLOQUE, value: "60" }
             - { name: ESPERA_SUBIR_SEGUNDOS, value: "30" }
             - { name: ESPERA_BAJAR_SEGUNDOS, value: "120" }
+            # BC-74: con trabajo y sin bloque hace 5 min, VMs igual (alguien dice tener potencia que no aparece)
+            - { name: ESCALAR_SIN_BLOQUE_SEGUNDOS, value: "300" }
             - name: REDIS_CLAVE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
           resources:

@@ -142,7 +142,9 @@ def test_un_resultado_mal_formado_da_400(cliente, colas):
 # --- Rangos por minero (BC-59) ---------------------------------------------------------------------
 def test_cada_prestamo_suma_en_el_historial_del_minero(cliente, otro, redis, colas):
     publicar_rangos(redis, colas, rango("t1", 0), rango("t1", 1), rango("t1", 2))
-    cliente.get("/tasks/next")
+    primero = cliente.get("/tasks/next").json()
+    # Uno a la vez (BC-74): devuelve el primero y recién ahí recibe otro.
+    cliente.post("/results", {"tarea": "t1", "rango": primero["rango"], "minero": CUENTA["minero"], "sin_solucion": True})
     cliente.get("/tasks/next")
     otro.get("/tasks/next")
     assert redis.hget(f"historial:{CUENTA['minero']}", "rangos") == "2"

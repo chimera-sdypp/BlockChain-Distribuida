@@ -29,16 +29,47 @@ from comun.altas import Altas
 log = logging.getLogger("gateway")
 
 ENTREGADAS = Counter("blockchain_tareas_entregadas", "Rangos entregados a los mineros")
-VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola porque su minero dejó de avisar")
+VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola: su minero dejó de avisar "
+                   "(sin_aviso) o se le pasó el plazo (plazo, BC-74)", ["motivo"])
 SHARES = Counter("blockchain_shares", "Shares que mandaron los mineros", ["resultado"])  # aceptado o descartado
 RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma o no_aprobado
 TEXTOS_EN_MEMORIA, TAREAS_EN_MEMORIA = 512, 16
 
 TIPOS = ("gpu", "cpu")
 MINERO_VIVO = 15  # segundos: el keep-alive es cada 5 s; tres perdidos y se lo da por caído
+# BC-74: el plazo de un préstamo es PLAZO_FACTOR veces lo que debería tardar el rango según la potencia del
+# minero, más PLAZO_MARGEN por la red. Sin medición, como mucho PLAZO_SIN_MEDICION; nunca menos de PLAZO_MINIMO.
+PLAZO_FACTOR, PLAZO_MARGEN, PLAZO_SIN_MEDICION, PLAZO_MINIMO = 3, 10, 120, 30
 
 
-PRESTAMO = "prestamo:{}"  # prestamo:<tarea>:<rango> → {mensaje, minero}
+PRESTAMO = "prestamo:{}"  # prestamo:<tarea>:<rango> → {mensaje, minero, desde, plazo, shares}
+
+
+class YaTienePrestamo(Exception):
+    """Otro pedido del mismo minero se llevó un rango en el medio: éste vuelve a la cola (BC-74)."""
+
+
+# Presta un rango, uno por minero (BC-74): si el minero ya tiene uno (prestamo_de:<minero>), no hace nada y
+# devuelve 0; el rango vuelve a la cola. Si no, anota el préstamo, su vencimiento, el rango en el historial
+# (BC-59) y el índice del minero. KEYS: prestamo:<miembro>, prestamos, historial:<minero>, prestamo_de:<minero>.
+# ARGV: miembro, mensaje, minero, vence, desde, plazo.
+LUA_PRESTAR = """
+if not redis.call('SET', KEYS[4], ARGV[1], 'NX') then return 0 end
+redis.call('HSET', KEYS[1], 'mensaje', ARGV[2], 'minero', ARGV[3], 'desde', ARGV[5], 'plazo', ARGV[6])
+redis.call('ZADD', KEYS[2], ARGV[4], ARGV[1])
+redis.call('HINCRBY', KEYS[3], 'rangos', 1)
+return 1
+"""
+
+# Libera un préstamo y, si el índice del minero apunta a él, también el índice. KEYS: prestamos,
+# prestamo:<miembro>. ARGV: miembro.
+LUA_LIBERAR = """
+local minero = redis.call('HGET', KEYS[2], 'minero')
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('DEL', KEYS[2])
+if minero and redis.call('GET', 'prestamo_de:' .. minero) == ARGV[1] then redis.call('DEL', 'prestamo_de:' .. minero) end
+return 1
+"""
 
 # Reclama un préstamo vencido: si sigue vencido, le corre el vencimiento y devuelve 1. Así lo
 # vuelve a publicar un solo pod, y si ese pod muere antes de publicarlo, vuelve a vencer y se
@@ -150,6 +181,8 @@ class Gateway:
         self._sumar_shares = redis.register_script(LUA_SHARES)
         self._aviso = redis.register_script(LUA_AVISO)
         self._desconectar = redis.register_script(LUA_DESCONECTAR)
+        self._prestar_lua = redis.register_script(LUA_PRESTAR)
+        self._liberar_lua = redis.register_script(LUA_LIBERAR)
         self.altas = Altas(redis)
         self._lock = threading.Lock()
         self._tareas, self._textos = OrderedDict(), OrderedDict()
@@ -256,23 +289,70 @@ class Gateway:
     def siguiente(self, minero, datos=None):
         """GET /tasks/next: el próximo rango de una tarea en curso, prestado a `minero`, con su texto.
 
-        Primero se anota el préstamo en Redis y recién después se hace el ack: un rango nunca
-        queda sin dueño ni en la cola. Los de tareas cerradas se descartan (ack sin entregar).
+        Uno a la vez por minero (BC-74): si ya tiene un préstamo vivo, recibe ese mismo (por si se reinició).
+        Primero se anota el préstamo en Redis y recién después se hace el ack: un rango nunca queda sin dueño
+        ni en la cola. Los de tareas cerradas se descartan (ack sin entregar).
         """
         try:
-            while True:
-                rango = self.rabbit.tomar(self.cola_rangos, lambda mensaje: self._prestar(mensaje, minero))
-                if rango is None:
-                    return 204, None
-                if rango is not False:
-                    ENTREGADAS.inc()
-                    return 200, rango
+            for _ in range(3):
+                vigente = self._vigente(minero)
+                if vigente is not None:
+                    return 200, vigente
+                try:
+                    while True:
+                        rango = self.rabbit.tomar(self.cola_rangos, lambda mensaje: self._prestar(mensaje, minero))
+                        if rango is None:
+                            return 204, None
+                        if rango is not False:
+                            ENTREGADAS.inc()
+                            return 200, rango
+                except YaTienePrestamo:
+                    continue  # otro pedido suyo se llevó un rango en el medio: se le devuelve ése
+            return 204, None
         except redislib.RedisError as error:
             log.error("Redis no respondió al prestar un rango (vuelve a la cola): %r", error)
             return 503, {"error": "Redis no disponible"}
 
+    def _vigente(self, minero):
+        """El préstamo vivo de `minero`, con su texto, o None. Si su tarea se cerró o se le pasó el plazo, lo
+        suelta (y en el segundo caso el rango vuelve a la cola)."""
+        miembro = self.redis.get(contrato.PRESTAMO_DE.format(minero))
+        if miembro is None:
+            return None
+        prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+        if prestamo.get("minero") != minero or "mensaje" not in prestamo:
+            self._liberar(miembro)  # un índice viejo
+            return None
+        mensaje = json.loads(prestamo["mensaje"])
+        if not self.tarea_en_curso(mensaje["tarea"]):
+            self._liberar(miembro)
+            return None
+        if self._se_paso_el_plazo(prestamo):
+            self._cortar_por_plazo(minero, miembro, prestamo, mensaje)
+            return None
+        texto = self.texto(mensaje["tarea"], prestamo.get("texto_de") or minero)
+        return {**mensaje, "bloque": texto} if texto is not None else None
+
+    def plazo(self, minero, mensaje):
+        """Segundos que tiene `minero` para recorrer el rango (BC-74): PLAZO_FACTOR veces lo que debería tardar
+        con lo que midió el gateway, más el margen. Sin medición, según su bench y como mucho PLAZO_SIN_MEDICION."""
+        nodo = self.redis.hgetall(contrato.NODO.format(minero))
+        tamano = mensaje["hasta"] - mensaje["desde"] + 1
+        estado = nodo.get("medido_estado")
+        try:
+            potencia = float(nodo.get("medido") or 0) if estado == "medido" else float(nodo.get("bench") or 0)
+        except ValueError:
+            potencia = 0.0
+        if potencia <= 0:
+            return PLAZO_MINIMO if estado == "medido" else PLAZO_SIN_MEDICION
+        segundos = max(PLAZO_MINIMO, PLAZO_FACTOR * tamano / potencia + PLAZO_MARGEN)
+        if estado not in ("medido", "cota"):
+            segundos = min(segundos, PLAZO_SIN_MEDICION)
+        return segundos
+
     def _prestar(self, mensaje, minero):
-        """Dentro de `tomar`: si devuelve, se hace el ack; si lanza (Redis caído), el rango vuelve."""
+        """Dentro de `tomar`: si devuelve, se hace el ack; si lanza (Redis caído, o el minero ya tiene otro
+        préstamo), el rango vuelve a la cola."""
         if not self.tarea_en_curso(mensaje["tarea"]):
             log.info("Descarto el rango %s de la tarea %s, que ya se cerró", mensaje["rango"], mensaje["tarea"])
             return False
@@ -282,13 +362,72 @@ class Gateway:
                       mensaje["tarea"], mensaje["rango"])
             return False
         miembro = f"{mensaje['tarea']}:{mensaje['rango']}"
-        tuberia = self.redis.pipeline()
-        tuberia.hset(PRESTAMO.format(miembro), mapping={"mensaje": json.dumps(mensaje), "minero": minero})
-        tuberia.zadd(contrato.PRESTAMOS, {miembro: time.time() + self.lease})
-        tuberia.hincrby(contrato.HISTORIAL.format(minero), "rangos", 1)  # el reparto por minero (BC-59)
-        tuberia.execute()
+        ahora = time.time()
+        if not self._prestar_lua(
+                keys=[PRESTAMO.format(miembro), contrato.PRESTAMOS, contrato.HISTORIAL.format(minero),
+                      contrato.PRESTAMO_DE.format(minero)],
+                args=[miembro, json.dumps(mensaje), minero, ahora + self.lease, ahora,
+                      ahora + self.plazo(minero, mensaje)]):
+            raise YaTienePrestamo(minero)
         log.info("Rango %s prestado a %s", miembro, minero)
         return {**mensaje, "bloque": texto}
+
+    # ── Lo que mide el gateway (BC-74) ──
+
+    @staticmethod
+    def _se_paso_el_plazo(prestamo, ahora=None):
+        try:
+            return float(prestamo["plazo"]) < (time.time() if ahora is None else ahora)
+        except (KeyError, ValueError):
+            return False
+
+    def _cortar_por_plazo(self, minero, miembro, prestamo, mensaje):
+        """Se le pasó el plazo: el rango vuelve a la cola, se mide lo que hizo y se suelta. No es una sanción:
+        los shares que mandó quedan."""
+        if self.tarea_en_curso(mensaje["tarea"]):
+            self.rabbit.publicar(self.cola_rangos, mensaje)
+            VENCIDOS.labels("plazo").inc()
+        self.medir(minero, prestamo, mensaje)
+        self._liberar(miembro)
+        log.warning("A %s se le pasó el plazo del rango %s: vuelve a la cola", minero, miembro)
+
+    def medir(self, minero, prestamo, mensaje, ahora=None):
+        """Anota un préstamo terminado en la medición de `minero` y recalcula lo que mide (BC-74).
+
+        El trabajo que se puede probar son los shares: cada uno cuesta, en promedio, 16^(p-1) hashes (como
+        estiman el hashrate los pools: shares × dificultad / tiempo). Con el tope de 64 por préstamo, un minero
+        rápido llega al tope y sólo se sabe que es al menos eso («cota»). Si con lo que dice su bench tendría
+        que haber mandado bastantes shares y no los mandó, lo medido manda («medido», aunque dé 0).
+        """
+        prefijo = mensaje.get("prefijo", "")
+        if len(prefijo) < 2 or "desde" not in prestamo:
+            return None  # con prefijo de 1 no hay shares
+        ahora = time.time() if ahora is None else ahora
+        segundos = max(0.05, ahora - float(prestamo["desde"]))
+        dificultad = 16 ** (len(prefijo) - 1)
+        shares = int(prestamo.get("shares") or 0)
+        nodo = contrato.NODO.format(minero)
+        bench = float(self.redis.hget(nodo, "bench") or 0)
+        registro = {"trabajo": shares * dificultad, "segundos": round(segundos, 3), "shares": shares,
+                    "esperados": min(contrato.SHARES_POR_RANGO, segundos * bench / dificultad),
+                    "tope": int(shares >= contrato.SHARES_POR_RANGO)}
+        clave = contrato.MEDICION.format(minero)
+        tuberia = self.redis.pipeline()
+        tuberia.rpush(clave, json.dumps(registro))
+        tuberia.ltrim(clave, -contrato.MEDICION_PRESTAMOS, -1)
+        tuberia.lrange(clave, 0, -1)
+        registros = [json.loads(r) for r in tuberia.execute()[-1]]
+        trabajo = sum(r["trabajo"] for r in registros)
+        total = sum(r["segundos"] for r in registros)
+        medido = trabajo / total if total > 0 else 0.0
+        if 2 * sum(r["tope"] for r in registros) >= len(registros):
+            estado = "cota"
+        elif sum(r["esperados"] for r in registros) >= contrato.MEDICION_SHARES_MINIMOS:
+            estado = "medido"
+        else:
+            estado = "sin_datos"
+        self.redis.hset(nodo, mapping={"medido": int(medido), "medido_estado": estado})
+        return medido, estado
 
     # ── Shares (BC-63) ──
 
@@ -339,15 +478,23 @@ class Gateway:
         except Exception as error:
             log.error("No se pudo publicar el resultado de %s:%s: %r", datos["tarea"], datos["rango"], error)
             return 503, {"error": "RabbitMQ no disponible"}
-        self._liberar(f"{datos['tarea']}:{datos['rango']}")
+        miembro = f"{datos['tarea']}:{datos['rango']}"
+        self._terminar(minero, miembro)
         return 202, {"shares": shares}
+
+    def _terminar(self, minero, miembro):
+        """Un préstamo que terminó (resultado o «cortá»): se mide y se suelta."""
+        prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+        if prestamo.get("minero") == minero and "mensaje" in prestamo:
+            try:
+                self.medir(minero, prestamo, json.loads(prestamo["mensaje"]))
+            except (redislib.RedisError, ValueError, KeyError):
+                log.exception("No se pudo medir el préstamo %s de %s", miembro, minero)
+        self._liberar(miembro)
 
     def _liberar(self, miembro):
         try:
-            tuberia = self.redis.pipeline()
-            tuberia.zrem(contrato.PRESTAMOS, miembro)
-            tuberia.delete(PRESTAMO.format(miembro))
-            tuberia.execute()
+            self._liberar_lua(keys=[contrato.PRESTAMOS, PRESTAMO.format(miembro)], args=[miembro])
         except redislib.RedisError:
             log.exception("No se pudo liberar el préstamo %s (vencerá y el TrP tolera el repetido)", miembro)
 
@@ -380,9 +527,13 @@ class Gateway:
             respuesta["shares"] = self.aceptar_shares(minero, rango["tarea"], rango["rango"], datos["shares"])
         miembro = f"{rango['tarea']}:{rango['rango']}"
         if not self.tarea_en_curso(rango["tarea"]):
-            # El minero deja el rango sin mandar resultado: el préstamo se borra acá.
-            self._liberar(miembro)
+            # El minero deja el rango sin mandar resultado: el préstamo se mide y se borra acá.
+            self._terminar(minero, miembro)
             log.info("A %s: cortá el rango %s, su tarea ya se cerró", minero, miembro)
+            return 200, {"cortar": True, **respuesta}
+        prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+        if prestamo.get("minero") == minero and self._se_paso_el_plazo(prestamo):
+            self._cortar_por_plazo(minero, miembro, prestamo, json.loads(prestamo["mensaje"]))
             return 200, {"cortar": True, **respuesta}
         self._renovar(keys=[contrato.PRESTAMOS, PRESTAMO.format(miembro)],
                       args=[miembro, minero, time.time() + self.lease])
@@ -428,7 +579,7 @@ class Gateway:
                 mensaje = json.loads(prestamo["mensaje"]) if prestamo else None
                 if mensaje and self.tarea_en_curso(mensaje["tarea"]):
                     self.rabbit.publicar(self.cola_rangos, mensaje)
-                    VENCIDOS.inc()
+                    VENCIDOS.labels("sin_aviso").inc()
                     devueltos += 1
                     log.warning("El préstamo %s de %s venció: el rango vuelve a la cola", miembro, prestamo["minero"])
                 self._liberar(miembro)
@@ -475,6 +626,8 @@ class Gateway:
             resultado.append({
                 "id": cuenta, "alias": nodo.get("alias") or cuenta[:8], "tipo": nodo.get("tipo") or "",
                 "placa": nodo.get("placa"), "bench": _numero(nodo.get("bench")),
+                "medido": _numero(nodo.get("medido")), "medido_estado": nodo.get("medido_estado") or "sin_datos",
+                "potencia": contrato.potencia_efectiva(nodo),
                 "hashes_por_segundo": _numero(nodo.get("hashes_por_segundo")), "ultimo_aviso": aviso, "vivo": vivo,
                 "saldo": int(saldo or 0), "alta": _numero(historial.get("alta")),
                 **{campo: _numero(historial.get(campo)) or 0
@@ -513,6 +666,8 @@ class ColectorMineros:
         ("blockchain_minero_hashes_por_segundo", "Hashes/s de cada minero en su último aviso (0 si no está vivo)"),
         ("blockchain_minero_vivo", "1 si el minero avisó hace menos de MINERO_VIVO_SEGUNDOS"),
         ("blockchain_minero_bench", "Hashes/s de cada minero en la tarea modelo"),
+        ("blockchain_minero_medido", "Hashes/s que midió el gateway con los shares de cada minero (BC-74)"),
+        ("blockchain_minero_potencia", "Hashes/s con que cuenta el sistema: min(bench, medido), o el bench si no hay medición"),
         ("blockchain_minero_alta", "Fecha de alta de cada minero (segundos Unix)"),
         ("blockchain_minero_shares_epoca", "Shares de cada minero en la época en curso"),
     )
@@ -540,6 +695,8 @@ class ColectorMineros:
                     valores = {"blockchain_minero_hashes_por_segundo": m["hashes_por_segundo"] if m["vivo"] else 0,
                                "blockchain_minero_vivo": int(m["vivo"]),
                                "blockchain_minero_bench": m["bench"],
+                               "blockchain_minero_medido": m["medido"],
+                               "blockchain_minero_potencia": m["potencia"],
                                "blockchain_minero_alta": m["alta"],
                                "blockchain_minero_shares_epoca": m["shares_epoca"]}
                     for nombre, valor in valores.items():

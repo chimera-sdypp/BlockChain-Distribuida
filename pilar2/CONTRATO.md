@@ -135,14 +135,27 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 
 - Cada rango entregado es un **préstamo** a nombre del minero, que vence a los `TASK_LEASE_SECONDS` (30). Cada keep-alive del dueño lo renueva; si vence, el gateway vuelve a publicar el rango en `rangos`.
 - Si la tarea del rango ya se cerró (`estado` de `tarea:<id>` distinto de `en_curso`), el keep-alive contesta `cortar: true` y el gateway borra el préstamo: el minero deja el rango sin mandar resultado. Los rangos de tareas cerradas que queden en la cola se descartan al entregarlos.
+- Uno a la vez por minero, y con plazo: pasado el plazo, el keep-alive también contesta `cortar: true` y el rango vuelve a la cola (BC-74, ver [Lo que mide el gateway](#lo-que-mide-el-gateway-bc-74)).
 
 | Pedido | Envía el minero | Contesta el gateway |
 |---|---|---|
 | `POST /hello` | `{minero, tipo: gpu \| cpu, placa, alias}` | 200 `{registrado: true}`; si es nuevo, 200 con la tarea modelo |
 | `POST /bench` | `{minero, segundos, hashes_por_segundo}` | 204 |
-| `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo |
+| `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo. Si ya tiene un préstamo vivo, ese mismo (BC-74) |
 | `POST /results` | lo mismo que `resultados`, más `shares` (lista de nonces) | 202 `{shares: los que sumó}` |
 | `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` (cada 5 s) | 200 `{cortar: true \| false, shares?, presentarse?}`; `presentarse: true` si su `nodo:<id>` no tiene bench (p. ej. se reinició la cadena): el minero repite `/hello` y `/bench` antes del próximo rango |
+
+## Lo que mide el gateway (BC-74)
+
+El minero declara su `bench` y su `tipo`, y nadie los verifica. Desde BC-74 el gateway no les cree para decidir:
+
+- **Un rango a la vez:** si el minero ya tiene un préstamo vivo (`prestamo_de:<cuenta>`), `/tasks/next` le devuelve ese mismo (por si se reinició). Así nadie acapara los rangos de una tarea.
+- **Potencia medida:** al terminar cada préstamo (resultado o «cortá»), el trabajo que se puede probar son los shares: cada uno cuesta 16^(p−1) hashes en promedio. Medido = Σ shares × 16^(p−1) / Σ segundos de los últimos 20 préstamos, como estiman el hashrate los pools.
+  - `medido`: si según su bench tendría que haber mandado al menos 20 shares en esos préstamos. Puede dar 0: el que no mina.
+  - `cota`: si la mitad o más de los préstamos llegaron al tope de 64 shares. Sólo se sabe que es al menos eso (una GPU con prefijo bajo).
+  - `sin_datos`: si todavía no hay con qué decidir (pocos préstamos, o prefijos altos para su potencia).
+- **Potencia efectiva** (`contrato.potencia_efectiva`): `min(bench, medido)` si el estado es `medido`; si no, el bench. La usan el TrP (techo del prefijo, BC-73) y el escalador. Inflar el bench no sirve; decir `tipo: gpu` sin minar, tampoco.
+- **Plazo de cada préstamo:** 3 × (tamaño del rango / potencia) + 10 s, nunca menos de 30 s. Sin medición (`sin_datos`), como mucho 120 s. Pasado el plazo, el keep-alive contesta `cortar: true` y el rango vuelve a la cola. No es una sanción: los shares quedan.
 
 ## Claves de Redis
 
@@ -171,9 +184,11 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `prefijo:referencia` | hash | `{potencia, altura, prefijo, cuando}`: el último recálculo del prefijo por potencia (BC-73) |
 | `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Vence a los `EMERGENCIA_SEGUNDOS` (240, BC-73) o a los `TAREA_VENCE_SEGUNDOS` (600) si la emergencia está apagada: si no salió el bloque (o el NCT murió), se vuelve a armar la misma caja |
 | `tarea:ultima` | string | El id de la última tarea publicada. Al publicar otra, si ésta sigue `en_curso` pasa a `vencida`: el gateway deja de prestar sus rangos y les dice «cortá» a los mineros |
-| `nodo:<cuenta>` | hash, permanente | `tipo` (`gpu` o `cpu`), `alias` (el `nombre` de `cuentas`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix) |
+| `nodo:<cuenta>` | hash, permanente | `tipo` (`gpu` o `cpu`), `alias` (el `nombre` de `cuentas`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso), `ultimo_aviso` (segundos Unix), y `medido` y `medido_estado` (`medido`, `cota` o `sin_datos`): lo que midió el gateway con los shares (BC-74) |
 | `prestamos` | sorted set | `<tarea>:<rango>` → cuándo vence (segundos Unix). Lo maneja el gateway |
-| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva) y `shares` (cuántos le sumó) |
+| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva), `shares` (cuántos le sumó), `desde` y `plazo` (segundos Unix: cuándo se prestó y hasta cuándo puede tenerlo, BC-74) |
+| `prestamo_de:<cuenta>` | string | El préstamo vivo de cada minero (`<tarea>:<rango>`): uno a la vez (BC-74) |
+| `medicion:<cuenta>` | lista | Los últimos 20 préstamos terminados de cada minero, en JSON: trabajo (shares × 16^(p−1)), segundos, shares, shares esperados según su bench y si llegó al tope (BC-74) |
 | `escalador:claves` | hash | nombre de cada VM minero-cpu → su clave privada: el escalador se la genera, la aprueba y se la pasa por metadata (BC-57) |
 | `escalador:vms` | string | Las VMs pedidas cuando el escalador corre con `VMS_ACTIVAS=0` (simuladas); con VMs de verdad, la cantidad está en el state de OpenTofu |
 

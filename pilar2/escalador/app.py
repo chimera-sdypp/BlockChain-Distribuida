@@ -127,6 +127,7 @@ def cargar_ajustes():
         espera_bajar=config.entero("ESPERA_BAJAR_SEGUNDOS", 120),
         vivo_segundos=config.entero("VIVO_SEGUNDOS", 15),
         prefijo_vm=config.texto("PREFIJO_VMS", "minero-cpu-"),
+        sin_bloque=config.entero("ESCALAR_SIN_BLOQUE_SEGUNDOS", 300),
     )
     if ajustes.maximo < 0 or ajustes.hps_vm <= 0 or ajustes.segundos_objetivo <= 0:
         raise ValueError("VMS_MAXIMO >= 0, HPS_POR_VM > 0 y SEGUNDOS_POR_BLOQUE > 0")
@@ -141,6 +142,20 @@ def hay_trabajo(redis):
     return sum(tuberia.execute()) > 0
 
 
+def segundos_sin_bloque(redis, ahora):
+    """Segundos desde que se armó la caja que se está minando (`caja:armada`, BC-73); 0 si no hay ninguna.
+
+    Si la primera caja todavía no se armó (la anterior ya salió), es 0: no hay nada trabado.
+    """
+    tuberia = redis.pipeline(transaction=False)
+    tuberia.lindex(contrato.CAJAS, 0)
+    tuberia.hmget(contrato.CAJA_ARMADA, "caja", "desde")
+    primera, (caja, desde) = tuberia.execute()
+    if primera is None or caja != primera or not desde:
+        return 0.0
+    return max(0.0, ahora - float(desde))
+
+
 def leer_nodos(redis):
     claves = list(redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
     tuberia = redis.pipeline(transaction=False)
@@ -152,12 +167,12 @@ def leer_nodos(redis):
 def ciclo(redis, decisor, aplicador, ahora=None):
     """Un ciclo: foto, decisión y, si cambió la cantidad, apply. Devuelve la cantidad pedida."""
     ahora = time.time() if ahora is None else ahora
-    foto = sacar_foto(leer_nodos(redis), ahora, hay_trabajo(redis), decisor.ajustes)
+    foto = sacar_foto(leer_nodos(redis), ahora, hay_trabajo(redis), decisor.ajustes, segundos_sin_bloque(redis, ahora))
     antes = decisor.actual
     cantidad = decisor.decidir(foto, ahora)
     if cantidad != antes:
-        log.info("VMs: %d → %d (GPU vivas %d, CPU ajena %.0f h/s, trabajo %s)",
-                 antes, cantidad, foto.gpus, foto.ajena, foto.trabajo)
+        log.info("VMs: %d → %d (GPU vivas %d, potencia ajena %.0f h/s, trabajo %s, %.0f s sin bloque)",
+                 antes, cantidad, foto.gpus, foto.ajena, foto.trabajo, foto.sin_bloque)
         try:
             aplicador.aplicar(cantidad)
         except Exception:

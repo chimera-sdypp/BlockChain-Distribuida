@@ -2,6 +2,8 @@
 
 import math
 
+from comun import contrato
+
 
 def partir(espacio, porcentaje):
     """Parte [0, espacio - 1] en rangos del `porcentaje` % del espacio: [(desde, hasta), ...].
@@ -18,7 +20,8 @@ CRITERIOS = ("suma", "promedio", "minimo", "maximo")
 
 
 def potencia_viva(nodos, ahora, vivo_segundos, criterio="suma"):
-    """Potencia (hashes/s) de los mineros que avisaron hace menos de `vivo_segundos`, según su `bench`.
+    """Potencia (hashes/s) de los mineros que avisaron hace menos de `vivo_segundos`, según su `bench` (o lo que
+    midió el gateway, si es menos: `contrato.potencia_efectiva`, BC-74).
 
     `criterio` dice cómo se juntan los bench: "suma" es la del sistema, porque un bloque tarda 16^p
     intentos dividido la potencia de TODO el pool (minan todos). "promedio", "minimo" y "maximo"
@@ -31,7 +34,7 @@ def potencia_viva(nodos, ahora, vivo_segundos, criterio="suma"):
     for nodo in nodos:
         try:
             if ahora - float(nodo.get("ultimo_aviso", 0)) < vivo_segundos:
-                benchs.append(float(nodo.get("bench", 0)))
+                benchs.append(contrato.potencia_efectiva(nodo))  # BC-74: min(bench, medido)
         except ValueError:
             continue  # un nodo a medio escribir no cuenta
     if not benchs:

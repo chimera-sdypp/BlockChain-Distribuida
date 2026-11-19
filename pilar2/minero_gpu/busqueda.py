@@ -9,9 +9,8 @@ El binario devuelve también los shares de cada trozo (BC-63): se juntan en `sel
 
 import subprocess
 import threading
-import time
 
-from minero_cpu.busqueda import Shares
+from minero_cpu.busqueda import Ritmo, Shares
 
 TROZO = 2**30
 
@@ -20,7 +19,7 @@ class ErrorGPU(Exception):
     pass
 
 
-class BuscadorGPU:
+class BuscadorGPU(Ritmo):
     def __init__(self, binario, trozo=TROZO):
         self.trozo = trozo
         self._proceso = subprocess.Popen([binario], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -31,13 +30,7 @@ class BuscadorGPU:
         self.placa = listo.removeprefix("LISTO").strip()
         self.parar = threading.Event()
         self._lock = threading.Lock()  # un pedido por vez al binario
-        self.probados = 0
-        self.inicio = time.monotonic()
         self.shares = Shares()
-
-    def hashes_por_segundo(self):
-        segundos = time.monotonic() - self.inicio
-        return round(self.probados / segundos) if segundos > 0 else 0
 
     def _pedir(self, datos, prefijo, desde, hasta):
         with self._lock:
@@ -51,11 +44,8 @@ class BuscadorGPU:
             raise ErrorGPU(linea)
         return palabra, dict(campo.split("=", 1) for campo in (campos[0].split() if campos else []))
 
-    def buscar(self, bloque, desde, hasta, prefijo):
-        """Recorre [desde, hasta] en orden. Devuelve (menor nonce o None, cortado); los shares van a `self.shares`."""
-        self.parar.clear()
-        self.probados, self.inicio = 0, time.monotonic()
-        self.shares.empezar()
+    def _recorrer(self, bloque, desde, hasta, prefijo):
+        """Recorre [desde, hasta] en orden: el menor nonce o None, y si lo cortaron; los shares van a `self.shares`."""
         datos = bloque.encode()
         siguiente = desde
         while siguiente <= hasta:

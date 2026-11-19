@@ -142,8 +142,10 @@ def test_las_metricas_cuentan_los_mineros_vivos_por_tipo(armar, redis):
                                       "ultimo_aviso": ahora})
     redis.hset("nodo:gpu-2", mapping={"tipo": "gpu", "bench": 2_000_000_000, "ultimo_aviso": ahora - 60})  # caído
     redis.hset("nodo:cpu-1", mapping={"tipo": "cpu", "bench": 1_000_000, "ultimo_aviso": ahora})  # sin aviso todavía
+    redis.hset("nodo:cpu-2", mapping={"tipo": "cpu", "bench": 2_000_000, "hashes_por_segundo": 0,
+                                      "ultimo_aviso": ahora})  # todavía no minó: cuenta su bench
 
     assert REGISTRY.get_sample_value("blockchain_mineros", {"tipo": "gpu"}) == 1
-    assert REGISTRY.get_sample_value("blockchain_mineros", {"tipo": "cpu"}) == 1
+    assert REGISTRY.get_sample_value("blockchain_mineros", {"tipo": "cpu"}) == 2
     assert REGISTRY.get_sample_value("blockchain_hashes_por_segundo", {"tipo": "gpu"}) == 1_900_000_000
-    assert REGISTRY.get_sample_value("blockchain_hashes_por_segundo", {"tipo": "cpu"}) == 1_000_000
+    assert REGISTRY.get_sample_value("blockchain_hashes_por_segundo", {"tipo": "cpu"}) == 3_000_000

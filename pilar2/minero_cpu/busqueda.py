@@ -70,18 +70,15 @@ class Shares:
             return pendientes
 
 
-class Buscador:
-    def __init__(self, procesos):
-        self.procesos = procesos
-        self.parar = multiprocessing.Event()
-        self._pool = multiprocessing.Pool(procesos, initializer=_iniciar, initargs=(self.parar,))
-        self.probados = 0          # nonces probados en el rango actual (lo lee el keep-alive)
-        self.inicio = time.monotonic()
-        self.shares = Shares()
+class Ritmo:
+    """Hashes/s que manda el keep-alive: los probados sobre el tiempo que se buscó, en el rango en curso o, entre
+    rangos, en el último. Contra el tiempo desde que empezó el rango, con el minero parado bajaba como 1/t."""
+
+    probados, inicio, fin = 0, 0.0, None
 
     def hashes_por_segundo(self):
-        segundos = time.monotonic() - self.inicio
-        return round(self.probados / segundos) if segundos > 0 else 0
+        segundos = (self.fin or time.monotonic()) - self.inicio
+        return round(self.probados / segundos) if self.probados and segundos > 0 else 0
 
     def buscar(self, bloque, desde, hasta, prefijo):
         """Recorre [desde, hasta]. Devuelve (nonce o None, cortado); los shares quedan en `self.shares`.
@@ -89,8 +86,22 @@ class Buscador:
         cortado es True si alguien llamó a cortar() antes de terminar: el resultado no sirve.
         """
         self.parar.clear()
-        self.probados, self.inicio = 0, time.monotonic()
+        self.probados, self.inicio, self.fin = 0, time.monotonic(), None
         self.shares.empezar()
+        try:
+            return self._recorrer(bloque, desde, hasta, prefijo)
+        finally:
+            self.fin = time.monotonic()
+
+
+class Buscador(Ritmo):
+    def __init__(self, procesos):
+        self.procesos = procesos
+        self.parar = multiprocessing.Event()
+        self._pool = multiprocessing.Pool(procesos, initializer=_iniciar, initargs=(self.parar,))
+        self.shares = Shares()
+
+    def _recorrer(self, bloque, desde, hasta, prefijo):
         siguiente = desde
         while siguiente <= hasta:
             # De a lotes, para no armar millones de trozos si el rango es enorme.

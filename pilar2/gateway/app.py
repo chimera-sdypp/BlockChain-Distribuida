@@ -448,7 +448,7 @@ class Gateway:
         for tipo, aviso, hps, bench in tuberia.execute():
             if tipo in totales and aviso and ahora - float(aviso) < self.minero_vivo:
                 totales[tipo][0] += 1
-                totales[tipo][1] += float(hps or bench or 0)
+                totales[tipo][1] += float(hps or 0) or float(bench or 0)  # sin minar todavía manda 0: su bench
         return totales
 
     def lista_mineros(self):

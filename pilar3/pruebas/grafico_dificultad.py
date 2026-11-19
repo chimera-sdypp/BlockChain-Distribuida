@@ -61,7 +61,7 @@ def main():
     ax1.step(xs, prefijos, where="post", color=AZUL, linewidth=2.2, label="Prefijo elegido")
     ax1.scatter(xs, prefijos, color=AZUL, s=28, zorder=3)
     ax1.set_ylabel("Largo del prefijo (hex)", color=TEXTO_2)
-    ax1.set_title("Ajuste de dificultad por tiempo (ventana) y techo por potencia viva (GPU)",
+    ax1.set_title("Ajuste de dificultad por tiempo (ventana de 5 bloques) y recálculo por potencia",
                   color=TEXTO, fontsize=11, loc="left")
 
     ax2.plot(xs, tiempos, color=NARANJA, linewidth=1.8, marker="o", markersize=4.5, label="Tiempo real")
@@ -73,7 +73,7 @@ def main():
     if corte_gpu is not None:
         for ax in (ax1, ax2):
             ax.axvline(corte_gpu - 0.5, color=TEXTO_2, linestyle=":", linewidth=1.2)
-        ax1.text(corte_gpu - 0.35, max(prefijos), "Se desconecta GPU", color=TEXTO_2, fontsize=8.5, va="top")
+        ax1.text(corte_gpu + 0.35, min(prefijos) + 0.4, "Sale el minero\nmás potente", color=TEXTO_2, fontsize=8.5, va="bottom")
 
     ax1.legend(loc="lower right", frameon=False, fontsize=9, labelcolor=TEXTO)
     ax2.legend(loc="upper right", frameon=False, fontsize=9, labelcolor=TEXTO)

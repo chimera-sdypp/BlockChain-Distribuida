@@ -1,0 +1,38 @@
+01:35:58 ── Escenario juntos ──
+01:35:58 Minero honesto (honesto) arrancó: 78b870b78a5f
+01:35:58 Minero trampa-bench-alto (bench-alto) arrancó: 61e6cfd52d4f
+01:35:59 Minero trampa-acaparar (acaparar) arrancó: ef67746d920e
+01:35:59 Minero trampa-retener (retener) arrancó: 0e5f97dc4a4e
+01:36:00 Minero trampa-sin-solucion (sin-solucion) arrancó: 55ff278cd5f3
+01:36:00 Minero trampa-guardar (guardar) arrancó: b69b061750b5
+01:36:00 Espero 240 s: que cada trampa haga lo suyo
+01:40:02 [OK] juntos: sin-solucion: queda suspendido → estadistica, P = 7.6e-12
+01:40:03 [OK] juntos: guardar: queda suspendido → estadistica, P = 7.6e-12
+01:40:03 [OK] juntos: acaparar: pidió 10 rangos seguidos → 9 veces, con ['1'] rango(s)
+01:40:05 [OK] juntos: bench-alto: cuenta lo medido, no lo declarado → bench 1.18e+09 H/s, medido 1.34e+06 H/s → potencia 1.34e+06 H/s
+01:40:08 [OK] juntos: honesto: no se lo suspende y mide parecido a su bench → medido: medido 2.64e+06 H/s, bench 2.19e+06 H/s
+01:40:09 Altura al final: 48
+01:40:20 ── Escenario retener ──
+01:40:20 Minero trampa-retener (retener) arrancó: cb46b0cd0d55
+01:40:21 Minero trampa-acaparar (acaparar) arrancó: 97c656e77492
+01:40:21 Espero 300 s: que se les pase el plazo (sin medición: 120 s)
+01:45:21 [OK] retener: retener: el plazo le saca el rango → 1 corte(s) por plazo en el gateway; se lo sacaron a los 120, 120 s
+01:45:21 [OK] retener: acaparar: el plazo le saca el rango → 1 corte(s) por plazo en el gateway; se lo sacaron a los 120, 120 s
+01:45:24 ── Escenario gpu-falsa ──
+01:45:24 Minero trampa-gpu-falsa (gpu-falsa) arrancó: fcaf58726f10
+01:45:24 Espero 330 s: a que el escalador decida y venza la tarea (240 s)
+01:50:56 [OK] gpu-falsa: el escalador pide VMs aunque haya una «GPU» viva → 1 VM(s) pedidas
+01:50:56 [OK] gpu-falsa: sin bloque en 240 s, el prefijo baja → prefijos [5], motivos ['emergencia']
+01:50:58 ── Escenario bench-bajo ──
+01:50:58 TrP con PREFIJO_BASE=8 (y ESPACIO_NONCES 16^8 × 4) para ver al tiempo pasar el techo
+01:51:10 Minero trampa-bench-bajo (bench-bajo) arrancó: 80cd026ac9fc
+01:52:12 [OK] bench-bajo: el ajuste por tiempo pasa el techo del bench declarado → bench declarado 5.57e+04 H/s (techo 5); prefijos [5, 5, 5, 5, 6, 6, 7, 5, 5, 5, 6, 6, 6]
+01:53:15 ── Escenario bench-bajo ──
+01:53:15 TrP con PREFIJO_BASE=8 (y ESPACIO_NONCES 16^8 × 4) para ver al tiempo pasar el techo
+01:53:29 Minero trampa-bench-bajo (bench-bajo) arrancó: 6c7167edecad
+01:54:01 [OK] bench-bajo: el ajuste por tiempo pasa el techo del bench declarado → bench declarado 5.42e+04 H/s (techo 5); prefijos [7]
+01:54:42 ── Escenario bench-bajo ──
+01:54:42 Minero trampa-bench-bajo (bench-bajo) arrancó: 09e34e5a0a59
+01:54:42 Fase 1: PREFIJO_BASE=5, hasta minar 3 bloques
+01:55:58 Fase 2: PREFIJO_BASE=8 (y ESPACIO_NONCES 16^8 × 4): el tope ya no limita
+01:58:21 [OK] bench-bajo: el ajuste por tiempo pasa el techo del bench declarado → bench declarado 5.26e+04 H/s (techo 5); prefijo de cada bloque, en orden: [7, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7]

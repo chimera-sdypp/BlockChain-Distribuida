@@ -32,6 +32,10 @@ spec:
             - { name: VENTANA_AJUSTE, value: "5" }
             - { name: AJUSTE_MAXIMO, value: "1" }
             - { name: FRAGMENTO_PORCENTAJE, value: "10" }
+            # BC-73: al menos 16^PREFIJO_BASE × 4 (si no, el TrP no arranca); 2^32 alcanza hasta el prefijo 6.
+            - { name: ESPACIO_NONCES, value: "4294967296" }
+            # Sin bloque en 240 s (4 × SEGUNDOS_POR_BLOQUE), un carácter menos. El mismo valor que en el NCT.
+            - { name: EMERGENCIA_SEGUNDOS, value: "240" }
             - name: RABBIT_USUARIO
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
             - name: RABBIT_CLAVE

@@ -36,7 +36,7 @@ import urllib.parse
 from datetime import datetime, timezone
 
 from firmar import CUENTA, PRIVADA, contrato
-from prefijos import api, kubectl
+from prefijos import api, gateway_url, kubectl, lista_mineros
 
 EVENTOS = ["ciclo", "fase", "evento", "segundos", "instante"]
 MUESTRAS = ["instante", "ciclo", "fase", "segundos", "gpus_vivas", "cpus_vivas", "vms", "vms_corriendo",
@@ -57,10 +57,11 @@ def ahora():
 
 
 class Sistema:
-    """Lo que la prueba mira y toca: la API pública, GKE, el k3s del minero GPU y las VMs."""
+    """Lo que la prueba mira y toca: la API pública, el gateway, GKE, el k3s del minero GPU y las VMs."""
 
     def __init__(self, args):
         self.base = args.api.rstrip("/")
+        self.gateway = gateway_url(args.gateway)
         self.kube_gpu, self.ns_gpu, self.sts = args.kube_gpu, args.ns_gpu, args.sts
         self.proyecto = args.proyecto
         self.tipos = {}  # cuenta → tipo, también de los mineros que ya se dieron de baja
@@ -76,7 +77,7 @@ class Sistema:
         self.k3s("scale", "sts", self.sts, f"--replicas={replicas}")
 
     def mineros(self):
-        lista = api(self.base, "/api/mineros")
+        lista = lista_mineros(self.gateway)
         for m in lista:
             self.tipos[m["id"]] = m["tipo"]
         return lista
@@ -227,6 +228,7 @@ def reposo(sistema, limite):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--api", required=True, help="URL del Ingress (frontend y API)")
+    p.add_argument("--gateway", help="URL del gateway, que lista los mineros (GET /mineros); por defecto GATEWAY_URL")
     p.add_argument("--salida", required=True, help="prefijo de los tres CSV")
     p.add_argument("--ciclos", type=int, default=3)
     p.add_argument("--periodo", type=float, default=5, help="segundos entre muestras")

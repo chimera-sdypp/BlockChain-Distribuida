@@ -86,10 +86,40 @@ class Altas:
     def baja(self, cuenta):
         """Saca la cuenta de `cuentas`: el gateway deja de atenderla y el NCT rechaza sus transferencias.
 
-        El saldo queda donde está (congelado). Devuelve los datos que tenía, o None si no estaba aprobada.
+        El saldo queda donde está (congelado). Si estaba suspendida, deja de estarlo. Devuelve los datos que
+        tenía, o None si no estaba aprobada.
         """
         datos = self._sacar(keys=[contrato.CUENTAS], args=[cuenta])
+        self.redis.hdel(contrato.SUSPENDIDOS, cuenta)
         return json.loads(datos) if datos else None
+
+    # ── BC-75: suspensión ──
+
+    def suspender(self, cuenta, motivo, evidencia, ahora=None):
+        """El gateway deja de prestarle rangos hasta que el organizador confirme la baja o la reactive.
+
+        Devuelve True si la suspendió ahora, False si ya estaba suspendida o no es un minero aprobado.
+        """
+        datos = self.redis.hget(contrato.CUENTAS, cuenta)
+        if not datos or json.loads(datos).get("tipo") != "minero":
+            return False
+        registro = json.dumps({"nombre": json.loads(datos).get("nombre", ""), "motivo": motivo,
+                               "evidencia": evidencia, "cuando": int(time.time() if ahora is None else ahora)})
+        return bool(self.redis.hsetnx(contrato.SUSPENDIDOS, cuenta, registro))
+
+    def reactivar(self, cuenta):
+        """La saca de `suspendidos`. Devuelve lo que tenía, o None si no estaba suspendida."""
+        datos = self._sacar(keys=[contrato.SUSPENDIDOS], args=[cuenta])
+        return json.loads(datos) if datos else None
+
+    def suspendido(self, cuenta):
+        datos = self.redis.hget(contrato.SUSPENDIDOS, cuenta)
+        return json.loads(datos) if datos else None
+
+    def suspendidos(self):
+        """[{cuenta, nombre, motivo, evidencia, cuando}], la más reciente primero."""
+        lista = [{"cuenta": c, **json.loads(d)} for c, d in self.redis.hgetall(contrato.SUSPENDIDOS).items()]
+        return sorted(lista, key=lambda s: (-s.get("cuando", 0), s["cuenta"]))
 
     def pendientes(self):
         """[{cuenta, tipo, nombre, pedida}], el pedido más viejo primero."""

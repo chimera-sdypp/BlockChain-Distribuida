@@ -1,8 +1,24 @@
 # Versiones
 
-Versión actual: **0.4.0** (18/11/2026)
+Versión actual: **0.6.0** (19/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.6.0 — 19/11/2026
+
+Dificultad por tiempo y mineros que mienten (epic BC-72). Incluye la 0.5.0, que no había pasado a `main`.
+
+- **Prefijo por tiempo** (#69, BC-73): la potencia declarada (`bench`) se usa sólo al arrancar y cuando cambia 4 veces o más; el resto del tiempo manda el ajuste por tiempo, que ya no frena un bench bajo. Bajada de emergencia: un carácter menos por cada 240 s sin bloque. La `duracion` del bloque cuenta los rearmados, y el TrP no arranca si `ESPACIO_NONCES` no alcanza para el prefijo.
+- **Potencia medida y préstamos** (#70, BC-74): un rango a la vez por minero; el gateway mide la potencia con los shares (`min(bench, medido)`) y la usan el TrP y el escalador; cada préstamo tiene un plazo según esa potencia. El escalador ya no cree en un `tipo: gpu` que no mina, y levanta VMs si hace 5 minutos que no sale un bloque.
+- **`sin_solucion` falsos** (#71, BC-75): chequeo estadístico y reverificación por muestreo; el minero queda suspendido y el organizador lo reactiva o le da de baja desde el panel. Alerta `MineroSuspendido`.
+- **Pruebas** (#72, BC-76): minero tramposo (`TRAMPA`, apagado por defecto) y `pilar3/pruebas/trampas.py`: 10 de 10 en el k3s.
+
+## 0.5.0 — 18/11/2026
+
+- Historial por minero (BC-54): el gateway lleva el tiempo conectado, la fecha de alta y quién entra y quién sale (con una línea en el log), y Grafana suma la fila «Historial de mineros» con una tabla por minero, sus curvas y las altas, conexiones y desconexiones desde Loki. Los mineros salen de la API de la app: `/api/mineros` pasa a ser `GET /mineros` del gateway, y la página muestra sólo la blockchain (#65).
+- Grafana más limpio: CPU y memoria por servicio en vez de por pod, selector de mineros vivos o todos, y los logs separados en errores, advertencias, bloques y épocas, y escalado y dificultad; el log completo queda en una fila plegada (#66).
+- Arreglo: el hashrate que mandan los mineros en el keep-alive ya no baja solo cuando se quedan sin trabajo, y un minero que todavía no minó cuenta con su bench (#67).
+- Diagramas generales de los pilares 2 y 3 en sus README (#64).
 
 ## 0.4.0 — 18/11/2026
 

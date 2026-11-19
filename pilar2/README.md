@@ -39,9 +39,7 @@ curl -X POST localhost:8080/mensajes -H 'content-type: application/json' -d '{"t
 
 ## Todo junto en k3s
 
-![Pilar 2: qué recibe, envía y guarda cada pieza](diagrama.png)
-
-Los números del diagrama son el recorrido de una transferencia (1 a 11); las letras, cómo se levanta una VM con un minero CPU.
+![Pilar 2: las piezas y cómo se comunican](diagrama.png)
 
 ```bash
 kubectl create namespace blockchain
@@ -107,7 +105,7 @@ kubectl -n monitoring port-forward svc/monitoreo-grafana 3000:80    # http://loc
 kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d
 ```
 
-- **Dashboard «Blockchain distribuida»:** transacciones, bloques, mineros y prefijo, reparto del trabajo (con los rangos por minero y por tipo), colas, VMs del escalador, CPU y memoria por pod, errores y logs. `$app` filtra por servicio y `$nivel` filtra los logs. Grafana no tiene disco: el dashboard y los datasources (`prometheus` y `loki`) vuelven a cargarse en cada arranque.
+- **Dashboard «Blockchain distribuida»:** transacciones, bloques, mineros y prefijo, reparto del trabajo (con los rangos por minero y por tipo), historial de mineros (BC-54: una tabla por minero con alta, horas conectado, bloques, recompensas, shares y hashrate; sus curvas; y las altas, conexiones y desconexiones desde Loki), colas, VMs del escalador, CPU y memoria por servicio (suma de las réplicas: un pod reemplazado no deja una serie suelta), errores y logs separados por tema (errores, advertencias, bloques y épocas, escalado y dificultad; el log completo, en una fila plegada). `$app` filtra por servicio, `$nivel` el log completo y `$mineros` muestra sólo los mineros vivos (por defecto) o también los que se fueron. Grafana no tiene disco: el dashboard y los datasources (`prometheus` y `loki`) vuelven a cargarse en cada arranque.
 - **Errores:** cada log ERROR o superior de un servicio suma a `blockchain_errores_total{servicio, tipo}` (lo hace `comun/registro`).
 - **Logs:** también los de un pod que ya no existe. En Grafana → Explore → Loki, p. ej. `{app="nct", nivel="ERROR"}`. Los de los mineros no entran (corren fuera del cluster).
 

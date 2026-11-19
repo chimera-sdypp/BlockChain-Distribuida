@@ -11,7 +11,6 @@ organizador (`/api/organizador/*`), donde cada pedido va firmado con su clave (X
 import json
 import logging
 import threading
-import time
 
 import redis as redislib
 from fastapi import Request
@@ -79,7 +78,6 @@ def invalido(errores):
 LOTE_MAXIMO = 1000
 LIMITE_BLOQUES, LIMITE_MAXIMO_BLOQUES = 20, 100
 PENDIENTES_VISIBLES = 50
-MINERO_VIVO_SEGUNDOS = 15  # el keep-alive es cada 5 s: tres avisos perdidos y se lo da por caído
 CAMPOS_ENTEROS_BLOQUE = ("nonce", "timestamp", "altura")
 
 
@@ -132,19 +130,8 @@ def nueva_transaccion(datos):
     return {"id": id_, **{campo: datos[campo] for campo in CAMPOS_TX}}
 
 
-def _numero(texto):
-    """Lo que Redis guarda como texto, como entero si se puede y si no como decimal."""
-    try:
-        return int(texto)
-    except (TypeError, ValueError):
-        try:
-            return float(texto)
-        except (TypeError, ValueError):
-            return None
-
-
 def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LOTE_MAXIMO,
-                  minero_vivo=MINERO_VIVO_SEGUNDOS, organizador="", altas_maximas=ALTAS_MAXIMAS):
+                  organizador="", altas_maximas=ALTAS_MAXIMAS):
     crear = redis.register_script(LUA_CREAR)
     altas = Altas(redis, maximas=altas_maximas)
 
@@ -286,26 +273,6 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         pendientes = [_transaccion(id_, tx) for id_, tx in zip(ids, tuberia.execute()) if tx]
         return {"pendientes": pendientes, "total_pendientes": total,
                 "cajas": [len(json.loads(caja)) for caja in guardadas]}
-
-    @app.get("/api/mineros")
-    def mineros():
-        """Cada nodo:<id> que escribe el gateway, con si está vivo y su saldo (incluye lo que cobró)."""
-        claves = sorted(redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN))
-        ids = [clave.split(":", 1)[1] for clave in claves]
-        tuberia = redis.pipeline(transaction=False)
-        for clave in claves:
-            tuberia.hgetall(clave)
-        nodos = tuberia.execute()
-        saldos = redis.hmget(contrato.SALDOS, ids) if ids else []
-        ahora = time.time()
-        resultado = []
-        for id_, nodo, saldo in zip(ids, nodos, saldos):
-            minero = {"id": id_, "alias": nodo.get("alias"), "tipo": nodo.get("tipo"), "placa": nodo.get("placa"),
-                      **{campo: _numero(nodo.get(campo)) for campo in ("bench", "hashes_por_segundo", "ultimo_aviso")}}
-            minero["vivo"] = minero["ultimo_aviso"] is not None and ahora - minero["ultimo_aviso"] < minero_vivo
-            minero["saldo"] = int(saldo or 0)
-            resultado.append(minero)
-        return resultado
 
     @app.get("/api/cuentas/{cuenta}")
     def cuenta(cuenta: str):
@@ -482,11 +449,28 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
                  cuenta_)
         return {"cuenta": cuenta_, "baja": True}
 
+    async def listar_suspendidos(datos):
+        return {"suspendidos": await run_in_threadpool(altas.suspendidos)}
+
+    async def reactivar(datos):
+        """BC-75: un minero suspendido vuelve a recibir rangos (el organizador decidió que no mintió)."""
+        cuenta_ = cuenta_del_pedido(datos)
+        if not cuenta_:
+            return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
+        suspension = await run_in_threadpool(altas.reactivar, cuenta_)
+        if suspension is None:
+            return JSONResponse({"error": "la cuenta no está suspendida"}, status_code=404)
+        log.info("El organizador reactivó a %s (suspendido por %s): %s", suspension.get("nombre"),
+                 suspension.get("motivo"), cuenta_)
+        return {"cuenta": cuenta_, "reactivada": True}
+
     app.get("/api/organizador/altas")(del_organizador(listar_altas))
     app.get("/api/organizador/cuentas")(del_organizador(listar_cuentas))
     app.post("/api/organizador/aprobar")(del_organizador(aprobar))
     app.post("/api/organizador/rechazar")(del_organizador(rechazar))
     app.post("/api/organizador/baja")(del_organizador(dar_de_baja))
+    app.get("/api/organizador/suspendidos")(del_organizador(listar_suspendidos))
+    app.post("/api/organizador/reactivar")(del_organizador(reactivar))
 
     @app.exception_handler(redislib.RedisError)
     def redis_caido(request, error):
@@ -508,7 +492,6 @@ def main():
     # Nadie consume en esta conexión: se usa sólo para publicar desde los hilos HTTP.
     agregar_rutas(servicio.app, servicio.redis, servicio.rabbit, cola=cola,
                   lote_maximo=config.entero("LOTE_MAXIMO", LOTE_MAXIMO),
-                  minero_vivo=config.entero("MINERO_VIVO_SEGUNDOS", MINERO_VIVO_SEGUNDOS),
                   organizador=leer_organizador())
     threading.Thread(target=servicio.rabbit.conectar, name="rabbit-conectar", daemon=True).start()
     servicio.servir_http(en_hilo=False)

@@ -35,6 +35,14 @@ spec:
           annotations:
             summary: Hay transacciones apiladas y no salió ningún bloque en 10 minutos
 
+        - alert: MineroSuspendido
+          # BC-75: el gateway suspendió a un minero que contestó «sin solución» en un rango que la tenía.
+          expr: max(blockchain_mineros_suspendidos) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $value }} minero(s) suspendido(s) esperan la decisión del organizador"
+            description: En el panel del organizador, «Mineros suspendidos», está la evidencia; reactivar o confirmar la baja.
+
         - alert: ServicioCaido
           # El escalador apagado (0 réplicas) es su estado normal: KEDA lo prende cuando hace falta.
           expr: |

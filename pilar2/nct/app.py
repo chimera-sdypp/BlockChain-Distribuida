@@ -259,12 +259,23 @@ end
 return false
 """
 
+# Cuándo se armó por primera vez la caja que se está minando (BC-73). Si la caja es la misma de la vez
+# anterior (se rearmó: sin solución, rechazada, vencida o cambió la punta), devuelve esa hora; si es otra,
+# anota ésta. Así la `duracion` del bloque cuenta todos los intentos, y el TrP sabe hace cuánto que no
+# sale un bloque (la bajada de emergencia).
+# KEYS: caja:armada. ARGV: la caja (tal cual está en `cajas`), ahora. Devuelve la hora del primer armado.
+LUA_ARMADA = """
+if redis.call('HGET', KEYS[1], 'caja') == ARGV[1] then return redis.call('HGET', KEYS[1], 'desde') end
+redis.call('HSET', KEYS[1], 'caja', ARGV[1], 'desde', ARGV[2])
+return ARGV[2]
+"""
+
 TAREA_ACTUAL, TICKER = contrato.TAREA_ACTUAL, "ticker"
 COLA_TAREAS = contrato.COLAS[1]  # tareas
 VENTANA, TX_POR_CAJA, TAREA_VENCE, ESPERA_NONCE = 30, 100, 600, 60
 
 BLOQUES = Counter("blockchain_bloques", "Bloques confirmados por esta réplica del NCT")
-TIEMPO_BLOQUE = Histogram("blockchain_tiempo_bloque_segundos", "Desde que se publica la tarea hasta que se confirma",
+TIEMPO_BLOQUE = Histogram("blockchain_tiempo_bloque_segundos", "Desde que se arma la caja hasta que su bloque se confirma",
                           buckets=(1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600))
 SIN_REPLICA = Counter("blockchain_bloques_sin_replica",
                       "Bloques avisados sin que una réplica de Redis confirmara tenerlos a tiempo")
@@ -293,13 +304,18 @@ def datos_tarea(tarea, transacciones):
 class Nct:
     def __init__(self, redis, publicador, saldos_iniciales=None, organizador="", wait_replicas=1, wait_ms=1000,
                  ventana=VENTANA, tx_por_caja=TX_POR_CAJA, tarea_vence=TAREA_VENCE, espera_nonce=ESPERA_NONCE,
-                 fondo_epoca=contrato.FONDO_EPOCA, tarea_guarda=contrato.TAREA_GUARDA):
+                 fondo_epoca=contrato.FONDO_EPOCA, tarea_guarda=contrato.TAREA_GUARDA,
+                 emergencia=contrato.EMERGENCIA_SEGUNDOS):
         self.redis, self.publicador = redis, publicador
         self.saldos_iniciales = SALDOS_INICIALES if saldos_iniciales is None else saldos_iniciales
         self.organizador = organizador
         self.wait_replicas, self.wait_ms = wait_replicas, wait_ms
         self.ventana, self.tx_por_caja, self.tarea_vence = ventana, tx_por_caja, tarea_vence
         self.espera_nonce, self.fondo_epoca, self.tarea_guarda = espera_nonce, fondo_epoca, tarea_guarda
+        # BC-73: una tarea sin bloque vence a los `emergencia` segundos (0 = sólo a los `tarea_vence`) y se
+        # rearma la misma caja; el TrP le baja un carácter por cada `emergencia` desde que se armó la caja.
+        self.emergencia = emergencia
+        self._armada = redis.register_script(LUA_ARMADA)
         self._genesis = redis.register_script(LUA_GENESIS)
         self._validar = redis.register_script(LUA_VALIDAR)
         self._vencer_espera = redis.register_script(LUA_VENCER_ESPERA)
@@ -416,6 +432,10 @@ class Nct:
             log.info("Se cerraron %d cajas", cajas)
         return cajas
 
+    def vence(self):
+        """Segundos que dura `tarea:actual`: la bajada de emergencia (BC-73) la acorta."""
+        return min(self.tarea_vence, self.emergencia) if self.emergencia > 0 else self.tarea_vence
+
     def armar_si_libre(self):
         """Si no hay tarea en curso y hay cajas, arma el bloque candidato con la primera y lo publica.
 
@@ -423,7 +443,7 @@ class Nct:
         el NCT muere, `tarea:actual` vence y la misma caja se vuelve a armar. Devuelve el id o None.
         """
         id_tarea = uuid.uuid4().hex
-        if not self.redis.set(TAREA_ACTUAL, id_tarea, nx=True, ex=self.tarea_vence):
+        if not self.redis.set(TAREA_ACTUAL, id_tarea, nx=True, ex=self.vence()):
             return None
         caja = self.redis.lindex(contrato.CAJAS, 0)
         if caja is None:
@@ -456,6 +476,7 @@ class Nct:
         if contrato.es_primer_bloque_de_epoca(altura):
             transacciones = self.participacion(contrato.epoca(altura) - 1, punta) + transacciones
         timestamp = max(int(time.time()), despues_de + 1)
+        armada = float(self._armada(keys=[contrato.CAJA_ARMADA], args=[caja, time.time()]))
         vencida = self._relevar(keys=[contrato.TAREA_ULTIMA], args=[id_tarea])
         if vencida:
             ts_vieja = self.redis.hget(contrato.TAREA.format(vencida), "timestamp")
@@ -465,9 +486,11 @@ class Nct:
             self._archivar(vencida)
         self.redis.hset(contrato.TAREA.format(id_tarea), mapping={
             "previous_hash": punta, "timestamp": timestamp, "altura": altura,
-            "transacciones": json.dumps(transacciones), "caja": caja, "estado": "en_curso", "publicada": time.time()})
+            "transacciones": json.dumps(transacciones), "caja": caja, "estado": "en_curso", "publicada": time.time(),
+            "armada": armada})
         self.publicador.publicar(COLA_TAREAS, {"tarea": id_tarea, "previous_hash": punta, "altura": altura,
-                                               "transacciones": transacciones, "timestamp": timestamp})
+                                               "transacciones": transacciones, "timestamp": timestamp,
+                                               "armada": armada})
         log.info("Tarea %s publicada: bloque %d con %d transacciones sobre %s",
                  id_tarea, altura, len(transacciones), punta)
         return True
@@ -541,7 +564,7 @@ class Nct:
         """La misma caja como una tarea nueva (otro id: el TrP ya tiene estado guardado para la vieja)."""
         nueva = uuid.uuid4().hex
         if not self._rearmar(keys=[contrato.TAREA.format(id_tarea), TAREA_ACTUAL],
-                             args=[id_tarea, nueva, estado, self.tarea_vence]):
+                             args=[id_tarea, nueva, estado, self.vence()]):
             log.info("La tarea %s ya no estaba en curso: no se rearma", id_tarea)
             return None
         self._archivar(id_tarea)
@@ -572,7 +595,9 @@ class Nct:
 
     def _guardar(self, id_tarea, tarea, transacciones, mensaje):
         prefijo, hash_, minero = tarea["prefijo"], mensaje["hash"], mensaje["minero"]
-        duracion = max(0.0, time.time() - float(tarea["publicada"]))
+        # BC-73: desde que se armó la caja por primera vez, con los rearmados adentro (antes de BC-73 no
+        # había `armada`: la tarea vieja se mide desde que se publicó).
+        duracion = max(0.0, time.time() - float(tarea.get("armada") or tarea["publicada"]))
         del_bloque = contrato.transacciones_del_bloque(datos_tarea(tarea, transacciones), minero)
         bloque = {"previous_hash": tarea["previous_hash"], "timestamp": tarea["timestamp"],
                   "transactions": json.dumps(del_bloque), "nonce": mensaje["nonce"], "block_hash": hash_,
@@ -671,7 +696,8 @@ def main():
               tarea_vence=config.entero("TAREA_VENCE_SEGUNDOS", TAREA_VENCE),
               espera_nonce=config.entero("ESPERA_NONCE_SEGUNDOS", ESPERA_NONCE),
               fondo_epoca=config.entero("FONDO_EPOCA", contrato.FONDO_EPOCA),
-              tarea_guarda=config.entero("TAREA_GUARDA_SEGUNDOS", contrato.TAREA_GUARDA))
+              tarea_guarda=config.entero("TAREA_GUARDA_SEGUNDOS", contrato.TAREA_GUARDA),
+              emergencia=config.entero("EMERGENCIA_SEGUNDOS", contrato.EMERGENCIA_SEGUNDOS))
     nct.cargar_genesis()
     servicio.servir_http(en_hilo=True)
     publicador.conectar()

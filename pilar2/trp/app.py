@@ -41,6 +41,7 @@ class Ajustes:
     ajuste_maximo: int = 1      # máximo de caracteres hex por ajuste (AJUSTE_MAXIMO)
     prefijo_inicial: int = 0    # 0: arranca según la potencia; > 0: arranca bajo para convergencia
     criterio: str = "suma"  # cómo se junta la potencia de los vivos; otro que "suma", sólo para BC-59
+    emergencia: int = contrato.EMERGENCIA_SEGUNDOS  # un carácter menos por cada tantos segundos sin bloque (0 = no)
 
 
 def cargar_ajustes():
@@ -55,6 +56,7 @@ def cargar_ajustes():
         ajuste_maximo=config.entero("AJUSTE_MAXIMO", 1),
         prefijo_inicial=config.entero("PREFIJO_INICIAL", 0),
         criterio=config.texto("CRITERIO_POTENCIA", "suma"),
+        emergencia=config.entero("EMERGENCIA_SEGUNDOS", contrato.EMERGENCIA_SEGUNDOS),
     )
     if not 1 <= ajustes.porcentaje <= 50:
         raise ValueError("FRAGMENTO_PORCENTAJE va de 1 a 50")
@@ -70,9 +72,22 @@ def cargar_ajustes():
         raise ValueError("AJUSTE_MAXIMO no puede ser negativo")
     if not 0 <= ajustes.prefijo_inicial <= 32:
         raise ValueError("PREFIJO_INICIAL va de 0 a 32")
+    minimo = espacio_minimo(ajustes.prefijo_base)
+    if ajustes.espacio < minimo:
+        # BC-73: con menos, muchas tareas no tienen solución y se rearman: el ajuste por tiempo mide mal.
+        raise ValueError(f"ESPACIO_NONCES ({ajustes.espacio}) tiene que ser al menos 16^PREFIJO_BASE × 4 = {minimo} "
+                         f"para que casi todas las tareas tengan solución (con PREFIJO_BASE={ajustes.prefijo_base})")
+    if ajustes.emergencia < 0:
+        raise ValueError("EMERGENCIA_SEGUNDOS no puede ser negativo (0 la apaga)")
     if ajustes.criterio not in CRITERIOS:
         raise ValueError(f"CRITERIO_POTENCIA va {', '.join(CRITERIOS)}, no {ajustes.criterio!r}")
     return ajustes
+
+
+def espacio_minimo(prefijo_base):
+    """El espacio de nonces mínimo para un prefijo: 4 veces los intentos esperados (BC-73). Con eso, una
+    tarea no tiene solución con probabilidad e^-4 ≈ 2 %, y casi nunca se rearma."""
+    return 16 ** prefijo_base * 4
 
 
 def errores_tarea(tarea):
@@ -93,22 +108,31 @@ def errores_tarea(tarea):
     return errores
 
 
-def elegir_prefijo_con_motivo(redis, ajustes, ahora):
-    """(prefijo, motivo, potencia en hashes/s): el ajuste por tiempo con el techo de la potencia viva (BC-60),
-    juntada según el criterio (BC-59). Sin ajuste, la potencia es None porque no se mira."""
+def elegir_prefijo_con_motivo(redis, ajustes, ahora, armada=None):
+    """(prefijo, motivo, potencia en hashes/s): BC-60 y BC-73 (ver `particion.decidir_prefijo`), con la potencia
+    viva juntada según el criterio (BC-59). Sin ajuste, la potencia es None porque no se mira.
+
+    `armada`: cuándo se armó por primera vez la caja de la tarea (la manda el NCT), para la bajada de emergencia.
+    Si hubo un recálculo por potencia (o es el primero de la cadena), queda en `prefijo:referencia`.
+    """
     if not ajustes.ajustar:
         return "0" * ajustes.prefijo_base, "fijo", None
     nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN)]
     potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos, ajustes.criterio)
     hashes = redis.lrange(contrato.CADENA, -(ajustes.ventana_ajuste + 1), -1) if hasattr(redis, "lrange") else []
     bloques = [b for b in (redis.hgetall(contrato.BLOQUE.format(h)) for h in hashes) if b]
-    largo, motivo = decidir_prefijo(potencia, bloques, ajustes)
+    referencia = redis.hgetall(contrato.PREFIJO_REFERENCIA)
+    largo, motivo, nueva = decidir_prefijo(potencia, bloques, ajustes, referencia, ahora, armada)
+    if nueva is not None:
+        redis.hset(contrato.PREFIJO_REFERENCIA, mapping=nueva)
+        if motivo in ("inicial", "potencia"):
+            log.info("Prefijo por potencia (%s): %d caracteres con %s", motivo, largo, legible(potencia))
     return "0" * largo, motivo, potencia
 
 
-def elegir_prefijo(redis, ajustes, ahora):
+def elegir_prefijo(redis, ajustes, ahora, armada=None):
     """(prefijo, potencia en hashes/s); sin ajuste, la potencia es None porque no se mira."""
-    prefijo, _, potencia = elegir_prefijo_con_motivo(redis, ajustes, ahora)
+    prefijo, _, potencia = elegir_prefijo_con_motivo(redis, ajustes, ahora, armada)
     return prefijo, potencia
 
 
@@ -135,7 +159,9 @@ def particionar(tarea, redis, publicar, ajustes, ahora=None):
     if errores:
         log.error("Tarea inválida, se descarta (%s): %r", ", ".join(errores), tarea)
         return
-    prefijo, motivo, potencia = elegir_prefijo_con_motivo(redis, ajustes, time.time() if ahora is None else ahora)
+    armada = tarea.get("armada") if isinstance(tarea.get("armada"), (int, float)) else None
+    prefijo, motivo, potencia = elegir_prefijo_con_motivo(redis, ajustes, time.time() if ahora is None else ahora,
+                                                          armada)
     rangos = partir(ajustes.espacio, ajustes.porcentaje)
     redis.hset(contrato.TAREA.format(tarea["tarea"]), mapping={"prefijo": prefijo, "rangos": len(rangos)})
     for numero, (desde, hasta) in enumerate(rangos):

@@ -2,6 +2,8 @@
 
 import math
 
+from comun import contrato
+
 
 def partir(espacio, porcentaje):
     """Parte [0, espacio - 1] en rangos del `porcentaje` % del espacio: [(desde, hasta), ...].
@@ -18,7 +20,8 @@ CRITERIOS = ("suma", "promedio", "minimo", "maximo")
 
 
 def potencia_viva(nodos, ahora, vivo_segundos, criterio="suma"):
-    """Potencia (hashes/s) de los mineros que avisaron hace menos de `vivo_segundos`, según su `bench`.
+    """Potencia (hashes/s) de los mineros que avisaron hace menos de `vivo_segundos`, según su `bench` (o lo que
+    midió el gateway, si es menos: `contrato.potencia_efectiva`, BC-74).
 
     `criterio` dice cómo se juntan los bench: "suma" es la del sistema, porque un bloque tarda 16^p
     intentos dividido la potencia de TODO el pool (minan todos). "promedio", "minimo" y "maximo"
@@ -31,7 +34,7 @@ def potencia_viva(nodos, ahora, vivo_segundos, criterio="suma"):
     for nodo in nodos:
         try:
             if ahora - float(nodo.get("ultimo_aviso", 0)) < vivo_segundos:
-                benchs.append(float(nodo.get("bench", 0)))
+                benchs.append(contrato.potencia_efectiva(nodo))  # BC-74: min(bench, medido)
         except ValueError:
             continue  # un nodo a medio escribir no cuenta
     if not benchs:
@@ -118,47 +121,105 @@ def tiempos_desde_bloques(bloques, ventana):
     return [max(0.0, float(actual - previo)) for previo, actual in zip(con_ts, con_ts[1:])]
 
 
-def decidir_prefijo(potencia, bloques, ajustes):
-    """Elige `(largo, motivo)` combinando ajuste por tiempo cada `ventana_ajuste` y techo por potencia.
+def evento_potencia(potencia, referencia, hubo_bloque):
+    """BC-73: si la potencia viva cambió 4 veces o más desde el último recálculo por potencia.
 
-    - Con `ajustar=False`: devuelve `(prefijo_base, "fijo")`.
-    - Sin bloques minados previos: arranca como siempre con el techo por potencia (`"inicial"`),
-      salvo que `prefijo_inicial > 0` (para pruebas de convergencia).
-    - Con bloques previos: ajusta por tiempo cada `ventana_ajuste` bloques; entre ajustes mantiene
-      el último prefijo. En todo momento `largo_prefijo` por potencia viva impone el techo (`"techo"`),
-      de modo que si se cae la GPU la dificultad baja de inmediato sin esperar bloques lentos.
+    Devuelve "sube", "baja" o None. El umbral es el mismo del ajuste por tiempo: |log16(P / ref)| ≥ 0,5.
+    - Bajar es la dirección segura (bloques más fáciles) y para «irse» un minero tiene que dejar de
+      avisar, o sea, de minar: se recalcula en el acto.
+    - Subir pide al menos un bloque minado desde el último recálculo. Así un minero que parpadea (una
+      Colab que pierde la red 20 s) no hace ir y venir el prefijo, y un bench inflado no lo sube dos
+      veces seguidas. La excepción es venir de ninguna potencia: el primero que llega recalcula.
+    """
+    if referencia <= 0:
+        return "sube" if potencia > 0 else None
+    if potencia <= 0:
+        return "baja"
+    cambio = math.log(potencia / referencia, 16)
+    if cambio <= -0.5:
+        return "baja"
+    if cambio >= 0.5 and hubo_bloque:
+        return "sube"
+    return None
+
+
+def nivel_emergencia(ahora, desde, emergencia):
+    """BC-73: cuántos caracteres bajar porque no sale un bloque: uno por cada `emergencia` segundos desde
+    `desde` (cuando se armó la caja, o el último recálculo si fue después). Como la regla de la testnet de
+    Bitcoin: si pasan 20 minutos sin bloque, se permite la dificultad mínima."""
+    if emergencia <= 0 or desde is None or ahora <= desde:
+        return 0
+    return int((ahora - desde) // emergencia)
+
+
+def _altura(bloque):
+    try:
+        return int(bloque.get("altura", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def decidir_prefijo(potencia, bloques, ajustes, referencia=None, ahora=0.0, armada=None):
+    """Elige `(largo, motivo, referencia nueva o None)` (BC-60 y BC-73).
+
+    - `ajustar=False`: `(prefijo_base, "fijo", None)`, para las pruebas de prefijo fijo (BC-39).
+    - Sin referencia (cadena nueva o reiniciada): el techo por potencia (`"inicial"`), o `prefijo_inicial`
+      si se configuró (pruebas de convergencia). Se anota como referencia.
+    - Si la potencia viva cambió 4 veces o más (`evento_potencia`): el techo con la potencia nueva
+      (`"potencia"`), y se anota como referencia.
+    - Si no, el ajuste por tiempo (`"tiempo"`): el prefijo del último bloque minado (o el de la
+      referencia, si después no se minó ninguno), reajustado cada `ventana_ajuste` bloques. El techo ya
+      no lo limita: un bench que dice de menos no frena al tiempo.
+    - Bajada de emergencia (`"emergencia"`): un carácter menos por cada `emergencia` segundos sin bloque
+      desde que se armó la caja (o desde el último recálculo por potencia, si fue después).
+
+    `bloques`: los últimos de `cadena` (del más viejo al más nuevo). `referencia`: lo que hay en
+    `prefijo:referencia` (dict con potencia, altura, prefijo y cuando), o None. El tercer valor, si no es
+    None, es lo que hay que guardar como referencia nueva.
     """
     if not ajustes.ajustar:
-        return ajustes.prefijo_base, "fijo"
-
+        return ajustes.prefijo_base, "fijo", None
     techo = largo_prefijo(potencia, ajustes.segundos_objetivo, ajustes.prefijo_base)
-    minados = [b for b in bloques if str(b.get("altura", "")) != "0" and b.get("prefijo")]
-    if not minados:
-        inicial = getattr(ajustes, "prefijo_inicial", 0)
-        if inicial > 0:
-            elegido = min(inicial, techo)
-            return elegido, "techo" if techo < inicial else "inicial"
-        return techo, "inicial"
+    punta = _altura(bloques[-1]) if bloques else 0
 
-    ultimo = minados[-1]
-    prefijo_anterior = max(1, min(len(ultimo["prefijo"]), ajustes.prefijo_base))
+    def nueva(largo):
+        return {"potencia": potencia, "altura": punta, "prefijo": largo, "cuando": ahora}
+
     try:
-        altura_tip = int(ultimo.get("altura", len(minados)))
-    except (TypeError, ValueError):
-        altura_tip = len(minados)
+        ref = {"potencia": float(referencia["potencia"]), "altura": int(referencia["altura"]),
+               "prefijo": int(referencia["prefijo"]), "cuando": float(referencia["cuando"])}
+    except (KeyError, TypeError, ValueError):
+        ref = None
+    if ref is not None and ref["altura"] > punta:
+        ref = None  # la referencia es de otra cadena (se reinició)
+    guardar = None
+    if ref is None:
+        con_prefijo = [b for b in bloques if _altura(b) > 0 and b.get("prefijo")]
+        if not con_prefijo:
+            inicial = getattr(ajustes, "prefijo_inicial", 0)
+            largo = min(inicial, techo) if inicial > 0 else techo
+            return largo, "inicial", nueva(largo)
+        # Una cadena que ya tiene bloques pero no referencia (se actualizó desde antes de BC-73): se sigue
+        # por tiempo desde el último bloque, y la potencia de ahora queda como referencia.
+        ref = {"potencia": potencia, "altura": 0, "prefijo": len(con_prefijo[-1]["prefijo"]), "cuando": ahora}
+        guardar = ref
+    elif evento_potencia(potencia, ref["potencia"], punta > ref["altura"]):
+        return techo, "potencia", nueva(techo)
 
-    por_tiempo = prefijo_anterior
-    if altura_tip > 0 and altura_tip % ajustes.ventana_ajuste == 0:
-        tiempos = tiempos_desde_bloques(bloques, ajustes.ventana_ajuste)
-        if tiempos:
-            por_tiempo = ajustar_por_tiempo(
-                prefijo_anterior,
-                tiempos,
-                ajustes.segundos_objetivo,
-                ajustes.ajuste_maximo,
-                minimo=1,
-                maximo=ajustes.prefijo_base,
-            )
+    minados = [b for b in bloques if _altura(b) > ref["altura"] and b.get("prefijo")]
+    if minados:
+        anterior = max(1, min(len(minados[-1]["prefijo"]), ajustes.prefijo_base))
+        largo = anterior
+        if punta > 0 and punta % ajustes.ventana_ajuste == 0:
+            tiempos = tiempos_desde_bloques(bloques, ajustes.ventana_ajuste)
+            if tiempos:
+                largo = ajustar_por_tiempo(anterior, tiempos, ajustes.segundos_objetivo, ajustes.ajuste_maximo,
+                                           minimo=1, maximo=ajustes.prefijo_base)
+    else:
+        largo = max(1, min(ref["prefijo"], ajustes.prefijo_base))
 
-    elegido = min(por_tiempo, techo)
-    return elegido, "techo" if techo < por_tiempo else "tiempo"
+    desde = ref["cuando"] if armada is None else max(float(armada), ref["cuando"])
+    bajar = nivel_emergencia(ahora, desde, getattr(ajustes, "emergencia", 0))
+    if bajar > 0 and largo > 1:
+        return max(1, largo - bajar), "emergencia", guardar
+    return largo, "tiempo", guardar

@@ -1,0 +1,11 @@
+escenario,comprobacion,esperado,observado,ok
+juntos,sin-solucion: queda suspendido,suspendido por estadística,"estadistica, P = 7.6e-12",sí
+juntos,guardar: queda suspendido,suspendido por estadística,"estadistica, P = 7.6e-12",sí
+juntos,acaparar: pidió 10 rangos seguidos,1 rango cada vez,"9 veces, con ['1'] rango(s)",sí
+juntos,"bench-alto: cuenta lo medido, no lo declarado",potencia ≪ bench declarado,"bench 1.18e+09 H/s, medido 1.34e+06 H/s → potencia 1.34e+06 H/s",sí
+juntos,honesto: no se lo suspende y mide parecido a su bench,no suspendido,"medido: medido 2.64e+06 H/s, bench 2.19e+06 H/s",sí
+retener,retener: el plazo le saca el rango,a los ~120 s (sin medición),"1 corte(s) por plazo en el gateway; se lo sacaron a los 120, 120 s",sí
+retener,acaparar: el plazo le saca el rango,a los ~120 s (sin medición),"1 corte(s) por plazo en el gateway; se lo sacaron a los 120, 120 s",sí
+gpu-falsa,el escalador pide VMs aunque haya una «GPU» viva,1 o más VMs,1 VM(s) pedidas,sí
+gpu-falsa,"sin bloque en 240 s, el prefijo baja",motivo emergencia,"prefijos [5], motivos ['emergencia']",sí
+bench-bajo,el ajuste por tiempo pasa el techo del bench declarado,prefijo > 5 sin cambiar la potencia,"bench declarado 5.26e+04 H/s (techo 5); prefijo de cada bloque, en orden: [7, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7]",sí

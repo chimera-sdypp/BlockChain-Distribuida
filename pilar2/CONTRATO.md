@@ -115,7 +115,7 @@ Iguales para todos: `bloque = "bench;"`, rango `[0, 2^24 − 1]` y prefijo `f` �
 | Cola | Mensaje |
 |---|---|
 | `transacciones` | `{id, origen, destino, monto, nonce, timestamp, firma}` (también las cargas) |
-| `tareas` | `{tarea, previous_hash, transacciones, timestamp, altura}` (el prefijo lo elige el TrP) |
+| `tareas` | `{tarea, previous_hash, transacciones, timestamp, altura, armada}` (el prefijo lo elige el TrP; `armada`: cuándo se armó la caja por primera vez, BC-73) |
 | `rangos` | `{tarea, rango, desde, hasta, prefijo}` (rango cerrado). Sin `bloque`: el gateway le agrega a cada minero su texto al prestarlo |
 | `resultados` | `{tarea, rango, minero, nonce, hash}` o `{tarea, rango, minero, sin_solucion: true}`. Los shares se quedan en el gateway |
 | `soluciones` | `{tarea, nonce, hash, prefijo, minero}` o `{tarea, sin_solucion: true}` |
@@ -135,21 +135,47 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 
 - Cada rango entregado es un **préstamo** a nombre del minero, que vence a los `TASK_LEASE_SECONDS` (30). Cada keep-alive del dueño lo renueva; si vence, el gateway vuelve a publicar el rango en `rangos`.
 - Si la tarea del rango ya se cerró (`estado` de `tarea:<id>` distinto de `en_curso`), el keep-alive contesta `cortar: true` y el gateway borra el préstamo: el minero deja el rango sin mandar resultado. Los rangos de tareas cerradas que queden en la cola se descartan al entregarlos.
+- Uno a la vez por minero, y con plazo: pasado el plazo, el keep-alive también contesta `cortar: true` y el rango vuelve a la cola (BC-74, ver [Lo que mide el gateway](#lo-que-mide-el-gateway-bc-74)).
 
 | Pedido | Envía el minero | Contesta el gateway |
 |---|---|---|
 | `POST /hello` | `{minero, tipo: gpu \| cpu, placa, alias}` | 200 `{registrado: true}`; si es nuevo, 200 con la tarea modelo |
 | `POST /bench` | `{minero, segundos, hashes_por_segundo}` | 204 |
-| `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo |
+| `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo. Si ya tiene un préstamo vivo, ese mismo (BC-74) |
 | `POST /results` | lo mismo que `resultados`, más `shares` (lista de nonces) | 202 `{shares: los que sumó}` |
 | `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` (cada 5 s) | 200 `{cortar: true \| false, shares?, presentarse?}`; `presentarse: true` si su `nodo:<id>` no tiene bench (p. ej. se reinició la cadena): el minero repite `/hello` y `/bench` antes del próximo rango |
+
+## Lo que mide el gateway (BC-74)
+
+El minero declara su `bench` y su `tipo`, y nadie los verifica. Desde BC-74 el gateway no les cree para decidir:
+
+- **Un rango a la vez:** si el minero ya tiene un préstamo vivo (`prestamo_de:<cuenta>`), `/tasks/next` le devuelve ese mismo (por si se reinició). Así nadie acapara los rangos de una tarea.
+- **Potencia medida:** al terminar cada préstamo (resultado o «cortá»), el trabajo que se puede probar son los shares: cada uno cuesta 16^(p−1) hashes en promedio. Medido = Σ shares × 16^(p−1) / Σ segundos de los últimos 20 préstamos, como estiman el hashrate los pools.
+  - `medido`: si según su bench tendría que haber mandado al menos 20 shares en esos préstamos. Puede dar 0: el que no mina.
+  - `cota`: si la mitad o más de los préstamos llegaron al tope de 64 shares. Sólo se sabe que es al menos eso (una GPU con prefijo bajo).
+  - `sin_datos`: si todavía no hay con qué decidir (pocos préstamos, o prefijos altos para su potencia).
+- **Potencia efectiva** (`contrato.potencia_efectiva`): `min(bench, medido)` si el estado es `medido`; si no, el bench. La usan el TrP (techo del prefijo, BC-73) y el escalador. Inflar el bench no sirve; decir `tipo: gpu` sin minar, tampoco.
+- **Plazo de cada préstamo:** 3 × (tamaño del rango / potencia) + 10 s, nunca menos de 30 s. Sin medición (`sin_datos`), como mucho 120 s. Pasado el plazo, el keep-alive contesta `cortar: true` y el rango vuelve a la cola. No es una sanción: los shares quedan.
+
+## Los que contestan `sin_solucion` sin buscar (BC-75)
+
+Un `sin_solucion` no se puede verificar: es el *block withholding attack* de los pools de Bitcoin (Meni Rosenfeld, *Analysis of Bitcoin Pooled Mining Reward Systems*, 2011). El gateway lo controla de dos maneras, según el prefijo:
+
+- **Chequeo estadístico (prefijos bajos):** la probabilidad de que un rango de N nonces no tenga solución con prefijo p es e^(−N / 16^p) (`prob_sin_solucion`). Si es menor que `UMBRAL_SIN_SOLUCION` (10⁻⁶), es una mentira: el minero queda suspendido, el resultado no va al TrP y el rango vuelve a la cola. Con un rango del 10 % de 2^32 y prefijo 6 da ~7×10⁻¹²: hoy un `sin_solucion` en un rango completo es, en la práctica, una mentira. No se puede esquivar: usa los rangos reales.
+- **Reverificación por muestreo (prefijos altos):** si la probabilidad no alcanza, con `MUESTREO_SIN_SOLUCION` (5 %) y mientras la tarea siga en curso, el rango se vuelve a publicar con el texto del primero (`reverifica`, y el número de rango + 1.000.000 para que el TrP no lo vea). Lo toma **otro** minero; para él es un rango común.
+  - Si encuentra un nonce: el primero mintió y queda suspendido. El bloque no se usa: tiene la coinbase del que mintió.
+  - Si dice `sin_solucion`: no se concluye nada.
+  - Los shares se verifican con el texto del primero y se le acreditan a quien reverificó. El TrP no espera la reverificación.
+- **Suspensión:** queda en `suspendidos` con el motivo y la evidencia; el gateway le contesta 403 y su préstamo vuelve a la cola. El organizador, en el panel, la **reactiva** o **confirma la baja**: un minero honesto puede fallar una vez (un bug, una GPU que se reinicia), así que la baja la decide una persona.
+- **Aviso por pocos shares:** si en sus últimos 3 préstamos mandó menos de un cuarto de los shares esperados según su bench, queda una línea en el log (`blockchain_pocos_shares_total`). Es una señal, no una prueba: no suspende.
+- **Descartada, la tarea trampa:** prestar un rango de un bloque ya resuelto, con el texto del ganador, donde se sabe que hay solución. Se puede detectar: el `previous_hash` de ese texto ya no es la punta, y la punta es pública en `/api/bloques`. Un tramposo contestaría bien las trampas y mentiría en el resto, y a ése lo agarran igual la estadística o la reverificación. La idea viene de los *forced errors* de Truebit y de las tareas *gold standard* del crowdsourcing.
 
 ## Claves de Redis
 
 | Clave | Tipo | Contenido |
 |---|---|---|
 | `cadena` | lista | Los `block_hash` en orden; la posición es la altura y el último es la punta |
-| `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), su `altura` y su `duracion` (segundos reales de minado, BC-60) |
+| `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), su `altura` y su `duracion` (segundos desde que se armó la caja, con los rearmados: BC-60 y BC-73) |
 | `saldos` | hash | cuenta → saldo |
 | `tx:<id>` | hash | Hasta confirmarse: origen, destino, monto, nonce, timestamp, firma, estado y, si se rechazó, motivo. **Confirmada, sólo `estado` y `bloque`** (BC-70): el contenido ya está en `bloque:<hash>` y el backend lo lee de ahí. La coinbase y la participación nacen así |
 | `cuentas` | hash | cuenta → JSON `{tipo: usuario \| minero \| organizador, nombre, alta}` (`alta` en segundos Unix). Sólo operan las que están acá |
@@ -160,32 +186,47 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `tx:pendientes` | lista | Las transacciones validadas que esperan caja |
 | `comprometido` | hash | cuenta → suma de sus transacciones validadas que todavía no entraron en un bloque. Lo suma el NCT al validar y lo resta al confirmar: lo disponible es `saldos − comprometido` |
 | `cajas` | lista | Cada elemento, una caja: una lista JSON de ids (`["a1…", "b2…"]`), de como mucho `TX_POR_CAJA`. La primera es la que se está minando o la próxima: el NCT la saca recién al confirmar su bloque |
-| `tarea:<id>` | hash | Lo escribe el NCT al armarla: `previous_hash`, `timestamp`, `altura`, `transacciones` (JSON, completas y en orden), `caja` (JSON con los ids), `estado` y `publicada` (segundos Unix). Lo agrega el TrP: `prefijo` (el que eligió; el NCT verifica con éste), `rangos` (cuántos) y `ganador` (JSON {minero, nonce, hash} o `sin_solucion`). Al confirmar, el NCT agrega `block_hash`. Estados: `en_curso`, `confirmada`, `descartada` (cambió la punta), `sin_solucion`, `rechazada` (no pasó la verificación) y `vencida` (venció `tarea:actual` sin bloque: se armó otra con la misma caja). Terminada, vence en `TAREA_GUARDA` (1 hora; BC-70), igual que sus dos conjuntos |
+| `tarea:<id>` | hash | Lo escribe el NCT al armarla: `previous_hash`, `timestamp`, `altura`, `transacciones` (JSON, completas y en orden), `caja` (JSON con los ids), `estado`, `publicada` y `armada` (segundos Unix; `armada` es cuándo se armó la caja por primera vez, BC-73). Lo agrega el TrP: `prefijo` (el que eligió; el NCT verifica con éste), `rangos` (cuántos) y `ganador` (JSON {minero, nonce, hash} o `sin_solucion`). Al confirmar, el NCT agrega `block_hash`. Estados: `en_curso`, `confirmada`, `descartada` (cambió la punta), `sin_solucion`, `rechazada` (no pasó la verificación) y `vencida` (venció `tarea:actual` sin bloque: se armó otra con la misma caja). Terminada, vence en `TAREA_GUARDA` (1 hora; BC-70), igual que sus dos conjuntos |
 | `tarea:<id>:sin_solucion` | conjunto | Los rangos que volvieron sin solución (lo maneja el TrP) |
 | `tarea:<id>:shares` | conjunto | `<minero>:<nonce>` de los shares aceptados de la tarea, para descartar los repetidos (gateway) |
 | `shares:<época>` | sorted set | minero → shares aceptados en la época (`ZINCRBY`, gateway) |
 | `epoca:<n>` | hash | El detalle del reparto de la época, para la auditoría: el fondo y, por minero, shares, racha y monto (NCT, BC-63) |
-| `historial:<minero>` | hash, permanente | `alta`, `bloques`, `recompensas`, `shares`, `rangos`, `segundos_conectado`, `ultimo_aviso` y `hashes_por_segundo` (gateway y NCT, BC-54) |
-| `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Si el NCT muere, vence y se vuelve a armar la misma caja |
+| `historial:<minero>` | hash, permanente | `alta`, `bloques`, `recompensas`, `shares`, `rangos`, `segundos_conectado`, `ultimo_aviso`, `hashes_por_segundo` y `conectado` (1 o 0) (gateway y NCT, BC-54) |
+| `mineros:conectados` | conjunto | Las cuentas con `conectado` = 1: el gateway las revisa cada 5 s para dar por desconectado al que dejó de avisar (BC-54) |
+| `caja:armada` | hash | `{caja, desde}`: cuándo se armó por primera vez la caja que se está minando (BC-73). Al rearmar la misma caja se conserva |
+| `prefijo:referencia` | hash | `{potencia, altura, prefijo, cuando}`: el último recálculo del prefijo por potencia (BC-73) |
+| `tarea:actual` | string, con vencimiento | El id de la tarea en curso: hay una sola a la vez entre las réplicas del NCT (`SET NX EX`). Vence a los `EMERGENCIA_SEGUNDOS` (240, BC-73) o a los `TAREA_VENCE_SEGUNDOS` (600) si la emergencia está apagada: si no salió el bloque (o el NCT murió), se vuelve a armar la misma caja |
 | `tarea:ultima` | string | El id de la última tarea publicada. Al publicar otra, si ésta sigue `en_curso` pasa a `vencida`: el gateway deja de prestar sus rangos y les dice «cortá» a los mineros |
-| `nodo:<cuenta>` | hash, permanente | `tipo` (`gpu` o `cpu`), `alias` (el `nombre` de `cuentas`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso) y `ultimo_aviso` (segundos Unix) |
+| `nodo:<cuenta>` | hash, permanente | `tipo` (`gpu` o `cpu`), `alias` (el `nombre` de `cuentas`), `placa`, `bench` (hashes/s en la tarea modelo), `hashes_por_segundo` (del último aviso), `ultimo_aviso` (segundos Unix), y `medido` y `medido_estado` (`medido`, `cota` o `sin_datos`): lo que midió el gateway con los shares (BC-74) |
 | `prestamos` | sorted set | `<tarea>:<rango>` → cuándo vence (segundos Unix). Lo maneja el gateway |
-| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva) y `shares` (cuántos le sumó) |
+| `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva), `shares` (cuántos le sumó), `desde` y `plazo` (segundos Unix: cuándo se prestó y hasta cuándo puede tenerlo, BC-74) |
+| `prestamo_de:<cuenta>` | string | El préstamo vivo de cada minero (`<tarea>:<rango>`): uno a la vez (BC-74) |
+| `suspendidos` | hash | cuenta → JSON `{nombre, motivo, evidencia, cuando}`: los mineros suspendidos por contestar `sin_solucion` sin buscar (BC-75). Salen al reactivarlos o al confirmar la baja |
+| `medicion:<cuenta>` | lista | Los últimos 20 préstamos terminados de cada minero, en JSON: trabajo (shares × 16^(p−1)), segundos, shares, shares esperados según su bench y si llegó al tope (BC-74) |
 | `escalador:claves` | hash | nombre de cada VM minero-cpu → su clave privada: el escalador se la genera, la aprueba y se la pasa por metadata (BC-57) |
 | `escalador:vms` | string | Las VMs pedidas cuando el escalador corre con `VMS_ACTIVAS=0` (simuladas); con VMs de verdad, la cantidad está en el state de OpenTofu |
 
-## Ajuste de dificultad (BC-60)
+## Ajuste de dificultad (BC-60 y BC-73)
 
-El TrP ajusta el largo del prefijo combinando el tiempo real de los bloques anteriores con el techo que impone la potencia viva:
+El TrP elige el largo del prefijo en cada tarea. Desde BC-73 manda el **tiempo real de los bloques**; la potencia que declaran los mineros (el `bench`) se usa sólo al arrancar y cuando cambia mucho:
 
-- **Tiempo esperado (`SEGUNDOS_POR_BLOQUE`):** `60` segundos (1 minuto, consistente con el documento integrador).
-- **Reajuste por tiempo:** cada `VENTANA_AJUSTE` (`5`) bloques minados se promedia la duración de la última ventana (`duracion` en `bloque:<hash>`, o la diferencia entre sus `timestamp` si no está) y se calcula:
-  $$\text{nuevo} = \text{actual} + \text{redondeo}\!\left(\log_{16}\!\left(\frac{\text{esperado}}{\text{real}}\right)\right)$$
-  acotado a `±AJUSTE_MAXIMO` (`±1` carácter por ajuste, entre `1` y `PREFIJO_BASE`). Como $\log_{16}(4) = 0{,}5$, el prefijo sube recién cuando los bloques salen al menos 4 veces más rápido de lo esperado y baja cuando tardan al menos 4 veces más.
-- **Convivencia con la potencia viva:** `largo_prefijo(potencia_viva, esperado, base)` fija el **techo** inmediato (`min(por_tiempo, techo)`). Si la GPU se desconecta, el prefijo baja en el acto al rearmar o vencer la tarea (`vencida`), sin esperar 5 bloques lentos; si todavía no hay bloques minados, arranca con ese techo (o con `PREFIJO_INICIAL` si se configura para pruebas).
+| Cuándo | Prefijo | Motivo |
+|---|---|---|
+| La cadena no tiene bloques minados (o se reinició) | El techo por potencia: el mayor p con 16^p ≤ suma de los bench vivos × `SEGUNDOS_POR_BLOQUE` (60 s), entre 1 y `PREFIJO_BASE` | `inicial` |
+| La potencia viva cambió 4 veces o más desde el último recálculo | El techo con la potencia nueva | `potencia` |
+| Si no | El del último bloque minado, reajustado cada `VENTANA_AJUSTE` (5) bloques por tiempo | `tiempo` |
+| La caja lleva `EMERGENCIA_SEGUNDOS` (240) sin bloque | Un carácter menos por cada 240 s, hasta 1 | `emergencia` |
+| `AJUSTAR_PREFIJO=0` | `PREFIJO_BASE` (pruebas de prefijo fijo) | `fijo` |
+
+- **Ajuste por tiempo:** se promedia la `duracion` de los últimos 5 bloques y Δp = redondeo(log16(esperado / real)), acotado a ±`AJUSTE_MAXIMO` (1). Como log16(4) = 0,5, sube si los bloques salen 4 veces más rápido (15 s o menos) y baja si tardan 4 veces más (240 s o más). Hasta BC-73 el techo por potencia lo limitaba en cada tarea (`min(tiempo, techo)`): un bench que decía de menos lo frenaba para siempre.
+- **Eventos de potencia:** el cambio cuenta si |log16(P / referencia)| ≥ 0,5. Bajar se recalcula en el acto: para «irse», un minero tiene que dejar de avisar, o sea, de minar. Subir pide al menos un bloque minado desde el último recálculo, así un minero que parpadea no hace ir y venir el prefijo (salvo que antes no hubiera ninguna potencia). La referencia queda en `prefijo:referencia`.
+- **Emergencia:** el NCT hace que `tarea:actual` venza a los `EMERGENCIA_SEGUNDOS` y rearma la misma caja; el TrP baja un carácter por cada 240 s desde que se armó la caja (`armada`) o desde el último recálculo por potencia, si fue después. Cubre lo que antes cubría el techo cuando se va la GPU, sin creerle a nadie: lo que se mira es que no sale un bloque.
+- **`duracion`:** desde que se armó la caja por primera vez (`caja:armada`), con los rearmados adentro. Antes se medía desde la última tarea y el ajuste veía bloques más rápidos de lo que fueron.
+- **Espacio de nonces:** `ESPACIO_NONCES` ≥ 16^`PREFIJO_BASE` × 4 o el TrP no arranca. Con menos, muchas tareas no tienen solución y se rearman.
 - **Fuentes:**
   - Satoshi Nakamoto (2008), *Bitcoin: A Peer-to-Peer Electronic Cash System*, sección 4 (*Proof-of-Work*): ajuste de dificultad mediante promedio móvil para mantener una tasa promedio constante de bloques.
   - Bitcoin Core (`src/pow.cpp`, `CalculateNextWorkRequired`): retarget cada 2016 bloques (`nTargetTimespan` / tiempo real), acotado a un factor máximo de $\times 4$ / $\div 4$ por ventana para evitar oscilaciones bruscas.
+  - La regla de la testnet de Bitcoin (`fPowAllowMinDifficultyBlocks`): si pasan 20 minutos sin bloque, se permite la dificultad mínima. Es la idea de la bajada de emergencia.
 
 ## Vector de prueba
 

@@ -6,7 +6,8 @@ import uuid
 import pytest
 
 from comun import config, contrato, redisdb
-from escalador.app import CLAVES, SIMULADAS, ClavesVMs, Simulado, Tofu, ciclo, hay_trabajo, leer_nodos
+from escalador.app import (CLAVES, SIMULADAS, ClavesVMs, Simulado, Tofu, ciclo, hay_trabajo, leer_nodos,
+                           segundos_sin_bloque)
 from escalador.decision import Ajustes, Decisor, sacar_foto
 
 AHORA = 1_800_000_000
@@ -34,6 +35,12 @@ class RedisFalso:
 
     def llen(self, clave):
         self._cola.append(self.listas[clave])
+
+    def lindex(self, clave, indice):
+        self._cola.append(None)  # sin cajas armadas: nada trabado
+
+    def hmget(self, clave, *campos):
+        self._cola.append([None] * len(campos))
 
     def execute(self):
         resultado, self._cola = self._cola, []
@@ -204,3 +211,18 @@ def test_ciclo_contra_redis():
         assert ciclo(redis, decisor, aplicador, AHORA + 160) == 0 and aplicador.actual() == 0
     finally:
         redis.delete(SIMULADAS, "cajas", f"nodo:{gpu}")
+
+
+@pytest.mark.skipif(os.environ.get("INTEGRACION") != "1", reason="necesita Redis (INTEGRACION=1)")
+def test_segundos_sin_bloque_desde_que_se_armo_la_primera_caja():
+    redis = redisdb.conectar(config.cargar("prueba-escalador"))
+    try:
+        redis.delete(contrato.CAJAS, contrato.CAJA_ARMADA)
+        assert segundos_sin_bloque(redis, AHORA) == 0  # sin cajas
+        redis.rpush(contrato.CAJAS, '["a"]', '["b"]')
+        redis.hset(contrato.CAJA_ARMADA, mapping={"caja": '["a"]', "desde": AHORA - 400})
+        assert segundos_sin_bloque(redis, AHORA) == 400
+        redis.lpop(contrato.CAJAS)  # salió el bloque de la «a»: la «b» todavía no se armó
+        assert segundos_sin_bloque(redis, AHORA) == 0
+    finally:
+        redis.delete(contrato.CAJAS, contrato.CAJA_ARMADA)

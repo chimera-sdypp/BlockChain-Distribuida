@@ -15,8 +15,11 @@ def nodo(tipo, bench, hace=1):
     return {"tipo": tipo, "bench": str(bench), "ultimo_aviso": str(AHORA - hace)}
 
 
-def sin_gpu(ajena=0.0, trabajo=True, hps_vm=None):
-    return Foto(gpus=0, ajena=ajena, hps_vm=hps_vm, trabajo=trabajo)
+def sin_gpu(ajena=0.0, trabajo=True, hps_vm=None, sin_bloque=0.0):
+    return Foto(gpus=0, ajena=ajena, hps_vm=hps_vm, trabajo=trabajo, sin_bloque=sin_bloque)
+
+
+CON_GPU = Foto(gpus=1, ajena=2_000_000_000, hps_vm=None, trabajo=True)  # una GPU de verdad: alcanza sola
 
 
 # --- La foto de nodo:* -----------------------------------------------------------------------
@@ -26,7 +29,8 @@ def test_foto_separa_gpus_vms_y_cpu_ajena():
              "pc-tomas": nodo("cpu", 5_000_000), "pc-vieja": nodo("cpu", 9_000_000, hace=15),
              "roto": {"tipo": "cpu", "bench": "", "ultimo_aviso": "x"}}
     foto = sacar_foto(nodos, AHORA, True, ajustes())
-    assert foto == Foto(gpus=1, ajena=5_000_000, hps_vm=1_000_000, trabajo=True)
+    # Desde BC-74 la GPU cuenta por su potencia (no por decir «gpu»): va en la ajena
+    assert foto == Foto(gpus=1, ajena=2_005_000_000, hps_vm=1_000_000, trabajo=True)
 
 
 def test_foto_sin_vms_vivas_no_tiene_bench_de_vm():
@@ -35,7 +39,7 @@ def test_foto_sin_vms_vivas_no_tiene_bench_de_vm():
 
 # --- Cuántas hacen falta -----------------------------------------------------------------------
 def test_con_gpu_o_sin_trabajo_no_hacen_falta():
-    assert necesarias(Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True), ajustes()) == 0
+    assert necesarias(CON_GPU, ajustes()) == 0
     assert necesarias(sin_gpu(trabajo=False), ajustes()) == 0
 
 
@@ -64,14 +68,14 @@ def test_espera_un_rato_sin_gpu_antes_de_crear():
 def test_una_gpu_que_vuelve_un_momento_reinicia_la_espera_para_crear():
     d = Decisor(ajustes(), actual=0)
     d.decidir(sin_gpu(), AHORA)
-    d.decidir(Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True), AHORA + 20)
+    d.decidir(CON_GPU, AHORA + 20)
     assert d.decidir(sin_gpu(), AHORA + 40) == 0
     assert d.decidir(sin_gpu(), AHORA + 70) == 1
 
 
 def test_borra_recien_cuando_el_menor_se_sostiene():
     d = Decisor(ajustes(), actual=1)
-    con_gpu = Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True)
+    con_gpu = CON_GPU
     assert d.decidir(con_gpu, AHORA) == 1
     assert d.decidir(con_gpu, AHORA + 119) == 1
     assert d.decidir(con_gpu, AHORA + 120) == 0
@@ -79,11 +83,11 @@ def test_borra_recien_cuando_el_menor_se_sostiene():
 
 def test_si_la_gpu_se_va_otra_vez_antes_de_la_espera_las_vms_siguen():
     d = Decisor(ajustes(), actual=1)
-    d.decidir(Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True), AHORA)
+    d.decidir(CON_GPU, AHORA)
     assert d.decidir(sin_gpu(), AHORA + 60) == 1                 # vuelve a hacer falta: se olvida la baja
-    d.decidir(Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True), AHORA + 100)
-    assert d.decidir(Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True), AHORA + 200) == 1  # 100 s, no 120
-    assert d.decidir(Foto(gpus=1, ajena=0, hps_vm=None, trabajo=True), AHORA + 220) == 0
+    d.decidir(CON_GPU, AHORA + 100)
+    assert d.decidir(CON_GPU, AHORA + 200) == 1  # 100 s, no 120
+    assert d.decidir(CON_GPU, AHORA + 220) == 0
 
 
 def test_sin_trabajo_baja_a_cero_despues_de_la_espera():
@@ -97,3 +101,31 @@ def test_sube_de_a_varias_si_hace_falta_mas():
     d.decidir(sin_gpu(ajena=5_000_000), AHORA)
     assert d.decidir(sin_gpu(ajena=5_000_000), AHORA + 30) == 4
     assert d.decidir(sin_gpu(), AHORA + 40) == 9                # se fue la otra CPU: sube enseguida
+
+
+# --- BC-74: la potencia medida, no lo que declaran ---------------------------------------------
+def test_una_gpu_falsa_que_mide_cero_no_impide_levantar_vms():
+    nodos = {"gpu-falsa": {**nodo("gpu", 2_000_000_000), "medido": "0", "medido_estado": "medido"}}
+    foto = sacar_foto(nodos, AHORA, True, ajustes())
+    assert foto.gpus == 1 and foto.ajena == 0
+    assert necesarias(foto, ajustes()) == 1
+
+
+def test_una_gpu_de_verdad_medida_deja_las_vms_en_cero():
+    nodos = {"gpu-1": {**nodo("gpu", 2_000_000_000), "medido": "1500000000", "medido_estado": "cota"}}
+    assert necesarias(sacar_foto(nodos, AHORA, True, ajustes()), ajustes()) == 0
+
+
+def test_una_cpu_que_exagera_cuenta_lo_que_mide():
+    a = ajustes(prefijo_base=7, maximo=20)                  # objetivo ≈ 8,95 Mh/s
+    nodos = {"pc": {**nodo("cpu", 1_000_000_000), "medido": "1000000", "medido_estado": "medido"}}
+    assert necesarias(sacar_foto(nodos, AHORA, True, a), a) == 8
+
+
+def test_sin_bloque_hace_rato_levanta_vms_aunque_alguien_diga_tener_potencia():
+    # Una «GPU» sin medición todavía (no pidió rangos): su bench cuenta, pero hace 5 min que no sale un bloque.
+    a = ajustes(sin_bloque=300)
+    nodos = {"gpu-que-no-pide": nodo("gpu", 2_000_000_000)}
+    assert necesarias(sacar_foto(nodos, AHORA, True, a, sin_bloque=299), a) == 0
+    assert necesarias(sacar_foto(nodos, AHORA, True, a, sin_bloque=300), a) == 1
+    assert necesarias(sacar_foto(nodos, AHORA, True, ajustes(sin_bloque=0), sin_bloque=10_000), ajustes(sin_bloque=0)) == 0

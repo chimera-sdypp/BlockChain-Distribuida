@@ -18,14 +18,14 @@ def todos(colas, cola):
 def test_un_prestamo_vencido_vuelve_a_rangos_y_se_borra(armar, redis, colas):
     g, cliente = armar()
     prestado(cliente, redis, colas)  # vence en t=1: hace rato
-    antes = REGISTRY.get_sample_value("blockchain_prestamos_vencidos_total") or 0
+    antes = REGISTRY.get_sample_value("blockchain_prestamos_vencidos_total", {"motivo": "sin_aviso"}) or 0
 
     g.revisar_vencidos()
 
     [mensaje] = todos(colas, "rangos")
     assert (mensaje["tarea"], mensaje["rango"]) == ("t1", 0)
     assert redis.zcard("prestamos") == 0 and not redis.exists("prestamo:t1:0")
-    assert REGISTRY.get_sample_value("blockchain_prestamos_vencidos_total") == antes + 1
+    assert REGISTRY.get_sample_value("blockchain_prestamos_vencidos_total", {"motivo": "sin_aviso"}) == antes + 1
 
 
 def test_los_que_no_vencieron_no_se_tocan(armar, redis, colas):

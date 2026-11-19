@@ -16,6 +16,7 @@ por la cuenta de prueba alice (firmar.py): correrlo con el Python de pilar2 (pil
 import argparse
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -64,8 +65,18 @@ def punta(base):
     return bloques[0]["block_hash"] if bloques else None
 
 
-def vivos(base):
-    mineros = api(base, "/api/mineros")
+def gateway_url(valor=None):
+    """El gateway: los mineros salieron de la API de la app (BC-54) y se listan en su GET /mineros."""
+    url = (valor or os.environ.get("GATEWAY_URL") or "").rstrip("/")
+    return url or sys.exit("Falta --gateway (o GATEWAY_URL): la URL del gateway, p. ej. http://<IP>:8081")
+
+
+def lista_mineros(gateway):
+    return api(gateway, "/mineros")
+
+
+def vivos(gateway):
+    mineros = lista_mineros(gateway)
     return (sum(m["vivo"] and m["tipo"] == "gpu" for m in mineros),
             sum(m["vivo"] and m["tipo"] == "cpu" for m in mineros))
 
@@ -120,6 +131,7 @@ def un_bloque(base, largo, maximo, ventana):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--api", required=True, help="URL de Traefik (frontend y API)")
+    p.add_argument("--gateway", help="URL del gateway, que lista los mineros (GET /mineros); por defecto GATEWAY_URL")
     p.add_argument("--salida", required=True, help="CSV de resultados (se agregan filas)")
     p.add_argument("--prefijos", default="1-8", help="rango de largos, p. ej. 1-8 o 6-8")
     p.add_argument("--bloques", type=int, default=5, help="bloques por largo")
@@ -130,8 +142,9 @@ def main():
     desde_largo, _, hasta_largo = args.prefijos.partition("-")
     largos = range(int(desde_largo), int(hasta_largo or desde_largo) + 1)
     base = args.api.rstrip("/")
+    gateway = gateway_url(args.gateway)
 
-    gpus, cpus = vivos(base)
+    gpus, cpus = vivos(gateway)
     if (args.tipo == "gpu" and (not gpus or cpus)) or (args.tipo == "cpu" and (not cpus or gpus)):
         sys.exit(f"para la corrida {args.tipo} tienen que estar vivos sólo mineros {args.tipo}: hay {gpus} GPU y {cpus} CPU")
 
@@ -151,7 +164,7 @@ def main():
                                            "minero": f"sin bloque en {args.maximo} s"})
                         return
                     block_hash, (segundos, rearmados, minero, publicada) = resultado
-                    gpus, cpus = vivos(base)
+                    gpus, cpus = vivos(gateway)
                     escritor.writerow({"prefijo": largo, "bloque": numero, "segundos": round(segundos, 3),
                                        "rearmados": rearmados, "minero": minero, "gpus_vivas": gpus,
                                        "cpus_vivas": cpus, "block_hash": block_hash,

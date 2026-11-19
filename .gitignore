@@ -37,3 +37,6 @@ contexto/
 contexto_temp.html
 
 pilar1/hit6/corrida-*.log
+
+# Logs de los mineros de la prueba de trampas (BC-76)
+pilar3/pruebas/resultados/trampas-logs/

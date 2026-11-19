@@ -266,8 +266,13 @@ def main():
     alias = alias_del_entorno()
     gateway = Gateway(config.texto("GATEWAY_URL", "http://localhost:8080"), clave_del_entorno(alias))
     procesos = config.entero("PROCESOS", os.cpu_count() or 1)
-    minero = Minero(gateway, alias, procesos, espera=config.entero("ESPERA_SIN_TRABAJO", 2),
-                    latido=config.entero("KEEPALIVE_SEGUNDOS", 5))
+    opciones = dict(espera=config.entero("ESPERA_SIN_TRABAJO", 2), latido=config.entero("KEEPALIVE_SEGUNDOS", 5))
+    trampa = config.texto("TRAMPA")
+    if trampa:  # BC-76: sólo para las pruebas de los ataques; apagado por defecto
+        from .trampas import MineroTramposo
+        minero = MineroTramposo(gateway, alias, procesos, trampa=trampa, **opciones)
+    else:
+        minero = Minero(gateway, alias, procesos, **opciones)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log.info("Minero %s (cuenta %s): %d procesos, gateway %s", alias, gateway.cuenta, procesos, gateway.url)
     try:

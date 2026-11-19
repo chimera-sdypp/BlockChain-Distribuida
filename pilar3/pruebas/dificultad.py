@@ -4,7 +4,12 @@
 
 Arranca el TrP con un prefijo bajo (`PREFIJO_INICIAL`, p. ej. 2), va midiendo cómo sube cada
 `VENTANA_AJUSTE` bloques hasta converger, y opcionalmente espera a que se saque la GPU (`--esperar-gpu`)
-para registrar cómo baja el prefijo de inmediato por techo de potencia viva.
+para registrar cómo baja el prefijo (desde BC-73: en el acto si la potencia cae 4 veces o más, o por la
+bajada de emergencia a los 240 s sin bloque).
+
+Ojo: `PREFIJO_INICIAL` sólo vale con la cadena sin bloques minados (recién creada o reiniciada). Con una
+cadena que ya tiene bloques, el ajuste sigue desde el prefijo del último: para ver la subida sin reiniciar
+la cadena está el escenario `bench-bajo` de `trampas.py` (BC-76).
 Al terminar (o con Ctrl+C) restaura los valores por defecto del TrP.
 """
 

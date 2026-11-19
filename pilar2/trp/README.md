@@ -1,4 +1,4 @@
-# TrP: Trabajador de Particionamiento y Pool (BC-21, BC-22, BC-59, BC-60)
+# TrP: Trabajador de Particionamiento y Pool (BC-21, BC-22, BC-59, BC-60, BC-73)
 
 Servicio sin estado que corre con 2 réplicas coordinadas por Redis (`HSETNX` y conjuntos). Tiene dos responsabilidades:
 
@@ -23,10 +23,15 @@ En Chimera la dificultad es discreta (largo $p$ del prefijo hexadecimal, donde c
   acotado a $\pm\text{AJUSTE\_MAXIMO}$ ($\pm 1$ carácter).
 - Como $\log_{16}(4) = 0{,}5$, el prefijo cambia recién cuando el promedio de los bloques es al menos **4 veces más rápido** ($\Delta p = +1$) o **4 veces más lento** ($\Delta p = -1$) que `SEGUNDOS_POR_BLOQUE`, manteniendo la misma cota $\times 4$ de Bitcoin Core.
 
-### 2. Techo inmediato por potencia viva (P5)
-- `largo_prefijo(potencia_viva, SEGUNDOS_POR_BLOQUE, PREFIJO_BASE)` calcula el mayor $p$ tal que $16^p \le P \times T$.
-- El prefijo final es $\min(\text{por\_tiempo}, \text{techo})$.
-- **Cuándo actúa:** en el bloque inicial (si no hay bloques previos y `PREFIJO_INICIAL=0`), y cada vez que cae la potencia viva. Si la GPU se desconecta, el prefijo baja de inmediato al rearmar la tarea (por ejemplo tras `sin_solucion` o al vencer `tarea:actual` como `vencida` en el NCT), sin tener que esperar `VENTANA_AJUSTE` bloques lentos.
+### 2. La potencia, sólo al arrancar y en cambios grandes (BC-73)
+- `largo_prefijo(potencia_viva, SEGUNDOS_POR_BLOQUE, PREFIJO_BASE)` es el **techo**: el mayor $p$ con $16^p \le P \times T$.
+- Se usa **al arrancar** (cadena sin bloques minados) y cuando la potencia viva **cambia 4 veces o más** desde el último recálculo (`evento_potencia`, referencia en `prefijo:referencia`). Bajar es en el acto; subir pide un bloque minado desde el último recálculo, para que un minero que parpadea no mueva el prefijo.
+- El resto del tiempo **no limita** al ajuste por tiempo. Hasta BC-73 el prefijo era $\min(\text{por\_tiempo}, \text{techo})$ en cada tarea: un `bench` que decía de menos (la RTX medida en frío, 689 MH/s en vez de 2.100) frenaba al tiempo para siempre, y uno inflado sostenía el techo aunque se fuera la GPU.
+
+### 3. Bajada de emergencia (BC-73)
+- Si la caja lleva `EMERGENCIA_SEGUNDOS` (240) sin bloque, el NCT deja vencer la tarea y la rearma; el TrP baja **un carácter por cada 240 s** desde que se armó la caja (`armada`, que manda el NCT), o desde el último recálculo por potencia si fue después. Hasta 1.
+- Es lo que reemplaza al techo cuando se va la GPU: con prefijo 9 y sólo CPUs, baja a 6 en unos 12 minutos. No le cree a nadie: lo que mira es que no sale un bloque.
+- Fuente: la regla de la testnet de Bitcoin (si pasan 20 minutos sin bloque, se permite la dificultad mínima).
 
 ---
 
@@ -45,7 +50,7 @@ El contrato pide que cada minero reciba trabajo según su potencia: más una GPU
 
 ### El prefijo: la suma de los `bench`
 
-Con p caracteres en 0 hacen falta, en promedio, 16^p intentos. Con la potencia viva P y el objetivo T (`SEGUNDOS_POR_BLOQUE`, 60 s), el techo es el mayor p con 16^p ≤ P × T, entre 1 y `PREFIJO_BASE` (`particion.largo_prefijo`). Sin mineros vivos, p = 1, para que el primero que llegue lo resuelva enseguida. Ese techo es el que limita al ajuste por tiempo (sección anterior).
+Con p caracteres en 0 hacen falta, en promedio, 16^p intentos. Con la potencia viva P y el objetivo T (`SEGUNDOS_POR_BLOQUE`, 60 s), el techo es el mayor p con 16^p ≤ P × T, entre 1 y `PREFIJO_BASE` (`particion.largo_prefijo`). Sin mineros vivos, p = 1, para que el primero que llegue lo resuelva enseguida. Desde BC-73 el techo se usa al arrancar y cuando la potencia cambia 4 veces o más (sección anterior).
 
 P es la **suma** de los `bench` de los mineros que avisaron hace menos de `VIVO_SEGUNDOS` (`particion.potencia_viva`). En clase dijimos «el promedio»: estaba mal, el código usó siempre la suma. Por qué la suma y no otro:
 
@@ -97,7 +102,8 @@ Nuestros shares tienen dificultad fija (el prefijo menos un carácter) y un tope
 | `PREFIJO_BASE` | `6` | Tope máximo de largo de prefijo permitido en el sistema |
 | `PREFIJO_INICIAL` | `0` | `0`: arranca según potencia viva; `> 0`: fuerza ese largo inicial para pruebas de convergencia |
 | `AJUSTAR_PREFIJO` | `1` | `1`: ajuste dinámico; `0`: fijo en `PREFIJO_BASE` (para pruebas de prefijos) |
-| `ESPACIO_NONCES` | `2**32` | Espacio de búsqueda `[0, ESPACIO - 1]` |
+| `ESPACIO_NONCES` | `2**32` | Espacio de búsqueda `[0, ESPACIO - 1]`. Al menos `16^PREFIJO_BASE × 4`: si no, el TrP no arranca (BC-73) |
+| `EMERGENCIA_SEGUNDOS` | `240` | Un carácter menos por cada tantos segundos sin bloque (`0` la apaga). El mismo valor que en el NCT |
 | `FRAGMENTO_PORCENTAJE` | `10` | Tamaño de cada rango en `%` del espacio (`1` a `50`) |
 | `VIVO_SEGUNDOS` | `15` | Segundos desde el último keep-alive para considerar vivo a un minero |
 | `CRITERIO_POTENCIA` | `suma` | Cómo se junta el `bench` de los vivos para el techo (`suma`, `promedio`, `minimo` o `maximo`). Fuera de la suma, sólo para la prueba de BC-59 |
@@ -108,7 +114,7 @@ Nuestros shares tienen dificultad fija (el prefijo menos un carácter) y un tope
 
 Expuestas en `/metrics` (puerto `8080`):
 - `blockchain_prefijo`: largo del prefijo elegido en la última tarea.
-- `blockchain_prefijo_elecciones_total{motivo}`: contador de elecciones por motivo (`inicial`, `tiempo`, `techo`, `fijo`).
+- `blockchain_prefijo_elecciones_total{motivo}`: contador de elecciones por motivo (`inicial`, `tiempo`, `potencia`, `emergencia`, `fijo`). Hasta BC-73 existía `techo`.
 - `blockchain_tiempo_bloque_esperado_segundos`: valor configurado de `SEGUNDOS_POR_BLOQUE`, graficado junto al tiempo real (`blockchain_tiempo_bloque_segundos`) en Grafana.
 - `blockchain_rangos_publicados_total`, `blockchain_rangos_sin_solucion_total`, `blockchain_resultados_descartados_total{motivo}`.
 

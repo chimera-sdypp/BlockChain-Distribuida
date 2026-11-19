@@ -170,7 +170,7 @@ def test_ajuste_por_tiempo_desde_cadena_y_metricas():
     }
     redis = RedisFalso(gpu, cadena=cadena, bloques=bloques)
     antes_tiempo = REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "tiempo"}) or 0
-    antes_techo = REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "techo"}) or 0
+    antes_potencia = REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "potencia"}) or 0
 
     # Altura 5 (múltiplo de 5) y bloques cada 2 s frente a 60 s -> sube de 4 a 5
     publicados = correr(tarea("t5"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5)
@@ -179,14 +179,16 @@ def test_ajuste_por_tiempo_desde_cadena_y_metricas():
     assert REGISTRY.get_sample_value("blockchain_tiempo_bloque_esperado_segundos") == 60
     assert REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "tiempo"}) == antes_tiempo + 1
 
-    # Si desaparece la GPU antes de la siguiente ventana (altura 5 todavía), baja por techo enseguida
+    # Si desaparece la GPU antes de la siguiente ventana (altura 5 todavía), la potencia cae más de 4 veces:
+    # se recalcula con el techo enseguida (BC-73)
     redis.hashes["nodo:gpu-1"]["ultimo_aviso"] = str(AHORA - 60)
     redis.hashes["nodo:cpu-lento"] = {"tipo": "cpu", "bench": "200000", "ultimo_aviso": str(AHORA)}
     # 200 kH/s * 60 s = 1,2e7 -> techo 5; supongamos que los bloques eran de prefijo 6
     redis.hashes["bloque:b5"]["prefijo"] = "000000"
     publicados_sin_gpu = correr(tarea("t5-rearmada"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5)
     assert publicados_sin_gpu[0][1]["prefijo"] == "00000"
-    assert REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "techo"}) == antes_techo + 1
+    assert REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "potencia"}) == antes_potencia + 1
+    assert redis.hashes["prefijo:referencia"]["potencia"] == "200000.0"
 
 
 def test_duracion_guardada_ignora_huecos_ociosos_entre_bloques():
@@ -208,6 +210,38 @@ def test_convergencia_desde_prefijo_inicial_bajo():
     redis = RedisFalso(gpu, cadena=["g"], bloques={"g": {"altura": "0", "timestamp": "1000"}})
     primero = correr(tarea("t1"), redis, prefijo_base=8, segundos_objetivo=60, ventana_ajuste=5, prefijo_inicial=2)
     assert primero[0][1]["prefijo"] == "00"
+
+
+def test_espacio_de_nonces_chico_para_el_prefijo_no_arranca(monkeypatch):
+    # BC-73: con 2^32 y prefijo 8, la mayoría de las tareas no tiene solución.
+    monkeypatch.setenv("PREFIJO_BASE", "8")
+    monkeypatch.setenv("ESPACIO_NONCES", str(2**32))
+    with pytest.raises(ValueError, match="ESPACIO_NONCES"):
+        cargar_ajustes()
+    monkeypatch.setenv("ESPACIO_NONCES", str(2**34))  # 16^8 × 4
+    assert cargar_ajustes().espacio == 2**34
+
+
+def test_emergencia_negativa_no_arranca(monkeypatch):
+    monkeypatch.setenv("EMERGENCIA_SEGUNDOS", "-1")
+    with pytest.raises(ValueError, match="EMERGENCIA_SEGUNDOS"):
+        cargar_ajustes()
+
+
+def test_la_tarea_que_lleva_240_s_sin_bloque_baja_un_caracter():
+    # El NCT manda en la tarea cuándo se armó la caja: si se rearmó a los 240 s, el TrP baja uno.
+    gpu = {"gpu-1": {"tipo": "gpu", "bench": "2300000000", "ultimo_aviso": str(AHORA)}}
+    bloques = {"g": {"altura": "0", "timestamp": "1000"},
+               "b1": {"altura": "1", "prefijo": "000000", "timestamp": "1010", "duracion": "10"}}
+    redis = RedisFalso(gpu, cadena=["g", "b1"], bloques=bloques)
+    redis.hashes["prefijo:referencia"] = {"potencia": "2300000000", "altura": "0", "prefijo": "6", "cuando": "0"}
+    antes = REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "emergencia"}) or 0
+    rearmada = {**tarea("t-rearmada"), "armada": AHORA - 250}
+    publicados = correr(rearmada, redis, emergencia=240)
+    assert publicados[0][1]["prefijo"] == "00000"
+    assert REGISTRY.get_sample_value("blockchain_prefijo_elecciones_total", {"motivo": "emergencia"}) == antes + 1
+    # Recién armada, no
+    assert correr({**tarea("t-nueva"), "armada": AHORA - 5}, redis, emergencia=240)[0][1]["prefijo"] == "000000"
 
 
 # --- Con RabbitMQ y Redis de verdad (INTEGRACION=1) -------------------------------------------

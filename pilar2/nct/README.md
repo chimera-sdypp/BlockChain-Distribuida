@@ -39,7 +39,8 @@ Los pasos 2 a 4 pasan en **un script Lua**: así, dos réplicas que validan a la
 ## Cajas y tareas (BC-25)
 
 - **Ticker:** cada `VENTANA_SEGUNDOS` (30), una sola réplica (lock `ticker` con `SET NX EX`) cierra cajas. Un Lua saca todo `tx:pendientes` y lo agrega a `cajas` en listas de como mucho `TX_POR_CAJA` (100) ids. No se arma un bloque por transacción, sino uno por ventana.
-- **Una sola tarea a la vez:** `tarea:actual` se toma con `SET NX EX TAREA_VENCE_SEGUNDOS` (600). Quien la consigue arma el bloque candidato con la **primera caja** sobre la punta de la cadena: escribe `tarea:<id>` y publica `{tarea, previous_hash, altura, transacciones, timestamp}` en `tareas`. El prefijo lo elige el TrP.
+- **Una sola tarea a la vez:** `tarea:actual` se toma con `SET NX EX` por `EMERGENCIA_SEGUNDOS` (240; si es 0, `TAREA_VENCE_SEGUNDOS`, 600). Quien la consigue arma el bloque candidato con la **primera caja** sobre la punta de la cadena: escribe `tarea:<id>` y publica `{tarea, previous_hash, altura, transacciones, timestamp, armada}` en `tareas`. El prefijo lo elige el TrP.
+- **Cuándo se armó la caja (BC-73):** `caja:armada` guarda la hora del primer armado; al rearmar la misma caja se conserva. Va en la tarea como `armada`: de ahí sale la `duracion` del bloque (con los rearmados adentro) y la bajada de emergencia del TrP, que le saca un carácter al prefijo por cada 240 s sin bloque.
 - **Participación (BC-63):** en el primer bloque de cada época (10, 20…) van primero los pagos de la anterior, `part-<época>-<minero>`: el fondo (`FONDO_EPOCA`, 100) repartido según `shares:<época>` y la racha de cada minero. El detalle queda en `epoca:<n>`. Rearmar la tarea da los mismos pagos, y un pago que ya está en la cadena no se vuelve a proponer.
 - **La caja no se saca de la fila hasta que su bloque se confirma.** Si el NCT muere a mitad de camino, `tarea:actual` vence y la misma caja se vuelve a armar: no se pierde ninguna transacción. La tarea vieja queda `vencida`, así los mineros cortan sus rangos en vez de seguir minando algo que ya no se espera.
 - **Cuándo se arma:** en cada tic, después de confirmar un bloque y al arrancar.
@@ -82,7 +83,8 @@ Al arrancar, si `cadena` está vacía, un Lua carga el bloque génesis (`previou
 | `FONDO_EPOCA` | 100 | Lo que se reparte por época entre los que mandaron shares |
 | `VENTANA_SEGUNDOS` | 30 | Cada cuánto se cierran cajas |
 | `TX_POR_CAJA` | 100 | Transacciones por bloque, como mucho |
-| `TAREA_VENCE_SEGUNDOS` | 600 | Cuándo se libera una tarea abandonada (subirlo para prefijos largos) |
+| `TAREA_VENCE_SEGUNDOS` | 600 | Cuándo se libera una tarea abandonada si la emergencia está apagada |
+| `EMERGENCIA_SEGUNDOS` | 240 | La tarea sin bloque vence a este tiempo y se rearma; el TrP baja un carácter (BC-73). `0` la apaga (pruebas de prefijo fijo) |
 | `TAREA_GUARDA_SEGUNDOS` | 3600 | Cuánto queda en Redis una tarea terminada, con sus conjuntos (BC-70) |
 | `WAIT_REPLICAS` · `WAIT_MS` | 1 · 1000 | Cuántas réplicas de Redis esperar antes de avisar (0 en local y en el CI) |
 

@@ -480,7 +480,7 @@
       "type": "timeseries",
       "id": 6,
       "title": "Tiempo por bloque",
-      "description": "Desde que se publica la tarea hasta que se confirma el bloque (ventana de 10 min).",
+      "description": "Desde que se arma la caja (con los rearmados adentro, BC-73) hasta que se confirma el bloque (ventana de 10 min).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -806,7 +806,7 @@
       "type": "stat",
       "id": 10,
       "title": "Prefijo actual",
-      "description": "Caracteres del prefijo de la última tarea. Lo ajustan el tiempo por bloque y el techo por potencia viva.",
+      "description": "Caracteres del prefijo de la última tarea. Lo ajusta el tiempo por bloque; la potencia viva sólo al arrancar y si cambia 4 veces o más, y baja uno por cada 240 s sin bloque (BC-73).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -858,7 +858,7 @@
       "type": "timeseries",
       "id": 23,
       "title": "Motivo del prefijo",
-      "description": "Elecciones del prefijo en los últimos 5 min: por tiempo, techo de potencia, inicial o fijo.",
+      "description": "Elecciones del prefijo en los últimos 5 min: inicial (arranque), tiempo (ajuste cada 5 bloques), potencia (la potencia viva cambió 4 veces o más), emergencia (240 s sin bloque) o fijo.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

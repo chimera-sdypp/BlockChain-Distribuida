@@ -8,6 +8,7 @@ import pytest
 
 from comun import contrato
 from comun.tests.claves import CUENTA, PRIVADA
+from minero_cpu import busqueda
 from minero_cpu.busqueda import Buscador
 from minero_cpu.minero import ClaveRechazada, Gateway, Minero, cargar_clave
 
@@ -71,6 +72,29 @@ def test_rango_que_empieza_despues_y_cruza_trozos(buscador):
 def test_rango_sin_solucion(buscador):
     assert buscador.buscar("prueba;", 0, 50_000, "f" * 32) == (None, False)
     assert buscador.probados == 50_001
+
+
+def test_el_hashrate_es_el_del_ultimo_rango_aunque_el_minero_quede_parado(monkeypatch):
+    reloj = [100.0]
+    monkeypatch.setattr(busqueda.time, "monotonic", lambda: reloj[0])
+
+    class Falso(busqueda.Ritmo):
+        parar, shares = threading.Event(), busqueda.Shares()
+
+        def _recorrer(self, *_):
+            reloj[0] += 1
+            self.probados = 500                          # a mitad del rango: 500 h/s
+            assert self.hashes_por_segundo() == 500
+            reloj[0] += 1
+            self.probados = 2_000
+            return None, False
+
+    b = Falso()
+    assert b.hashes_por_segundo() == 0                   # todavía no buscó
+    b.buscar("bloque", 0, 1_999, "0")
+    assert b.hashes_por_segundo() == 1_000
+    reloj[0] += 3_600                                    # una hora sin rangos: antes daba 0,55 h/s
+    assert b.hashes_por_segundo() == 1_000
 
 
 def test_cortar_abandona_el_rango(buscador):

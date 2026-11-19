@@ -135,7 +135,7 @@ EOF
 }
 
 reiniciar() {
-    local saldos replicas_nct replicas_trp primario
+    local saldos replicas_nct replicas_trp replicas_nodo primario
     saldos=$(env_de nct SALDOS_INICIALES)
     echo "SALDOS_INICIALES del NCT: ${saldos:-(los de por defecto)}"
     # {cuenta: saldo} o {cuenta: {saldo, nombre}} (contrato v2)
@@ -151,6 +151,14 @@ reiniciar() {
     k scale deploy nct trp --replicas=0
     k wait --for=delete pod -l app=nct --timeout=180s
     k wait --for=delete pod -l app=trp --timeout=180s
+    # Los nodos (BC-83) guardan su copia de la cadena: con la vieja verían la nueva como una historia reescrita.
+    replicas_nodo=$(k get sts nodo -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
+    if [ "$replicas_nodo" != 0 ]; then
+        echo "Apagando los nodos ($replicas_nodo) y borrando su copia de la cadena"
+        k scale sts nodo --replicas=0
+        k wait --for=delete pod -l app=nodo --timeout=180s
+        k delete pvc -l app=nodo --wait=true
+    fi
 
     # Lo que quedó en las colas es de la cadena vieja. Si no se puede purgar no es grave: el NCT
     # descarta las tareas y transacciones que ya no están en Redis.
@@ -170,6 +178,18 @@ reiniciar() {
     k rollout status deploy/nct --timeout=5m
     k rollout status deploy/trp --timeout=5m
     k logs -l app=nct --tail=200 --prefix | grep -i "génesis" || true
+    if [ "$replicas_nodo" != 0 ]; then
+        k scale sts nodo --replicas="$replicas_nodo"
+        k rollout status sts/nodo --timeout=5m
+    fi
+    # El escalador guarda su clave en Redis (escalador:clave): con el FLUSHALL la perdió y su permiso (BC-79) también.
+    # Al reiniciarlo genera otra; el organizador le da el permiso de nuevo con `python -m claves permiso`.
+    if k get deploy escalador > /dev/null 2>&1; then
+        k rollout restart deploy/escalador
+        k rollout status deploy/escalador --timeout=5m
+        sleep 5
+        echo "Clave del escalador (falta su permiso): $(k logs deploy/escalador --tail=200 | grep -o 'Clave del escalador: [0-9a-f]\{64\}' | tail -1 | cut -d' ' -f4)"
+    fi
 }
 
 condiciones() {

@@ -176,6 +176,78 @@ def aprobar(backend, privada_organizador, cuenta, tipo, nombre, carga=None, sali
     return mandar_y_seguir(backend, txs, salida, esperar)
 
 
+def bajar_cadena(backend, lote=100):
+    """Todos los bloques, del génesis a la punta (GET /api/bloques?orden=asc)."""
+    bloques = []
+    while True:
+        codigo, nuevos = backend.pedir("GET", f"/api/bloques?orden=asc&desde={len(bloques)}&limite={lote}")
+        if codigo != 200 or not isinstance(nuevos, list):
+            raise SystemExit(f"El backend contestó {codigo} a /api/bloques")
+        bloques += nuevos
+        if len(nuevos) < lote:
+            return bloques
+
+
+def verificar_saldo(backend, cuenta, nodos=(), organizador="", salida=print):
+    """BC-84: el saldo que calcula la herramienta verificando la cadena entera con comun/estado.py, comparado con el
+    backend (su número y su prueba de Merkle) y con las atestaciones firmadas de los nodos. 0 si todo coincide."""
+    from comun import estado as estado_cadena
+
+    def shares(epoca):
+        codigo, datos = backend.pedir("GET", f"/api/epocas/{epoca}")
+        return datos.get("detalle") if codigo == 200 and isinstance(datos, dict) else None
+
+    bloques = bajar_cadena(backend)
+    reglas = estado_cadena.Reglas(organizador=organizador, shares=shares)
+    estado, malos = estado_cadena.reconstruir(bloques, reglas)
+    if malos:
+        altura, problemas = malos[0]
+        salida(f"✗ el bloque {altura} NO verifica: {'; '.join(problemas)}")
+        return 1
+    hashes = {b["altura"]: b["block_hash"] for b in bloques}
+    raiz, saldo = estado.raiz(), estado.saldos.get(cuenta, 0)
+    hoja = dict(estado.hojas()).get(cuenta)
+    salida(f"Cadena verificada: altura {estado.altura}, raíz de estado {raiz}")
+    salida(f"Saldo de {cuenta}: {saldo} (calculado acá)")
+    bien = True
+    codigo, prueba = backend.pedir("GET", f"/api/prueba/{cuenta}")
+    if codigo == 200 and prueba.get("altura") == estado.altura:
+        rama_ok = prueba.get("hoja") is None or estado_cadena.raiz_de_rama(prueba["hoja"], prueba["rama"]) == prueba["raiz"]
+        coincide = rama_ok and prueba["raiz"] == raiz and prueba.get("hoja") == hoja
+        bien &= coincide
+        salida(f"{'✓' if coincide else '✗'} backend /api/prueba: {'coincide' if coincide else 'dice ' + str(prueba.get('hoja'))}")
+        codigo, datos = backend.pedir("GET", f"/api/cuentas/{cuenta}")
+        if codigo == 200:
+            bien &= datos["saldo"] == saldo
+            salida(f"{'✓' if datos['saldo'] == saldo else '✗'} backend /api/cuentas: saldo {datos['saldo']}")
+    else:
+        salida("· el backend va por otra altura (entró un bloque): volvé a verificar para compararlo")
+    for url in nodos:
+        try:
+            codigo, a = Backend(url).pedir("GET", "/api/atestacion")
+        except OSError as error:
+            salida(f"· {url}: no respondió ({error})")
+            continue
+        firma_ok = codigo == 200 and contrato.verificar_firma(
+            a.get("nodo"), contrato.mensaje_atestacion(a["nodo"], a["altura"], a["punta"], a["raiz"], a["tiempo"]),
+            a.get("firma"))
+        if not firma_ok:
+            bien = False
+            salida(f"✗ {url}: la atestación no está bien firmada")
+        elif a["altura"] == estado.altura:
+            coincide = a["punta"] == estado.punta and a["raiz"] == raiz
+            bien &= coincide
+            salida(f"{'✓' if coincide else '✗'} nodo {url}: {'coincide' if coincide else 'otra punta: ' + a['punta']}")
+        elif a["altura"] < estado.altura:
+            coincide = hashes.get(a["altura"]) == a["punta"]
+            bien &= coincide
+            salida(f"{'✓' if coincide else '✗'} nodo {url}: va atrás (altura {a['altura']})"
+                   f"{'' if coincide else ', con otro bloque a esa altura'}")
+        else:
+            salida(f"· nodo {url}: va adelante (altura {a['altura']}): volvé a verificar para compararlo")
+    return 0 if bien else 1
+
+
 def rafaga(backend, privadas, cantidad, monto_maximo=5, esperar=600, salida=print):
     """N transferencias chiquitas en ronda entre las cuentas (A → B → C → A…), firmadas y con su nonce
     llevado acá, y sigue cada una hasta que se confirma o se rechaza. Devuelve {id: estado}."""
@@ -235,6 +307,10 @@ def principal(argumentos=None, salida=print):
     p.add_argument("archivo", nargs="?")
     p.add_argument("--cuenta")
     p.add_argument("--url")
+    p.add_argument("--verificar", action="store_true",
+                   help="baja la cadena, la verifica acá y compara el saldo con el backend y los nodos (BC-84)")
+    p.add_argument("--nodo", action="append", default=[], help="un nodo verificador para comparar (se repite)")
+    p.add_argument("--organizador", default="", help="la cuenta del organizador que se espera en el génesis")
     for nombre, ayuda in (("firmar", "arma y firma una transferencia"), ("cargar", "una carga de saldo del organizador"),
                           ("transferir", "firma una transferencia con el nonce siguiente y la manda")):
         p = sub.add_parser(nombre, help=ayuda)
@@ -295,6 +371,8 @@ def principal(argumentos=None, salida=print):
         cuenta = a.cuenta or (contrato.clave_publica(leer_privada(a.archivo)) if a.archivo else None)
         if not cuenta:
             parser.error("hace falta ARCHIVO o --cuenta")
+        if a.verificar:
+            return verificar_saldo(_url(parser, a), cuenta, a.nodo, organizador=a.organizador, salida=salida)
         datos = _url(parser, a).cuenta(cuenta)
         salida(json.dumps(datos, ensure_ascii=False))
     elif a.comando in ("firmar", "cargar", "transferir"):

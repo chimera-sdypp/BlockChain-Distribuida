@@ -15,6 +15,10 @@
 
   <section aria-labelledby="t-transferir">
     <h2 id="t-transferir">Transferir</h2>
+    <p class="suave"><strong>Para no confiar en nosotros</strong>, usá la billetera descargada
+      (<a href="https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/latest">billetera.html del release</a>,
+      con su SHA-256) o la herramienta de claves (<span class="mono">python -m claves</span>): verifican la cadena ellas
+      mismas y tu clave no pasa por una página de la nube.</p>
     <!-- La clave privada no sale nunca del navegador: se importa como CryptoKey no exportable y se firma acá. -->
     <form id="form-clave" autocomplete="off">
       <label><span>Tu clave privada (el archivo <span class="mono">.jwk</span> que bajaste al pedir el alta, o el JWK de <span class="mono">python -m claves exportar</span>)</span>

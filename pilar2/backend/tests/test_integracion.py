@@ -381,3 +381,17 @@ def test_una_doble_firma_deja_la_prueba(entorno):
     assert cliente.post("/api/firmas", json=otra).status_code == 409
     [prueba] = cliente.get("/api/finalidad").json()["dobles"]
     assert prueba["primera"]["block_hash"] == hashes[2] and prueba["segunda"]["block_hash"] == "e" * 32
+
+
+# ── BC-78: CORS para la billetera descargada (origen «null») ──
+
+def test_las_rutas_publicas_tienen_cors_y_el_panel_no(entorno):
+    cliente, _, _ = entorno
+    origen = {"Origin": "null"}
+    assert cliente.get("/api/bloques", headers=origen).headers["access-control-allow-origin"] == "*"
+    previo = cliente.options("/api/transacciones", headers={**origen, "Access-Control-Request-Method": "POST",
+                                                            "Access-Control-Request-Headers": "content-type"})
+    assert previo.status_code == 204 and "POST" in previo.headers["access-control-allow-methods"]
+    assert "access-control-allow-origin" not in cliente.get("/api/organizador/altas", headers=origen).headers
+    firmas = cliente.options("/api/firmas", headers={**origen, "Access-Control-Request-Method": "POST"})
+    assert "access-control-allow-origin" not in firmas.headers

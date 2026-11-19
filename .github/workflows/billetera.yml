@@ -1,0 +1,42 @@
+# La billetera descargable (BC-78): con cada tag de versión, pilar2/billetera/billetera.html va al release de GitHub
+# con su SHA-256 en las notas. Quien la baja compara el hash: así sabe que es la del repositorio y que nadie la cambió
+# en el camino (la página de la nube la sirve el operador; ésta no).
+name: Billetera
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # crear el release y subirle el archivo
+
+jobs:
+  publicar:
+    name: Subir la billetera al release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Que billetera.html esté armada con el verificador de este tag
+        run: |
+          cd pilar2
+          python billetera/armar.py > /dev/null
+          git diff --exit-code billetera/billetera.html
+      - name: Release con el archivo y su SHA-256
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          archivo=pilar2/billetera/billetera.html
+          hash=$(sha256sum "$archivo" | cut -d' ' -f1)
+          nota="**Billetera descargable** (\`billetera.html\`): SHA-256 \`$hash\`. Comprobalo con \`sha256sum billetera.html\` antes de abrirla."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            notas=$(gh release view "$TAG" --json body -q .body)
+            gh release edit "$TAG" --notes "$(printf '%s\n\n%s' "$notas" "$nota")"
+          else
+            gh release create "$TAG" --title "$TAG" --notes "$nota"
+          fi
+          gh release upload "$TAG" "$archivo" --clobber
+          echo "$nota" >> "$GITHUB_STEP_SUMMARY"

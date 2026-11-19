@@ -8,6 +8,7 @@ La billetera de línea de comandos: las claves Ed25519 se generan y se usan en t
 | `publica ARCHIVO` · `exportar ARCHIVO` | La cuenta de esa clave · la privada en JWK (RFC 8037), para el navegador |
 | `alta ARCHIVO --tipo usuario\|minero\|validador --nombre X --url U` | Pide el alta (firmada: demuestra que tenés la privada) |
 | `saldo ARCHIVO --url U` | Saldo, nonce y si la cuenta está aprobada, según el backend |
+| `saldo ARCHIVO --url U --verificar [--nodo N]…` | BC-84: baja la cadena, la verifica con `comun/estado.py`, calcula el saldo y lo compara con el backend (y su prueba de Merkle) y con las atestaciones firmadas de los nodos; sale con 1 si algo no coincide. La versión de navegador es [`billetera/`](../billetera/) |
 | `transferir ARCHIVO --destino C --monto N --url U` | Firma con el nonce siguiente, la manda y espera a que la valide el NCT |
 | `firmar ARCHIVO --destino C --monto N [--nonce N] [--url U] [--enviar]` | Sólo arma y firma (con `--enviar`, la manda) |
 | `rafaga --url U -n N ARCHIVO…` | N transferencias en ronda entre esas cuentas, y las sigue hasta que se cierran |

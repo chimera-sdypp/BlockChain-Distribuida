@@ -22,7 +22,7 @@ import time
 import redis as redislib
 from fastapi import Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import Counter, Gauge
 
 from comun import Servicio, config, contrato, estado as estado_cadena
@@ -597,6 +597,36 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     def redis_caido(request, error):
         log.error("Redis no respondió en %s: %r", request.url.path, error)
         return JSONResponse({"error": "Redis no disponible"}, status_code=503)
+
+    agregar_cors(app)
+
+
+# BC-78: la billetera descargada se abre desde el disco (origen «null») y le habla a la API desde otro origen. Sólo
+# las rutas públicas: las lecturas y lo que manda un cliente (transacciones y pedidos de alta). El panel firmado del
+# organizador y las firmas de los validadores (que son programas, no páginas) quedan afuera. No hay cookies.
+POST_PUBLICOS = ("/api/transacciones", "/api/transacciones/lote", "/api/altas")
+
+
+def es_publica(ruta, metodo):
+    if not ruta.startswith("/api/") or ruta.startswith("/api/organizador"):
+        return False
+    return metodo in ("GET", "HEAD") or (metodo == "POST" and ruta in POST_PUBLICOS)
+
+
+def agregar_cors(app):
+    @app.middleware("http")
+    async def cors(request, siguiente):
+        ruta = request.url.path
+        if request.method == "OPTIONS":
+            pedido = request.headers.get("access-control-request-method", "").upper()
+            if es_publica(ruta, pedido):
+                return Response(status_code=204, headers={
+                    "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST",
+                    "Access-Control-Allow-Headers": "content-type", "Access-Control-Max-Age": "600"})
+        respuesta = await siguiente(request)
+        if es_publica(ruta, request.method):
+            respuesta.headers["Access-Control-Allow-Origin"] = "*"
+        return respuesta
 
 
 def leer_organizador():

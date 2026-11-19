@@ -320,6 +320,14 @@ class Nodo:
 
 
 def agregar_rutas(app, nodo):
+    @app.middleware("http")
+    async def cors(request, siguiente):
+        """La billetera descargada (origen «null») lee las atestaciones: todo lo del nodo es GET y público."""
+        respuesta = await siguiente(request)
+        if request.method in ("GET", "HEAD"):
+            respuesta.headers["Access-Control-Allow-Origin"] = "*"
+        return respuesta
+
     @app.get("/api/atestacion")
     def atestacion():
         return nodo.atestacion()

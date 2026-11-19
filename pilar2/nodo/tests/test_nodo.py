@@ -179,3 +179,17 @@ def test_un_validador_no_firma_un_bloque_invalido_ni_una_historia_reescrita(cade
     fuente.bloques_servidos = otra.bloques + [otra.armar([])]
     v1.sincronizar()
     assert v1.conflicto and v1.firmar_si_toca() is None
+
+
+def test_la_api_del_nodo_tiene_cors_para_la_billetera(cadena, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from comun import web
+    from nodo.app import agregar_rutas
+    nodo = nodo_sobre(FuenteFalsa(cadena), tmp_path)
+    nodo.arrancar()
+    nodo.sincronizar()
+    app = web.crear_app("nodo", {})
+    agregar_rutas(app, nodo)
+    respuesta = TestClient(app).get("/api/atestacion", headers={"Origin": "null"})
+    assert respuesta.headers["access-control-allow-origin"] == "*" and respuesta.json()["altura"] == 2

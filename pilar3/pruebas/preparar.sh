@@ -153,11 +153,17 @@ condiciones() {
     local criterio=${4:-}
     [[ $fragmento =~ ^[0-9]+$ ]] && ((fragmento >= 1 && fragmento <= 50)) || { echo "::error::FRAGMENTO_PORCENTAJE va de 1 a 50"; exit 1; }
     [[ -z $criterio || $criterio =~ ^(suma|promedio|minimo|maximo)$ ]] || { echo "::error::CRITERIO_POTENCIA es suma, promedio, minimo o maximo"; exit 1; }
+    # BC-73: el TrP no arranca si el espacio de nonces no alcanza para el prefijo (16^P × 4, como mínimo 2^32).
+    local espacio
+    espacio=$(python3 -c "print(max(2**32, 16**$prefijo * 4))")
     k set env deploy/trp PREFIJO_BASE="$prefijo" AJUSTAR_PREFIJO="$ajustar" FRAGMENTO_PORCENTAJE="$fragmento" \
-        ${criterio:+CRITERIO_POTENCIA="$criterio"}
+        ESPACIO_NONCES="$espacio" ${criterio:+CRITERIO_POTENCIA="$criterio"}
     # El escalador calcula las VMs con el prefijo del sistema: el mismo que el TrP.
     k set env deploy/escalador PREFIJO_BASE="$prefijo"
+    # Con el prefijo fijo (A=0), la bajada de emergencia del NCT no tiene que cortar las tareas largas.
+    if [ "$ajustar" = 0 ]; then k set env deploy/nct EMERGENCIA_SEGUNDOS=0; else k set env deploy/nct EMERGENCIA_SEGUNDOS-; fi
     k rollout status deploy/trp --timeout=5m
+    k rollout status deploy/nct --timeout=5m
 }
 
 fijar_vms() {
@@ -203,9 +209,10 @@ for doc in sys.stdin.read().split("\n---\n"):
 restaurar() {
     local manifiesto argumentos variable valor variables
     # Cada variable vuelve al valor del manifiesto, o se saca si el manifiesto no la pone.
-    for despliegue in trp escalador; do
+    for despliegue in trp escalador nct; do
         variables="PREFIJO_BASE AJUSTAR_PREFIJO FRAGMENTO_PORCENTAJE CRITERIO_POTENCIA ESPACIO_NONCES"
         [ "$despliegue" = escalador ] && variables="PREFIJO_BASE"
+        [ "$despliegue" = nct ] && variables="EMERGENCIA_SEGUNDOS"
         manifiesto=$(env_del_manifiesto "$despliegue")
         argumentos=()
         for variable in $variables; do

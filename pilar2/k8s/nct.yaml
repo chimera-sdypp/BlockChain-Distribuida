@@ -31,6 +31,8 @@ spec:
             - { name: VENTANA_SEGUNDOS, value: "30" }
             - { name: TX_POR_CAJA, value: "100" }
             - { name: TAREA_VENCE_SEGUNDOS, value: "600" }
+            # BC-73: la tarea sin bloque vence a los 240 s y el TrP la rearma con un carácter menos (0 = no).
+            - { name: EMERGENCIA_SEGUNDOS, value: "240" }
             - { name: WAIT_REPLICAS, value: "1" }       # Redis tiene 2 réplicas: esperar a una
             # Las cuentas de prueba alice, bob y carol (comun/tests/claves.py: sus privadas salen de
             # sha256("chimera-prueba-<nombre>")). En la red de verdad el génesis va vacío y el saldo entra por cargas.

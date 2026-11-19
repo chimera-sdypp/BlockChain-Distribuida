@@ -183,12 +183,22 @@ reiniciar() {
         k rollout status sts/nodo --timeout=5m
     fi
     # El escalador guarda su clave en Redis (escalador:clave): con el FLUSHALL la perdió y su permiso (BC-79) también.
-    # Al reiniciarlo genera otra; el organizador le da el permiso de nuevo con `python -m claves permiso`.
+    # Se genera acá como la generaría él al arrancar (aunque KEDA lo tenga en 0) y, si estaba prendido, se lo reinicia
+    # para que no siga con la vieja en memoria. El organizador le da el permiso con `python -m claves permiso`.
     if k get deploy escalador > /dev/null 2>&1; then
-        k rollout restart deploy/escalador
-        k rollout status deploy/escalador --timeout=5m
-        sleep 5
-        echo "Clave del escalador (falta su permiso): $(k logs deploy/escalador --tail=200 | grep -o 'Clave del escalador: [0-9a-f]\{64\}' | tail -1 | cut -d' ' -f4)"
+        local escalador
+        escalador=$(k exec -i deploy/trp -- python - <<'PY'
+from comun import config, contrato, redisdb
+r = redisdb.conectar(config.cargar("preparar"))
+r.set("escalador:clave", contrato.nueva_clave()[0], nx=True)
+print(contrato.clave_publica(r.get("escalador:clave")))
+PY
+)
+        if [ "$(k get deploy escalador -o jsonpath='{.spec.replicas}')" != 0 ]; then
+            k rollout restart deploy/escalador
+            k rollout status deploy/escalador --timeout=5m
+        fi
+        echo "Clave del escalador (le falta el permiso del organizador): $escalador"
     fi
 }
 

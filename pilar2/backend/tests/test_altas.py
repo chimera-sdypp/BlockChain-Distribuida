@@ -11,6 +11,7 @@ import redis as redislib
 from fastapi.testclient import TestClient
 
 from backend import app as backend
+from comun.altas import Altas
 from comun import Rabbit, config, contrato, web
 from comun.tests.claves import CUENTA, PRIVADA, carga
 
@@ -110,7 +111,8 @@ def test_con_demasiados_pedidos_pendientes_da_429(entorno):
 
 RUTAS_PANEL = [("GET", "/api/organizador/altas"), ("GET", "/api/organizador/cuentas"),
                ("POST", "/api/organizador/aprobar"), ("POST", "/api/organizador/rechazar"),
-               ("POST", "/api/organizador/baja")]
+               ("POST", "/api/organizador/baja"), ("GET", "/api/organizador/suspendidos"),
+               ("POST", "/api/organizador/reactivar")]
 
 
 @pytest.mark.parametrize("metodo, ruta", RUTAS_PANEL)
@@ -234,3 +236,43 @@ def test_dar_de_baja_saca_la_cuenta_y_deja_el_saldo(entorno):
     assert not redis.hexists("cuentas", CUENTA["zoe"]) and redis.hget("saldos", CUENTA["zoe"]) == "40"
     assert panel(cliente, "POST", "/api/organizador/baja", {"cuenta": CUENTA["zoe"]}).status_code == 404
     assert panel(cliente, "POST", "/api/organizador/baja", {"cuenta": CUENTA["organizador"]}).status_code == 400
+
+
+# ── BC-75: suspendidos ──
+
+def suspendido(redis, nombre="zoe"):
+    redis.hset("cuentas", CUENTA[nombre], json.dumps({"tipo": "minero", "nombre": nombre, "alta": 1}))
+    Altas(redis).suspender(CUENTA[nombre], "estadistica", {"tarea": "t1", "rango": 0, "probabilidad": 1e-11}, ahora=50)
+
+
+def test_el_panel_lista_los_suspendidos_con_su_evidencia(entorno):
+    armar, _, redis = entorno
+    suspendido(redis)
+    respuesta = panel(armar(), "GET", "/api/organizador/suspendidos")
+    assert respuesta.status_code == 200
+    assert respuesta.json() == {"suspendidos": [{"cuenta": CUENTA["zoe"], "nombre": "zoe", "motivo": "estadistica",
+                                                 "evidencia": {"tarea": "t1", "rango": 0, "probabilidad": 1e-11},
+                                                 "cuando": 50}]}
+
+
+def test_reactivar_lo_saca_de_suspendidos_y_sigue_aprobado(entorno):
+    armar, _, redis = entorno
+    suspendido(redis)
+    cliente = armar()
+    assert panel(cliente, "POST", "/api/organizador/reactivar", {"cuenta": CUENTA["zoe"]}).status_code == 200
+    assert not redis.hexists("suspendidos", CUENTA["zoe"]) and redis.hexists("cuentas", CUENTA["zoe"])
+    assert panel(cliente, "POST", "/api/organizador/reactivar", {"cuenta": CUENTA["zoe"]}).status_code == 404
+
+
+def test_confirmar_la_baja_de_un_suspendido_lo_saca_de_las_dos(entorno):
+    armar, _, redis = entorno
+    suspendido(redis)
+    assert panel(armar(), "POST", "/api/organizador/baja", {"cuenta": CUENTA["zoe"]}).status_code == 200
+    assert not redis.hexists("suspendidos", CUENTA["zoe"]) and not redis.hexists("cuentas", CUENTA["zoe"])
+
+
+def test_un_usuario_o_una_cuenta_sin_aprobar_no_se_suspenden(entorno):
+    _, _, redis = entorno
+    redis.hset("cuentas", CUENTA["zoe"], json.dumps({"tipo": "usuario", "nombre": "zoe", "alta": 1}))
+    assert Altas(redis).suspender(CUENTA["zoe"], "estadistica", {}) is False
+    assert Altas(redis).suspender(CUENTA["alice"], "estadistica", {}) is False

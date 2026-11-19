@@ -449,11 +449,28 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
                  cuenta_)
         return {"cuenta": cuenta_, "baja": True}
 
+    async def listar_suspendidos(datos):
+        return {"suspendidos": await run_in_threadpool(altas.suspendidos)}
+
+    async def reactivar(datos):
+        """BC-75: un minero suspendido vuelve a recibir rangos (el organizador decidió que no mintió)."""
+        cuenta_ = cuenta_del_pedido(datos)
+        if not cuenta_:
+            return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
+        suspension = await run_in_threadpool(altas.reactivar, cuenta_)
+        if suspension is None:
+            return JSONResponse({"error": "la cuenta no está suspendida"}, status_code=404)
+        log.info("El organizador reactivó a %s (suspendido por %s): %s", suspension.get("nombre"),
+                 suspension.get("motivo"), cuenta_)
+        return {"cuenta": cuenta_, "reactivada": True}
+
     app.get("/api/organizador/altas")(del_organizador(listar_altas))
     app.get("/api/organizador/cuentas")(del_organizador(listar_cuentas))
     app.post("/api/organizador/aprobar")(del_organizador(aprobar))
     app.post("/api/organizador/rechazar")(del_organizador(rechazar))
     app.post("/api/organizador/baja")(del_organizador(dar_de_baja))
+    app.get("/api/organizador/suspendidos")(del_organizador(listar_suspendidos))
+    app.post("/api/organizador/reactivar")(del_organizador(reactivar))
 
     @app.exception_handler(redislib.RedisError)
     def redis_caido(request, error):

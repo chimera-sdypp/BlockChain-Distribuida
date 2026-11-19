@@ -157,6 +157,19 @@ El minero declara su `bench` y su `tipo`, y nadie los verifica. Desde BC-74 el g
 - **Potencia efectiva** (`contrato.potencia_efectiva`): `min(bench, medido)` si el estado es `medido`; si no, el bench. La usan el TrP (techo del prefijo, BC-73) y el escalador. Inflar el bench no sirve; decir `tipo: gpu` sin minar, tampoco.
 - **Plazo de cada préstamo:** 3 × (tamaño del rango / potencia) + 10 s, nunca menos de 30 s. Sin medición (`sin_datos`), como mucho 120 s. Pasado el plazo, el keep-alive contesta `cortar: true` y el rango vuelve a la cola. No es una sanción: los shares quedan.
 
+## Los que contestan `sin_solucion` sin buscar (BC-75)
+
+Un `sin_solucion` no se puede verificar: es el *block withholding attack* de los pools de Bitcoin (Meni Rosenfeld, *Analysis of Bitcoin Pooled Mining Reward Systems*, 2011). El gateway lo controla de dos maneras, según el prefijo:
+
+- **Chequeo estadístico (prefijos bajos):** la probabilidad de que un rango de N nonces no tenga solución con prefijo p es e^(−N / 16^p) (`prob_sin_solucion`). Si es menor que `UMBRAL_SIN_SOLUCION` (10⁻⁶), es una mentira: el minero queda suspendido, el resultado no va al TrP y el rango vuelve a la cola. Con un rango del 10 % de 2^32 y prefijo 6 da ~7×10⁻¹²: hoy un `sin_solucion` en un rango completo es, en la práctica, una mentira. No se puede esquivar: usa los rangos reales.
+- **Reverificación por muestreo (prefijos altos):** si la probabilidad no alcanza, con `MUESTREO_SIN_SOLUCION` (5 %) y mientras la tarea siga en curso, el rango se vuelve a publicar con el texto del primero (`reverifica`, y el número de rango + 1.000.000 para que el TrP no lo vea). Lo toma **otro** minero; para él es un rango común.
+  - Si encuentra un nonce: el primero mintió y queda suspendido. El bloque no se usa: tiene la coinbase del que mintió.
+  - Si dice `sin_solucion`: no se concluye nada.
+  - Los shares se verifican con el texto del primero y se le acreditan a quien reverificó. El TrP no espera la reverificación.
+- **Suspensión:** queda en `suspendidos` con el motivo y la evidencia; el gateway le contesta 403 y su préstamo vuelve a la cola. El organizador, en el panel, la **reactiva** o **confirma la baja**: un minero honesto puede fallar una vez (un bug, una GPU que se reinicia), así que la baja la decide una persona.
+- **Aviso por pocos shares:** si en sus últimos 3 préstamos mandó menos de un cuarto de los shares esperados según su bench, queda una línea en el log (`blockchain_pocos_shares_total`). Es una señal, no una prueba: no suspende.
+- **Descartada, la tarea trampa:** prestar un rango de un bloque ya resuelto, con el texto del ganador, donde se sabe que hay solución. Se puede detectar: el `previous_hash` de ese texto ya no es la punta, y la punta es pública en `/api/bloques`. Un tramposo contestaría bien las trampas y mentiría en el resto, y a ése lo agarran igual la estadística o la reverificación. La idea viene de los *forced errors* de Truebit y de las tareas *gold standard* del crowdsourcing.
+
 ## Claves de Redis
 
 | Clave | Tipo | Contenido |
@@ -188,6 +201,7 @@ El minero declara su `bench` y su `tipo`, y nadie los verifica. Desde BC-74 el g
 | `prestamos` | sorted set | `<tarea>:<rango>` → cuándo vence (segundos Unix). Lo maneja el gateway |
 | `prestamo:<tarea>:<rango>` | hash | `mensaje` (el JSON del rango, sin texto, para volver a publicarlo si vence), `minero` (el dueño: sólo él lo renueva), `shares` (cuántos le sumó), `desde` y `plazo` (segundos Unix: cuándo se prestó y hasta cuándo puede tenerlo, BC-74) |
 | `prestamo_de:<cuenta>` | string | El préstamo vivo de cada minero (`<tarea>:<rango>`): uno a la vez (BC-74) |
+| `suspendidos` | hash | cuenta → JSON `{nombre, motivo, evidencia, cuando}`: los mineros suspendidos por contestar `sin_solucion` sin buscar (BC-75). Salen al reactivarlos o al confirmar la baja |
 | `medicion:<cuenta>` | lista | Los últimos 20 préstamos terminados de cada minero, en JSON: trabajo (shares × 16^(p−1)), segundos, shares, shares esperados según su bench y si llegó al tope (BC-74) |
 | `escalador:claves` | hash | nombre de cada VM minero-cpu → su clave privada: el escalador se la genera, la aprueba y se la pasa por metadata (BC-57) |
 | `escalador:vms` | string | Las VMs pedidas cuando el escalador corre con `VMS_ACTIVAS=0` (simuladas); con VMs de verdad, la cantidad está en el state de OpenTofu |

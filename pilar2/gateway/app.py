@@ -12,6 +12,7 @@ cuenta los shares que manda (BC-63).
 
 import json
 import logging
+import random
 import threading
 import time
 from collections import OrderedDict
@@ -32,7 +33,12 @@ ENTREGADAS = Counter("blockchain_tareas_entregadas", "Rangos entregados a los mi
 VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola: su minero dejó de avisar "
                    "(sin_aviso) o se le pasó el plazo (plazo, BC-74)", ["motivo"])
 SHARES = Counter("blockchain_shares", "Shares que mandaron los mineros", ["resultado"])  # aceptado o descartado
-RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma o no_aprobado
+RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma, no_aprobado o suspendido
+SUSPENSIONES = Counter("blockchain_suspensiones", "Mineros suspendidos por contestar sin_solucion sin buscar (BC-75)",
+                       ["motivo"])  # estadistica o reverificacion
+REVERIFICACIONES = Counter("blockchain_reverificaciones", "Rangos sin solución reverificados con otro minero (BC-75)",
+                           ["resultado"])  # pedida, mentira, sin_solucion, descartada
+POCOS_SHARES = Counter("blockchain_pocos_shares", "Préstamos seguidos con muchos menos shares que los esperados (aviso, BC-75)")
 TEXTOS_EN_MEMORIA, TAREAS_EN_MEMORIA = 512, 16
 
 TIPOS = ("gpu", "cpu")
@@ -52,10 +58,11 @@ class YaTienePrestamo(Exception):
 # Presta un rango, uno por minero (BC-74): si el minero ya tiene uno (prestamo_de:<minero>), no hace nada y
 # devuelve 0; el rango vuelve a la cola. Si no, anota el préstamo, su vencimiento, el rango en el historial
 # (BC-59) y el índice del minero. KEYS: prestamo:<miembro>, prestamos, historial:<minero>, prestamo_de:<minero>.
-# ARGV: miembro, mensaje, minero, vence, desde, plazo.
+# ARGV: miembro, mensaje, minero, vence, desde, plazo, texto_de ('' o la cuenta del minero reverificado, BC-75).
 LUA_PRESTAR = """
 if not redis.call('SET', KEYS[4], ARGV[1], 'NX') then return 0 end
 redis.call('HSET', KEYS[1], 'mensaje', ARGV[2], 'minero', ARGV[3], 'desde', ARGV[5], 'plazo', ARGV[6])
+if ARGV[7] ~= '' then redis.call('HSET', KEYS[1], 'texto_de', ARGV[7]) end
 redis.call('ZADD', KEYS[2], ARGV[4], ARGV[1])
 redis.call('HINCRBY', KEYS[3], 'rangos', 1)
 return 1
@@ -172,10 +179,12 @@ def es_numero(valor, minimo=0):
 
 class Gateway:
     def __init__(self, redis, rabbit, cola_rangos="rangos", cola_resultados="resultados",
-                 lease=30, minero_vivo=MINERO_VIVO):
+                 lease=30, minero_vivo=MINERO_VIVO, umbral=contrato.UMBRAL_SIN_SOLUCION,
+                 muestreo=contrato.MUESTREO_SIN_SOLUCION, azar=random.random):
         self.redis, self.rabbit = redis, rabbit
         self.cola_rangos, self.cola_resultados = cola_rangos, cola_resultados
         self.lease, self.minero_vivo = lease, minero_vivo
+        self.umbral, self.muestreo, self.azar = umbral, muestreo, azar  # BC-75
         self._renovar = redis.register_script(LUA_RENOVAR)
         self._reclamar = redis.register_script(LUA_RECLAMAR)
         self._sumar_shares = redis.register_script(LUA_SHARES)
@@ -203,7 +212,29 @@ class Gateway:
             log.warning("Pedido %s %s de %s, que no es un minero aprobado", metodo, ruta, minero)
             self.pedir_alta(minero, cuerpo)
             return None, (403, f"la cuenta {minero} no es un minero aprobado: el organizador la tiene que aprobar")
+        suspension = self.altas.suspendido(minero)
+        if suspension:
+            RECHAZOS.labels("suspendido").inc()
+            return None, (403, f"la cuenta {minero} está suspendida ({suspension['motivo']}): "
+                               "el organizador decide si la reactiva o le da de baja")
         return minero, None
+
+    def suspender(self, minero, motivo, evidencia):
+        """BC-75: el minero deja de recibir rangos hasta que el organizador decida. Su préstamo vivo vuelve a la cola."""
+        if not self.altas.suspender(minero, motivo, evidencia):
+            return False
+        SUSPENSIONES.labels(motivo).inc()
+        alias = self.redis.hget(contrato.NODO.format(minero), "alias") or minero[:12]
+        log.warning("Minero suspendido: %s (%s) por %s: %s", alias, minero, motivo, json.dumps(evidencia))
+        miembro = self.redis.get(contrato.PRESTAMO_DE.format(minero))
+        if miembro:
+            prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+            if prestamo.get("mensaje"):
+                mensaje = json.loads(prestamo["mensaje"])
+                if self.tarea_en_curso(mensaje["tarea"]):
+                    self.rabbit.publicar(self.cola_rangos, mensaje)
+            self._liberar(miembro)
+        return True
 
     def pedir_alta(self, minero, cuerpo):
         """Un minero firmado y sin aprobar queda en `altas:pendientes` (BC-58): la firma ya demuestra que
@@ -331,7 +362,8 @@ class Gateway:
             self._cortar_por_plazo(minero, miembro, prestamo, mensaje)
             return None
         texto = self.texto(mensaje["tarea"], prestamo.get("texto_de") or minero)
-        return {**mensaje, "bloque": texto} if texto is not None else None
+        limpio = {k: v for k, v in mensaje.items() if k not in ("reverifica", "rango_original")}
+        return {**limpio, "bloque": texto} if texto is not None else None
 
     def plazo(self, minero, mensaje):
         """Segundos que tiene `minero` para recorrer el rango (BC-74): PLAZO_FACTOR veces lo que debería tardar
@@ -355,8 +387,15 @@ class Gateway:
         préstamo), el rango vuelve a la cola."""
         if not self.tarea_en_curso(mensaje["tarea"]):
             log.info("Descarto el rango %s de la tarea %s, que ya se cerró", mensaje["rango"], mensaje["tarea"])
+            if mensaje.get("reverifica"):
+                REVERIFICACIONES.labels("descartada").inc()
             return False
-        texto = self.texto(mensaje["tarea"], minero)
+        texto_de = mensaje.get("reverifica") or ""
+        if texto_de == minero:
+            # No se reverifica a sí mismo. Si es el único minero, la reverificación se pierde (se descarta).
+            REVERIFICACIONES.labels("descartada").inc()
+            return False
+        texto = self.texto(mensaje["tarea"], texto_de or minero)
         if texto is None:
             log.error("La tarea %s no tiene todo lo que hace falta para armar el texto: descarto el rango %s",
                       mensaje["tarea"], mensaje["rango"])
@@ -367,10 +406,10 @@ class Gateway:
                 keys=[PRESTAMO.format(miembro), contrato.PRESTAMOS, contrato.HISTORIAL.format(minero),
                       contrato.PRESTAMO_DE.format(minero)],
                 args=[miembro, json.dumps(mensaje), minero, ahora + self.lease, ahora,
-                      ahora + self.plazo(minero, mensaje)]):
+                      ahora + self.plazo(minero, mensaje), texto_de]):
             raise YaTienePrestamo(minero)
-        log.info("Rango %s prestado a %s", miembro, minero)
-        return {**mensaje, "bloque": texto}
+        log.info("Rango %s prestado a %s%s", miembro, minero, f" (reverifica a {texto_de})" if texto_de else "")
+        return {k: v for k, v in mensaje.items() if k not in ("reverifica", "rango_original")} | {"bloque": texto}
 
     # ── Lo que mide el gateway (BC-74) ──
 
@@ -427,6 +466,12 @@ class Gateway:
         else:
             estado = "sin_datos"
         self.redis.hset(nodo, mapping={"medido": int(medido), "medido_estado": estado})
+        ultimos = registros[-3:]
+        if len(ultimos) == 3 and all(r["esperados"] >= 8 and r["shares"] < r["esperados"] / 4 for r in ultimos):
+            # BC-75: es una señal, no una prueba (un bench que dice de más da lo mismo): sólo un aviso.
+            POCOS_SHARES.inc()
+            log.warning("%s mandó muchos menos shares que los esperados en sus últimos 3 préstamos (%s de %s)",
+                        minero, [r["shares"] for r in ultimos], [round(r["esperados"]) for r in ultimos])
         return medido, estado
 
     # ── Shares (BC-63) ──
@@ -445,7 +490,7 @@ class Gateway:
             SHARES.labels("descartado").inc(len(nonces))
             return 0
         mensaje = json.loads(prestamo["mensaje"])
-        corto, texto = contrato.prefijo_share(mensaje["prefijo"]), self.texto(tarea, minero)
+        corto, texto = contrato.prefijo_share(mensaje["prefijo"]), self.texto(tarea, prestamo.get("texto_de") or minero)
         if corto is None or texto is None:
             SHARES.labels("descartado").inc(len(nonces))
             return 0
@@ -472,15 +517,70 @@ class Gateway:
             return 400, {"error": "hace falta {tarea, rango, minero (el de X-Minero)} y {nonce, hash} o "
                                   "{sin_solucion: true}, con shares opcional (lista de nonces)"}
         shares = self.aceptar_shares(minero, datos["tarea"], datos["rango"], datos.get("shares"))
+        miembro = f"{datos['tarea']}:{datos['rango']}"
+        prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
+        propio = prestamo.get("minero") == minero and "mensaje" in prestamo
+        if propio and prestamo.get("texto_de"):
+            self._reverificado(minero, prestamo, datos)  # BC-75: no va al TrP
+            self._terminar(minero, miembro)
+            return 202, {"shares": shares}
+        if propio and datos.get("sin_solucion") and self._revisar_sin_solucion(minero, prestamo):
+            self._terminar(minero, miembro)  # mintió: el rango vuelve a la cola en vez de ir al TrP
+            return 202, {"shares": shares}
         mensaje = {k: v for k, v in datos.items() if k != "shares"}
         try:
             self.rabbit.publicar(self.cola_resultados, mensaje)
         except Exception as error:
             log.error("No se pudo publicar el resultado de %s:%s: %r", datos["tarea"], datos["rango"], error)
             return 503, {"error": "RabbitMQ no disponible"}
-        miembro = f"{datos['tarea']}:{datos['rango']}"
         self._terminar(minero, miembro)
         return 202, {"shares": shares}
+
+    # ── BC-75: los que contestan `sin_solucion` sin buscar ──
+
+    def _revisar_sin_solucion(self, minero, prestamo):
+        """Un `sin_solucion` de un rango propio. Devuelve True si se lo suspendió (y el rango volvió a la cola).
+
+        - Si la probabilidad de que el rango no tenga solución es menor que el umbral, es una mentira: se suspende.
+        - Si no, con probabilidad `muestreo` y mientras la tarea siga en curso, se reverifica con otro minero.
+        """
+        mensaje = json.loads(prestamo["mensaje"])
+        tamano = mensaje["hasta"] - mensaje["desde"] + 1
+        probabilidad = contrato.prob_sin_solucion(tamano, mensaje["prefijo"])
+        if probabilidad < self.umbral:
+            evidencia = {"tarea": mensaje["tarea"], "rango": mensaje["rango"], "nonces": tamano,
+                         "prefijo": mensaje["prefijo"], "probabilidad": probabilidad}
+            self.suspender(minero, "estadistica", evidencia)  # su préstamo (este rango) vuelve a la cola
+            return True
+        if self.muestreo > 0 and self.azar() < self.muestreo and self.tarea_en_curso(mensaje["tarea"]):
+            self.rabbit.publicar(self.cola_rangos, {**mensaje, "rango": mensaje["rango"] + contrato.REVERIFICACION,
+                                                    "rango_original": mensaje["rango"], "reverifica": minero})
+            REVERIFICACIONES.labels("pedida").inc()
+            log.info("Reverifico el rango %s:%s que %s devolvió sin solución (probabilidad %.2g)",
+                     mensaje["tarea"], mensaje["rango"], minero, probabilidad)
+        return False
+
+    def _reverificado(self, verificador, prestamo, datos):
+        """Lo que devolvió quien reverificaba: si encontró un nonce con el texto del otro, el otro mintió.
+
+        El bloque no se usa: tiene la coinbase del que mintió, y si entrara cobraría la recompensa. Si dice
+        `sin_solucion`, no se concluye nada (puede que de verdad no haya)."""
+        mensaje, original = json.loads(prestamo["mensaje"]), prestamo["texto_de"]
+        if datos.get("sin_solucion"):
+            REVERIFICACIONES.labels("sin_solucion").inc()
+            return
+        texto = self.texto(mensaje["tarea"], original)
+        nonce = datos.get("nonce")
+        if texto is None or not mensaje["desde"] <= nonce <= mensaje["hasta"]:
+            return
+        hash_ = contrato.hash_bloque(texto, nonce)
+        if hash_ != datos.get("hash") or not contrato.cumple(hash_, mensaje["prefijo"]):
+            log.warning("La reverificación de %s mandó un nonce que no sirve: se ignora", verificador)
+            return
+        REVERIFICACIONES.labels("mentira").inc()
+        self.suspender(original, "reverificacion", {
+            "tarea": mensaje["tarea"], "rango": mensaje.get("rango_original"), "nonce": nonce, "hash": hash_,
+            "verificador": verificador})
 
     def _terminar(self, minero, miembro):
         """Un préstamo que terminó (resultado o «cortá»): se mide y se suelta."""
@@ -679,6 +779,8 @@ class ColectorMineros:
         mineros = GaugeMetricFamily("blockchain_mineros", "Mineros vivos por tipo", labels=["tipo"])
         hashes = GaugeMetricFamily("blockchain_hashes_por_segundo", "Potencia viva por tipo", labels=["tipo"])
         epoca = GaugeMetricFamily("blockchain_epoca", "Época en curso (cada 10 bloques)")
+        suspendidos = GaugeMetricFamily("blockchain_mineros_suspendidos",
+                                        "Mineros suspendidos que esperan la decisión del organizador (BC-75)")
         contadores = [CounterMetricFamily(nombre, ayuda, labels=["minero", "tipo"])
                       for nombre, _, ayuda in self.CONTADORES]
         medidas = {nombre: GaugeMetricFamily(nombre, ayuda, labels=["minero", "tipo"]) for nombre, ayuda in self.MEDIDAS}
@@ -704,11 +806,13 @@ class ColectorMineros:
                             medidas[nombre].add_metric(etiquetas, valor or 0)
                 if lista:
                     epoca.add_metric([], lista[0]["epoca"])
+                suspendidos.add_metric([], self.gateway.redis.hlen(contrato.SUSPENDIDOS))
             except Exception:
                 log.exception("No se pudieron leer los mineros para /metrics")
         yield mineros
         yield hashes
         yield epoca
+        yield suspendidos
         yield from contadores
         yield from medidas.values()
 
@@ -790,7 +894,9 @@ def main():
                       cola_rangos=config.texto("COLA_RANGOS", "rangos"),
                       cola_resultados=config.texto("COLA_RESULTADOS", "resultados"),
                       lease=config.entero("TASK_LEASE_SECONDS", 30),
-                      minero_vivo=config.entero("MINERO_VIVO_SEGUNDOS", MINERO_VIVO))
+                      minero_vivo=config.entero("MINERO_VIVO_SEGUNDOS", MINERO_VIVO),
+                      umbral=float(config.texto("UMBRAL_SIN_SOLUCION", str(contrato.UMBRAL_SIN_SOLUCION))),
+                      muestreo=float(config.texto("MUESTREO_SIN_SOLUCION", str(contrato.MUESTREO_SIN_SOLUCION))))
     agregar_rutas(servicio.app, gateway)
     threading.Thread(target=revisar_siempre, args=(gateway, config.entero("REVISAR_PRESTAMOS_SEGUNDOS", 5)),
                      name="prestamos", daemon=True).start()

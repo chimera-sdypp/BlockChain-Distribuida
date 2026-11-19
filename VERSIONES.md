@@ -1,8 +1,12 @@
 # Versiones
 
-Versión actual: **0.7.0** (19/11/2026)
+Versión actual: **0.7.1** (19/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.7.1 — 19/11/2026
+
+- `preparar.sh reiniciar` con la v3 (#78): apaga los nodos y borra su copia de la cadena (con la vieja, la nueva les aparecía como una historia reescrita), y genera la clave del escalador en Redis aunque KEDA lo tenga en 0, porque el FLUSHALL la borraba con su permiso. Imprime la clave para darle el permiso.
 
 ## 0.7.0 — 19/11/2026
 

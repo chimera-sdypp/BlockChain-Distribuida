@@ -52,6 +52,7 @@ PRESTAMO_DE = "prestamo_de:{}"       # minero → su préstamo vivo (<tarea>:<ra
 MEDICION = "medicion:{}"             # lista: los últimos préstamos de cada minero (JSON con trabajo, segundos y shares)
 MEDICION_PRESTAMOS = 20              # cuántos préstamos entran en la medición
 MEDICION_SHARES_MINIMOS = 20         # shares esperados (según su bench) para que la medición cuente
+MEDICION_SEGUNDOS_MINIMOS = 2.0      # un préstamo más corto no se mide: su tiempo es la red, no el hashing
 # BC-75: los mineros que contestan `sin_solucion` sin buscar.
 SUSPENDIDOS = "suspendidos"          # cuenta → JSON {nombre, motivo, evidencia, cuando}: no reciben rangos hasta que
                                      # el organizador confirme la baja o los reactive

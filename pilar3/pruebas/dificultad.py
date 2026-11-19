@@ -1,6 +1,6 @@
 """Prueba de ajuste de dificultad (BC-60): convergencia desde prefijo bajo y caída sin GPU.
 
-    python pilar3/pruebas/dificultad.py --api http://<traefik> --salida resultados/dificultad.csv
+    python pilar3/pruebas/dificultad.py --api http://<traefik> --gateway http://<IP>:8081 --salida resultados/dificultad.csv
 
 Arranca el TrP con un prefijo bajo (`PREFIJO_INICIAL`, p. ej. 2), va midiendo cómo sube cada
 `VENTANA_AJUSTE` bloques hasta converger, y opcionalmente espera a que se saque la GPU (`--esperar-gpu`)
@@ -20,19 +20,21 @@ import time
 from datetime import datetime, timezone
 
 from firmar import CUENTA, PRIVADA, contrato
-from prefijos import api, kubectl, medir, vivos
+from prefijos import api, gateway_url, kubectl, medir, vivos
 
 COLUMNAS = ["bloque", "altura", "fase", "prefijo", "segundos", "rearmados", "minero",
             "gpus_vivas", "cpus_vivas", "block_hash", "publicada"]
 
 
 def configurar_trp(inicial, base, esperado, ventana):
+    # BC-73: el TrP no arranca si ESPACIO_NONCES < 16^PREFIJO_BASE × 4 (con 2^32 alcanza hasta el 6).
     if inicial is None:
-        kubectl("set", "env", "deploy/trp", "PREFIJO_BASE=6", "SEGUNDOS_POR_BLOQUE=60",
+        kubectl("set", "env", "deploy/trp", "PREFIJO_BASE=6", "SEGUNDOS_POR_BLOQUE=60", "ESPACIO_NONCES=4294967296",
                 "VENTANA_AJUSTE=5", "PREFIJO_INICIAL-", "AJUSTAR_PREFIJO-")
     else:
         kubectl("set", "env", "deploy/trp", f"PREFIJO_BASE={base}", f"SEGUNDOS_POR_BLOQUE={esperado}",
-                f"VENTANA_AJUSTE={ventana}", f"PREFIJO_INICIAL={inicial}", "AJUSTAR_PREFIJO=1")
+                f"ESPACIO_NONCES={max(2 ** 32, 16 ** base * 4)}", f"VENTANA_AJUSTE={ventana}",
+                f"PREFIJO_INICIAL={inicial}", "AJUSTAR_PREFIJO=1")
     kubectl("rollout", "status", "deploy/trp", "--timeout=300s")
 
 
@@ -60,9 +62,9 @@ def mandar_y_medir(base, maximo, ventana):
     return None
 
 
-def registrar(escritor, archivo, numero, fase, actual, medido, base):
+def registrar(escritor, archivo, numero, fase, actual, medido, gateway):
     segundos, rearmados, minero, publicada = medido
-    gpus, cpus = vivos(base)
+    gpus, cpus = vivos(gateway)  # los mineros se listan en el gateway (BC-54), no en la API de la app
     prefijo = len(actual.get("prefijo", ""))
     escritor.writerow({
         "bloque": numero,
@@ -85,6 +87,7 @@ def registrar(escritor, archivo, numero, fase, actual, medido, base):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--api", required=True, help="URL de Traefik (frontend y API)")
+    p.add_argument("--gateway", help="URL del gateway, que lista los mineros (GET /mineros); por defecto GATEWAY_URL")
     p.add_argument("--salida", required=True, help="CSV de resultados")
     p.add_argument("--inicial", type=int, default=2, help="PREFIJO_INICIAL para ver la convergencia")
     p.add_argument("--base", type=int, default=8, help="PREFIJO_BASE máximo durante la prueba")
@@ -98,6 +101,7 @@ def main():
                    help="pausa tras la fase de subida para desconectar manualmente la GPU y seguir midiendo")
     args = p.parse_args()
     base = args.api.rstrip("/")
+    gateway = gateway_url(args.gateway)
 
     with open(args.salida, "w", newline="") as archivo:
         escritor = csv.DictWriter(archivo, COLUMNAS)
@@ -113,7 +117,7 @@ def main():
                 if res is None:
                     print(f"   bloque {numero}: sin solución en {args.maximo} s; corto", flush=True)
                     return
-                registrar(escritor, archivo, numero, "convergencia", *res, base)
+                registrar(escritor, archivo, numero, "convergencia", *res, gateway)
 
             if args.esperar_gpu:
                 input("\n>> Desconectá la GPU, esperá ~20 s (VIVO_SEGUNDOS) y apretá Enter para seguir… ")
@@ -123,7 +127,7 @@ def main():
                     if res is None:
                         print(f"   bloque {numero}: sin solución en {args.maximo} s; corto", flush=True)
                         return
-                    registrar(escritor, archivo, numero, "sin_gpu", *res, base)
+                    registrar(escritor, archivo, numero, "sin_gpu", *res, gateway)
         finally:
             print("== restaurando configuración del TrP", flush=True)
             configurar_trp(None, None, None, None)

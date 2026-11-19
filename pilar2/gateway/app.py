@@ -442,7 +442,12 @@ class Gateway:
         if len(prefijo) < 2 or "desde" not in prestamo:
             return None  # con prefijo de 1 no hay shares
         ahora = time.time() if ahora is None else ahora
-        segundos = max(0.05, ahora - float(prestamo["desde"]))
+        segundos = ahora - float(prestamo["desde"])
+        if segundos < contrato.MEDICION_SEGUNDOS_MINIMOS:
+            # Un préstamo corto (prefijo chico para su potencia: encuentra la solución en unos pocos hashes, o una
+            # GPU que recorre el rango en décimas) dura lo que tarda la red, no lo que tarda en hashear: sus shares
+            # dirían una potencia ridícula. No se mide.
+            return None
         dificultad = 16 ** (len(prefijo) - 1)
         shares = int(prestamo.get("shares") or 0)
         nodo = contrato.NODO.format(minero)

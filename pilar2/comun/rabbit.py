@@ -7,6 +7,7 @@ instancia: es segura entre hilos y, después de `conectar`, se mantiene viva sol
 
 import json
 import logging
+import socket
 import threading
 import time
 from functools import partial
@@ -17,7 +18,9 @@ from pika.exceptions import AMQPChannelError, AMQPConnectionError
 
 log = logging.getLogger(__name__)
 
-ERRORES = (AMQPConnectionError, AMQPChannelError)
+# socket.gaierror: pika no envuelve la falla de DNS (por ejemplo, el pod arranca antes que el DNS del
+# cluster resuelva «rabbitmq»); sin esto, el hilo que conecta muere y el servicio nunca queda listo.
+ERRORES = (AMQPConnectionError, AMQPChannelError, socket.gaierror)
 # Fallas de la infraestructura, no del mensaje: por ejemplo, Redis mientras Sentinel elige otro primario.
 # ReadOnlyError: se escribió en el primario viejo, que ya pasó a ser réplica.
 TRANSITORIOS = ERRORES + (redis.ConnectionError, redis.TimeoutError, redis.ReadOnlyError)

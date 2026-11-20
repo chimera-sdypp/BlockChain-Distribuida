@@ -11,6 +11,8 @@ El organizador opera desde la billetera descargable y sus listas dejan de ser p�
 - **Modo organizador en la billetera** (#82, BC-87): con el `.jwk` del organizador, botones para aprobar (con carga), rechazar, dar de baja, cargar saldo, dar permisos y reactivar mineros. Las actas y las cargas se firman en el navegador, desde el archivo verificado por su SHA-256; un test con node comprueba que salen idénticas a las de `comun/contrato.py`.
 - **Sin panel del organizador en la nube** (#83, BC-88): se borra `/organizador`. Los pedidos de alta y los mineros suspendidos ya no son públicos (se borran `GET /api/altas/pendientes` y `GET /api/suspendidos`): se leen en `/api/organizador/altas` y `/api/organizador/suspendidos`, firmados con `X-Organizador`. En la billetera, la sección del organizador aparece sólo cuando el backend acepta la firma de la clave cargada. `python -m claves pendientes` pide la clave del organizador. Las cuentas y los saldos siguen públicos.
 - El backend acepta CORS en las cuatro rutas firmadas que usa la billetera (las dos lecturas, rechazar y reactivar).
+- Arreglo (#81): el escalador vuelve a pedir el alta delegada de las VMs que creó antes de tener el permiso del organizador. Antes la pedía una sola vez, dentro del `tofu apply`, y la VM quedaba prendida, cobrando y sin alta.
+- Diagramas generales de los pilares 2 y 3 con la v0.7.0 en los README (#80): nodos verificadores, validadores y la verificación fuera de GCP.
 
 ## 0.7.1 — 19/11/2026
 

@@ -31,7 +31,7 @@
   table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--borde); vertical-align: top; }
   .chip { display: inline-block; padding: 0 8px; border-radius: 999px; border: 1px solid currentColor; font-size: .85em; }
   .grande { font-size: 1.6rem; font-weight: 600; } #registro { max-height: 180px; overflow: auto; font-size: .85em; }
-  .tabla { overflow-x: auto; }
+  .tabla { overflow-x: auto; } td input { width: 7em; } details > summary { cursor: pointer; font-weight: 600; margin: 12px 0; }
 </style>
 </head>
 <body>
@@ -99,6 +99,61 @@
     <h3>Registro</h3>
     <div id="registro" class="mono suave"></div>
   </section>
+
+  <details id="modo-org">
+    <summary>Modo organizador</summary>
+    <section>
+      <h2>Tu clave de organizador</h2>
+      <p class="suave">Aprobar, dar de baja, cargar saldo y dar permisos son actas firmadas que entran en la cadena. Acá se
+        firman en este navegador, con la clave que cargues: es la misma página que bajaste y verificaste, no una que sirve
+        la nube. Lo mismo hace <span class="mono">python -m claves</span>.</p>
+      <label>Tu .jwk de organizador <input id="org-archivo" type="file" accept=".jwk,.json,application/json"></label>
+      <p id="org-cuenta" class="mono suave">Sin clave cargada.</p>
+      <button id="org-recargar" class="secundario" type="button">Actualizar las listas</button>
+    </section>
+
+    <section>
+      <h2>Pedidos de alta</h2>
+      <p class="suave">A un usuario se le puede cargar saldo en el mismo paso. Queda aprobado cuando su alta entra en un
+        bloque; un minero ya puede minar apenas el NCT la valida.</p>
+      <div id="org-altas" class="tabla"></div>
+    </section>
+
+    <section>
+      <h2>Mineros suspendidos</h2>
+      <p class="suave">Los suspende el gateway por contestar «sin solución» donde la había. Reactivarlo no va a la cadena;
+        la baja, sí.</p>
+      <div id="org-suspendidos" class="tabla"></div>
+    </section>
+
+    <section>
+      <h2>Cuentas con alta</h2>
+      <p class="suave">La baja saca la cuenta de la red cuando entra en un bloque; el saldo queda donde está.</p>
+      <div id="org-cuentas" class="tabla"></div>
+    </section>
+
+    <section>
+      <h2>Cargar saldo y dar permisos</h2>
+      <div class="fila">
+        <label>Cargar a (cuenta) <input id="org-carga-destino" class="mono" spellcheck="false" maxlength="64"></label>
+        <label>Monto <input id="org-carga-monto" type="number" min="1" step="1"></label>
+      </div>
+      <button id="org-cargar" type="button">Firmar la carga</button>
+      <div class="fila">
+        <label>Permiso para la clave <input id="org-permiso-clave" class="mono" spellcheck="false" maxlength="64"></label>
+        <label>Prefijo de los mineros (vacío: lo revoca) <input id="org-permiso-prefijo" value="minero-cpu-" spellcheck="false"></label>
+      </div>
+      <button id="org-permiso" type="button">Firmar el permiso</button>
+      <p class="suave">El permiso deja a esa clave (el escalador) dar de alta y de baja sólo mineros cuyo nombre empieza con
+        el prefijo.</p>
+    </section>
+
+    <section>
+      <h2>Lo que firmaste</h2>
+      <div class="tabla"><table><thead><tr><th>acta o carga</th><th>qué</th><th>estado</th></tr></thead>
+        <tbody id="org-firmadas"></tbody></table></div>
+    </section>
+  </details>
 </main>
 
 <script>
@@ -356,6 +411,161 @@ function pintarMovimientos(copia, c, finalizada) {
       el("td", {}, el("span", { clase: `chip ${altura <= finalizada ? "bien" : ""}` }, altura <= finalizada ? "finalizada" : "confirmada"))));
   $("movimientos").replaceChildren(...(filas.length ? filas : [el("tr", {}, el("td", { colspan: "5", clase: "suave" }, "Sin movimientos."))]));
 }
+
+// ── Modo organizador: las actas y las cargas se firman acá, con la clave del organizador ──
+let org = null;           // {privada: CryptoKey, cuenta}
+let ultimaEmision = 0;    // el último número de «emision» que usó esta página (cargas y actas comparten la secuencia)
+const firmadas = [];      // [{id, que, estado, motivo?}], la más nueva primero
+
+const firmarOrg = async (texto) => hex(await crypto.subtle.sign({ name: "Ed25519" }, org.privada, codificador.encode(texto)));
+const ahora = () => Math.floor(Date.now() / 1000);
+
+$("org-archivo").addEventListener("change", async (e) => {
+  try {
+    const jwk = JSON.parse(await e.target.files[0].text());
+    const privada = await crypto.subtle.importKey("jwk", { kty: "OKP", crv: "Ed25519", d: jwk.d, x: jwk.x },
+                                                  { name: "Ed25519" }, false, ["sign"]);
+    org = { privada, cuenta: hex(deB64url(jwk.x)) };
+    $("org-cuenta").textContent = `Organizador: ${org.cuenta}`;
+    await recargarOrg();
+  } catch (error) { anotar(`No es un .jwk Ed25519: ${error.message}`, "mal"); }
+});
+
+// El número siguiente de «emision»: el mayor entre el que dice el backend y el último que usó esta página (el NCT
+// todavía puede no haber validado el anterior).
+async function siguienteEmision() {
+  const { ok, status, cuerpo } = await api("/api/cuentas/emision");
+  if (!ok) throw new Error(`no se pudo leer el último número de emisión (${status})`);
+  ultimaEmision = Math.max(ultimaEmision, cuerpo.nonce);
+  return ultimaEmision + 1;
+}
+
+async function mandarFirmada(tx, que) {
+  const firmada = { ...tx, firma: await firmarOrg(Verificador.mensajeDe(tx)) };
+  const { ok, status, cuerpo } = await api("/api/transacciones", { method: "POST", headers: { "content-type": "application/json" },
+                                                                  body: JSON.stringify(firmada) });
+  if (!ok) throw new Error(`${firmada.id} no entró (${status}): ${errorDe(cuerpo)}`);
+  ultimaEmision = Math.max(ultimaEmision, firmada.nonce);
+  firmadas.unshift({ id: firmada.id, que, estado: "recibida" });
+  pintarFirmadas();
+  anotar(`Firmada y mandada: ${firmada.id} (${que}).`);
+}
+
+// Varias actas o cargas seguidas, con números consecutivos.
+async function firmarYMandar(armar) {
+  if (!org) throw new Error("primero cargá tu .jwk de organizador");
+  let numero = await siguienteEmision();
+  for (const [tx, que] of armar(() => numero++, ahora())) await mandarFirmada(tx, que);
+}
+
+// Rechazar un pedido y reactivar un minero no van a la cadena: son pedidos firmados con X-Organizador.
+async function pedidoOrg(ruta, datos) {
+  if (!org) throw new Error("primero cargá tu .jwk de organizador");
+  const cuerpo = JSON.stringify(datos), tiempo = ahora();
+  const firma = await firmarOrg(Verificador.mensajePedido("POST", ruta, tiempo, cuerpo));
+  const r = await api(ruta, { method: "POST", body: cuerpo, headers: { "content-type": "application/json",
+    "X-Organizador": org.cuenta, "X-Tiempo": String(tiempo), "X-Firma": firma } });
+  if (!r.ok) throw new Error(`${ruta} contestó ${r.status}: ${errorDe(r.cuerpo)}`);
+}
+
+// Un botón que corre una acción y deja el resultado en el registro; con `confirmar`, pide un segundo clic.
+function boton(texto, accion, { confirmar = false, clase = "" } = {}) {
+  const b = el("button", { type: "button", clase }, texto);
+  b.addEventListener("click", async () => {
+    if (confirmar && !b.dataset.seguro) {
+      b.dataset.seguro = "1"; b.textContent = "¿Seguro?";
+      setTimeout(() => { delete b.dataset.seguro; b.textContent = texto; }, 4000);
+      return;
+    }
+    b.disabled = true;
+    try { await accion(); await recargarOrg(); }
+    catch (error) { anotar(`No se pudo: ${error.message}`, "mal"); }
+    b.disabled = false;
+  });
+  return b;
+}
+
+const tablaOrg = (id, columnas, filas, vacio) => $(id).replaceChildren(filas.length
+  ? el("table", {}, el("thead", {}, el("tr", {}, ...columnas.map((c) => el("th", {}, c)))), el("tbody", {}, ...filas))
+  : el("p", { clase: "suave" }, vacio));
+
+function aprobar(p, monto) {
+  return firmarYMandar((siguiente, t) => {
+    const actas = [[Verificador.armarActa("alta", siguiente(), p.cuenta, `${p.tipo}:${p.nombre}`, t), `alta de ${p.nombre} (${p.tipo})`]];
+    if (p.tipo === "usuario" && monto > 0) actas.push([Verificador.armarCarga(siguiente(), p.cuenta, monto, t), `${monto} a ${p.nombre}`]);
+    return actas;
+  });
+}
+const darDeBaja = (c, motivo = "") => firmarYMandar((siguiente, t) =>
+  [[Verificador.armarActa("baja", siguiente(), c.cuenta, motivo, t), `baja de ${c.nombre || corto(c.cuenta)}`]]);
+const cargar = (destino, monto, nombre) => firmarYMandar((siguiente, t) =>
+  [[Verificador.armarCarga(siguiente(), destino, monto, t), `${monto} a ${nombre || corto(destino)}`]]);
+
+const MOTIVOS = { estadistica: "sin solución imposible", reverificacion: "otro minero encontró la solución" };
+
+async function recargarOrg() {
+  const [altas, cuentas, suspendidos] = await Promise.all([api("/api/altas/pendientes"), api("/api/cuentas"), api("/api/suspendidos")]);
+  const fallida = [altas, cuentas, suspendidos].find((r) => !r.ok);
+  if (fallida) { anotar(`El backend no respondió (${fallida.status}): ${errorDe(fallida.cuerpo)}`, "mal"); return; }
+  const delOrg = cuentas.cuerpo.cuentas.find((c) => c.tipo === "organizador");
+  if (org && delOrg && delOrg.cuenta !== org.cuenta) {
+    anotar(`Esa clave no es la del organizador de la cadena (${corto(delOrg.cuenta)}): el NCT va a rechazar lo que firmes.`, "mal");
+  }
+  tablaOrg("org-altas", ["nombre", "tipo", "cuenta", "saldo inicial", ""], altas.cuerpo.pendientes.map((p) => {
+    const monto = el("input", { type: "number", min: "0", step: "1", placeholder: "0" });
+    return el("tr", {}, el("td", {}, p.nombre || "—"), el("td", {}, p.tipo), el("td", { clase: "mono", title: p.cuenta }, corto(p.cuenta)),
+      el("td", {}, p.tipo === "usuario" ? monto : "—"),
+      el("td", {}, boton("Aprobar", () => aprobar(p, Number(monto.value || 0))),
+        boton("Rechazar", () => pedidoOrg("/api/organizador/rechazar", { cuenta: p.cuenta }), { confirmar: true, clase: "secundario" })));
+  }), "No hay pedidos.");
+  tablaOrg("org-suspendidos", ["nombre", "cuenta", "motivo", ""], suspendidos.cuerpo.suspendidos.map((s) =>
+    el("tr", {}, el("td", {}, s.nombre || "—"), el("td", { clase: "mono", title: s.cuenta }, corto(s.cuenta)),
+      el("td", {}, MOTIVOS[s.motivo] || s.motivo),
+      el("td", {}, boton("Reactivar", () => pedidoOrg("/api/organizador/reactivar", { cuenta: s.cuenta }), { clase: "secundario" }),
+        boton("Dar de baja", () => darDeBaja(s, MOTIVOS[s.motivo] || ""), { confirmar: true })))), "No hay mineros suspendidos.");
+  tablaOrg("org-cuentas", ["nombre", "tipo", "cuenta", "saldo", ""], cuentas.cuerpo.cuentas.map((c) => {
+    const monto = el("input", { type: "number", min: "1", step: "1", placeholder: "monto" });
+    return el("tr", {}, el("td", {}, c.nombre || "—"), el("td", {}, c.tipo), el("td", { clase: "mono", title: c.cuenta }, corto(c.cuenta)),
+      el("td", {}, String(c.saldo)),
+      el("td", {}, c.tipo === "organizador" ? "" : el("span", {},
+        c.tipo === "usuario" ? monto : "",
+        c.tipo === "usuario" ? boton("Cargar", () => cargar(c.cuenta, Number(monto.value), c.nombre)) : "",
+        boton("Dar de baja", () => darDeBaja(c), { confirmar: true, clase: "secundario" }))));
+  }), "No hay cuentas con alta.");
+  await seguirFirmadas();
+}
+
+function pintarFirmadas() {
+  $("org-firmadas").replaceChildren(...firmadas.slice(0, 30).map((f) => el("tr", {}, el("td", { clase: "mono" }, f.id),
+    el("td", {}, f.que), el("td", { clase: f.estado === "rechazada" ? "mal" : f.estado === "confirmada" ? "bien" : "" },
+      `${f.estado}${f.motivo ? ` (${f.motivo})` : ""}`))));
+}
+async function seguirFirmadas() {
+  const abiertas = firmadas.filter((f) => f.estado !== "confirmada" && f.estado !== "rechazada");
+  for (const f of abiertas) {
+    const { ok, cuerpo } = await api(`/api/transacciones/${f.id}`);
+    if (ok) Object.assign(f, { estado: cuerpo.estado, motivo: cuerpo.motivo });
+    if (f.estado === "rechazada") ultimaEmision = 0;  // una rechazada no gastó su número: se vuelve a leer del backend
+  }
+  if (abiertas.length) pintarFirmadas();
+}
+
+$("org-recargar").addEventListener("click", recargarOrg);
+$("org-cargar").addEventListener("click", async () => {
+  const destino = $("org-carga-destino").value.trim(), monto = Number($("org-carga-monto").value);
+  if (!Verificador.cuentaValida(destino) || !Number.isInteger(monto) || monto < 1) return anotar("Carga: una cuenta (64 hex) y un monto entero ≥ 1.", "mal");
+  try { await cargar(destino, monto); await recargarOrg(); } catch (error) { anotar(`No se pudo: ${error.message}`, "mal"); }
+});
+$("org-permiso").addEventListener("click", async () => {
+  const destino = $("org-permiso-clave").value.trim(), prefijo = $("org-permiso-prefijo").value.trim();
+  if (!Verificador.cuentaValida(destino) || (prefijo && !Verificador.nombreValido(prefijo))) return anotar("Permiso: una clave (64 hex) y un prefijo de nombre válido.", "mal");
+  try {
+    await firmarYMandar((siguiente, t) => [[Verificador.armarActa("permiso", siguiente(), destino, prefijo, t),
+      prefijo ? `permiso a ${corto(destino)} para ${prefijo}*` : `permiso revocado a ${corto(destino)}`]]);
+  } catch (error) { anotar(`No se pudo: ${error.message}`, "mal"); }
+});
+$("modo-org").addEventListener("toggle", () => { if ($("modo-org").open) recargarOrg(); });
+setInterval(() => { if ($("modo-org").open) recargarOrg(); }, 15_000);
 
 $("verificar").addEventListener("click", () => verificar(false));
 $("olvidar").addEventListener("click", () => verificar(true));

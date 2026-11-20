@@ -8,6 +8,8 @@
 - **Confirmada o finalizada:** cada movimiento propio está confirmado (en un bloque) o finalizado (firmado por 2/3 de los validadores). La finalidad la calcula ella: verifica cada firma contra los validadores que salen de **sus** altas en la cadena.
 - **Comparación:** su saldo con la rama de Merkle de `/api/prueba/<cuenta>` y con el saldo del backend, y su punta y raíz con las atestaciones firmadas de 2 o más nodos (por defecto `/nodos/0` y `/nodos/1`; se pueden agregar otros, con la clave del nodo para fijarla). Lo que no coincide sale en rojo.
 
+**Modo organizador** (BC-87): abajo de todo, «Modo organizador». Cargás el `.jwk` del organizador y desde ahí aprobás (con carga), rechazás, das de baja, cargás saldo, das permisos y reactivás mineros suspendidos, con botones. Las actas y las cargas se firman en este navegador, igual que `python -m claves` (un test con node comprueba que salen idénticas a las de `comun/contrato.py`); rechazar y reactivar van firmados con `X-Organizador`. Es el patrón de MetaMask: la interfaz y la firma en un código fijo y verificado, no en una página que sirve la nube.
+
 Reglas fijas: la clave del organizador (vacía: la del génesis) y la recompensa (10 × largo del prefijo).
 
 ```bash

@@ -121,13 +121,18 @@ def test_la_metrica_de_clientes_sube_y_baja(servidor):
 
 @pytest.mark.parametrize("ruta, tipo, texto", [
     ("/alta", "text/html", "/api/altas"),
-    ("/organizador", "text/html", "python -m claves"),  # v3: no pide la clave, da los comandos
-    ("/comun.js", "text/javascript", "pedidoFirmado"),
+    ("/comun.js", "text/javascript", "importarClave"),
     ("/estilos.css", "text/css", "--acento"),
 ])
-def test_las_paginas_del_alta_y_del_organizador_se_sirven(ruta, tipo, texto):
-    """BC-58: «Pedir el alta», el panel del organizador y lo que comparten con la página principal."""
+def test_las_paginas_del_alta_y_lo_que_comparten_se_sirven(ruta, tipo, texto):
+    """BC-58: «Pedir el alta» y lo que comparte con la página principal."""
     app, _ = armar()
     respuesta = TestClient(app).get(ruta)
     assert respuesta.status_code == 200 and respuesta.headers["content-type"].startswith(tipo)
     assert texto in respuesta.text
+
+
+def test_ya_no_hay_panel_del_organizador():
+    """BC-88: el organizador opera desde la billetera descargable; la nube no sirve una página que pida su clave."""
+    app, _ = armar()
+    assert TestClient(app).get("/organizador").status_code == 404

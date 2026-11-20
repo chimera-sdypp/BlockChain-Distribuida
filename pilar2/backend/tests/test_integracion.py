@@ -392,18 +392,20 @@ def test_las_rutas_publicas_tienen_cors_y_el_panel_no(entorno):
     previo = cliente.options("/api/transacciones", headers={**origen, "Access-Control-Request-Method": "POST",
                                                             "Access-Control-Request-Headers": "content-type"})
     assert previo.status_code == 204 and "POST" in previo.headers["access-control-allow-methods"]
-    assert "access-control-allow-origin" not in cliente.get("/api/organizador/altas", headers=origen).headers
+    assert "access-control-allow-origin" not in cliente.get("/api/organizador/cuentas", headers=origen).headers
     firmas = cliente.options("/api/firmas", headers={**origen, "Access-Control-Request-Method": "POST"})
     assert "access-control-allow-origin" not in firmas.headers
 
 
-def test_el_modo_organizador_de_la_billetera_puede_rechazar_y_reactivar(entorno):
-    """BC-87: rechazar y reactivar van firmados con X-Organizador; la billetera los manda desde el disco."""
+def test_el_modo_organizador_de_la_billetera_lee_rechaza_y_reactiva(entorno):
+    """BC-87 y BC-88: los pendientes y los suspendidos, rechazar y reactivar van firmados con X-Organizador; la
+    billetera los pide desde el disco."""
     cliente, _, _ = entorno
-    origen = {"Origin": "null", "Access-Control-Request-Method": "POST",
-              "Access-Control-Request-Headers": "content-type, x-organizador, x-tiempo, x-firma"}
-    for ruta in ("/api/organizador/rechazar", "/api/organizador/reactivar"):
-        previo = cliente.options(ruta, headers=origen)
+    encabezados = "content-type, x-organizador, x-tiempo, x-firma"
+    for metodo, ruta in (("GET", "/api/organizador/altas"), ("GET", "/api/organizador/suspendidos"),
+                         ("POST", "/api/organizador/rechazar"), ("POST", "/api/organizador/reactivar")):
+        previo = cliente.options(ruta, headers={"Origin": "null", "Access-Control-Request-Method": metodo,
+                                                "Access-Control-Request-Headers": encabezados})
         assert previo.status_code == 204 and "x-organizador" in previo.headers["access-control-allow-headers"]
     assert "access-control-allow-origin" not in cliente.options("/api/organizador/cuentas", headers={
         "Origin": "null", "Access-Control-Request-Method": "GET"}).headers

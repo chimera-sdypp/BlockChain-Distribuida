@@ -159,18 +159,24 @@ def test_el_panel_ya_no_aprueba_ni_da_de_baja(entorno):
         assert panel(cliente, "POST", ruta, {"cuenta": CUENTA["zoe"]}).status_code in (404, 405)
 
 
-# ── Las listas son públicas: el panel las muestra sin la clave del organizador (BC-78) ──
+# ── Las cuentas son públicas (están en la cadena); los pendientes y los suspendidos, firmados (BC-88) ──
 
-def test_pedidos_cuentas_y_suspendidos_se_leen_sin_firmar(entorno):
+def test_las_cuentas_son_publicas_y_los_pendientes_y_suspendidos_piden_la_firma(entorno):
     armar, _, redis = entorno
     cliente = armar()
     pedir(cliente, "zoe")
     redis.hset("cuentas", CUENTA["yago"], json.dumps({"tipo": "usuario", "nombre": "yago", "alta": 1}))
     redis.hset("saldos", CUENTA["yago"], 7)
-    assert [p["cuenta"] for p in cliente.get("/api/altas/pendientes").json()["pendientes"]] == [CUENTA["zoe"]]
     assert cliente.get("/api/cuentas").json()["cuentas"] == [{"cuenta": CUENTA["yago"], "tipo": "usuario",
                                                               "nombre": "yago", "alta": 1, "saldo": 7}]
-    assert cliente.get("/api/suspendidos").json() == {"suspendidos": []}
+    for publica in ("/api/altas/pendientes", "/api/suspendidos"):
+        assert cliente.get(publica).status_code == 404
+    altas = panel(cliente, "GET", "/api/organizador/altas")
+    assert [p["cuenta"] for p in altas.json()["pendientes"]] == [CUENTA["zoe"]]
+    assert panel(cliente, "GET", "/api/organizador/suspendidos").json() == {"suspendidos": []}
+    for ruta in ("/api/organizador/altas", "/api/organizador/suspendidos"):
+        assert cliente.get(ruta).status_code == 403
+        assert panel(cliente, "GET", ruta, firmante="alice").status_code == 403
 
 
 # ── Aprobar y dar de baja: actas firmadas por el organizador, por /api/transacciones ──

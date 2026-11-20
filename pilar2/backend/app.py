@@ -8,8 +8,8 @@ BC-58: los pedidos de alta (`POST /api/altas`, públicos y firmados por quien pi
 organizador (`/api/organizador/*`), donde cada pedido va firmado con su clave (X-Organizador).
 
 Contrato v3 (BC-79, BC-80, BC-82): las altas, bajas y permisos llegan como transacciones firmadas por el organizador
-(`POST /api/transacciones`, como las cargas) y quedan aprobadas cuando entran en un bloque. El panel ya no aprueba ni
-da de baja (eso escribía `cuentas` sin firma): muestra los pedidos y el comando de la herramienta de claves. Se suman
+(`POST /api/transacciones`, como las cargas) y quedan aprobadas cuando entran en un bloque (antes, aprobar escribía
+`cuentas` sin firma). Los pendientes y los suspendidos se leen firmados por el organizador (BC-88). Se suman
 las lecturas para verificar desde afuera: los bloques en orden ascendente, la prueba de Merkle de una cuenta contra
 la raíz de estado (`/api/prueba/<cuenta>`) y la lista de shares de cada época (`/api/epocas/<n>`).
 """
@@ -413,20 +413,11 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         return {"cuenta": cuenta, "altura": cache["altura"], "block_hash": cache["punta"],
                 **estado_cadena.prueba(pruebas[clave], cuenta)}
 
-    @app.get("/api/altas/pendientes")
-    def altas_pendientes():
-        """Públicos (v3): los pedidos de alta que esperan al organizador. El panel los muestra sin pedir la clave."""
-        return {"pendientes": altas.pendientes()}
-
     @app.get("/api/cuentas")
     def lista_cuentas():
-        """Públicas (v3): las cuentas aprobadas (las que están en la cadena), con su saldo."""
+        """Públicas (v3): las cuentas aprobadas (las que están en la cadena), con su saldo. Los pedidos pendientes y
+        los mineros suspendidos no: son datos de operación del organizador y se leen firmados (BC-88)."""
         return {"cuentas": altas.aprobadas()}
-
-    @app.get("/api/suspendidos")
-    def lista_suspendidos():
-        """Públicos (v3): los mineros suspendidos por el gateway (BC-75), que esperan que el organizador decida."""
-        return {"suspendidos": altas.suspendidos()}
 
     @app.get("/api/bloques/{hash_}")
     def bloque(hash_: str):
@@ -602,16 +593,17 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
 
 
 # BC-78: la billetera descargada se abre desde el disco (origen «null») y le habla a la API desde otro origen. Sólo
-# las rutas públicas: las lecturas y lo que manda un cliente (transacciones y pedidos de alta), y, para su modo
-# organizador (BC-87), rechazar y reactivar, que van firmados con X-Organizador (la firma es la autorización: no hay
-# cookies). Las listas del panel firmado y las firmas de los validadores (programas, no páginas) quedan afuera.
+# las rutas públicas: las lecturas y lo que manda un cliente (transacciones y pedidos de alta), y lo que usa su modo
+# organizador (BC-87, BC-88): los pendientes y los suspendidos, rechazar y reactivar, todos firmados con X-Organizador
+# (la firma es la autorización: no hay cookies). Las firmas de los validadores (programas, no páginas) quedan afuera.
 POST_PUBLICOS = ("/api/transacciones", "/api/transacciones/lote", "/api/altas")
-POST_ORGANIZADOR = ("/api/organizador/rechazar", "/api/organizador/reactivar")
+DEL_ORGANIZADOR = {("GET", "/api/organizador/altas"), ("GET", "/api/organizador/suspendidos"),
+                   ("POST", "/api/organizador/rechazar"), ("POST", "/api/organizador/reactivar")}
 ENCABEZADOS_CORS = "content-type, x-organizador, x-tiempo, x-firma"
 
 
 def es_publica(ruta, metodo):
-    if metodo == "POST" and ruta in POST_ORGANIZADOR:
+    if (metodo, ruta) in DEL_ORGANIZADOR:
         return True
     if not ruta.startswith("/api/") or ruta.startswith("/api/organizador"):
         return False

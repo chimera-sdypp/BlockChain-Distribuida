@@ -58,7 +58,11 @@ class BackendFalso:
                 if self.path.startswith("/api/cuentas/"):
                     cuenta = self.path.rsplit("/", 1)[1]
                     return self._responder(200, {"cuenta": cuenta, "nonce": falso.nonces.get(cuenta, 0)})
-                if self.path == "/api/altas/pendientes":
+                if self.path == "/api/organizador/altas":
+                    quien, motivo = contrato.verificar_pedido(self.headers, "GET", self.path, b"",
+                                                              quien=contrato.ORGANIZADOR)
+                    if motivo or quien != CUENTA["organizador"]:
+                        return self._responder(403, {"error": motivo or "no es el organizador"})
                     return self._responder(200, {"pendientes": [{"cuenta": CUENTA["zoe"], "tipo": "minero",
                                                                  "nombre": "gpu-zoe", "pedida": 1}]})
                 id_ = self.path.rsplit("/", 1)[1]
@@ -211,10 +215,19 @@ def test_rechazar_y_reactivar_van_firmados_como_el_organizador(backend, archivos
                                  salida=lambda _: None) == 0  # el falso no compara la cuenta; el de verdad da 403
 
 
-def test_pendientes_lista_los_pedidos(backend):
+def test_pendientes_lista_los_pedidos_firmando_como_el_organizador(backend, archivos):
     salidas = []
-    herramienta.principal(["pendientes", "--url", backend.url], salida=salidas.append)
+    assert herramienta.principal(["pendientes", str(archivos["organizador"]), "--url", backend.url],
+                                 salida=salidas.append) == 0
     assert salidas == [f"{CUENTA['zoe']}  minero    gpu-zoe"]
+
+
+def test_pendientes_con_otra_clave_no_lista_nada(backend, archivos):
+    """BC-88: los pedidos de alta no son públicos; con una clave que no es la del organizador, 403."""
+    salidas = []
+    assert herramienta.principal(["pendientes", str(archivos["alice"]), "--url", backend.url],
+                                 salida=salidas.append) == 1
+    assert salidas[0].startswith("403")
 
 
 def test_lee_la_clave_tambien_en_el_jwk_que_baja_la_billetera(tmp_path):

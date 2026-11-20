@@ -17,7 +17,7 @@ Para el organizador (contrato v3): cada decisión es un acta firmada con su clav
 
 | Comando | Qué hace |
 |---|---|
-| `pendientes --url U` | Los pedidos de alta |
+| `pendientes ORG --url U` | Los pedidos de alta (firmado: no son públicos) |
 | `aprobar ORG --cuenta C --tipo T --nombre X [--carga N] --url U` | `alta-<n>` (y, a un usuario, `carga-<n+1>`) |
 | `baja ORG --cuenta C [--motivo M] --url U` | `baja-<n>` |
 | `cargar ORG --destino C --monto N --url U --enviar` | `carga-<n>` |
@@ -32,4 +32,4 @@ python -m claves aprobar ~/claves/organizador.clave --cuenta <zoe> --nombre zoe 
 python -m claves transferir ~/claves/zoe.clave --destino <cuenta> --monto 10 --url https://…
 ```
 
-El panel `/organizador` muestra los pedidos, las cuentas y los suspendidos, y copia el comando de cada acción. Con botones, sin comandos: el modo organizador de la [billetera descargable](../billetera/). En un cluster de prueba, `k8s/aprobar.sh <cuenta> <tipo> [nombre]` hace lo mismo con la clave de prueba. Tests: `python -m pytest claves`.
+Con botones, sin comandos: el modo organizador de la [billetera descargable](../billetera/). En un cluster de prueba, `k8s/aprobar.sh <cuenta> <tipo> [nombre]` hace lo mismo con la clave de prueba. Tests: `python -m pytest claves`.

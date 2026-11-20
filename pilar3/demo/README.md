@@ -12,4 +12,10 @@ pilar2/.venv/bin/python pilar3/demo/demo.py matar nct|trp|gateway|redis   # borr
 pilar2/.venv/bin/python pilar3/demo/demo.py operador            # HINCRBY a un saldo en Redis: se rechaza y el NCT lo corrige
 ```
 
+La ráfaga también tiene ventana, para manejarla en vivo: el ritmo (transferencias por segundo) se mueve con una barra y hay botones para tirar 10, 50, 200 o 500 juntas; muestra las mandadas, las que esperan bloque, las confirmadas, lo que hay en las cajas del NCT y un gráfico de los últimos 60 s.
+
+```bash
+pilar2/.venv/bin/python pilar3/demo/rafaga.py                   # abre la ventana (Chrome en modo app); Ctrl+C la cierra
+```
+
 Por defecto va contra GKE (`SISTEMA`, `GATEWAY`, `KUBE_GKE`, `KUBE_K3S` y `PROYECTO` cambian el destino) con las cuentas de prueba del génesis (alice, bob y carol). Probado en GKE con la v0.8.0 el 19/11.

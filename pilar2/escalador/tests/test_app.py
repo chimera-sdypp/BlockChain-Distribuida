@@ -192,6 +192,24 @@ def test_sin_permiso_no_manda_nada_y_lo_avisa(caplog):
     assert backend.recibidas == [] and "python -m claves permiso" in caplog.text
 
 
+def test_si_el_permiso_llega_despues_la_vm_ya_creada_pide_su_alta_en_el_ciclo_siguiente(caplog):
+    redis, ejecutar, backend = HashesFalsos(), Ejecutar({"apply": "Apply complete!"}), BackendFalso()
+    claves = ClavesVMs(redis, backend)
+    tofu = Tofu("/tofu", claves=claves, ejecutar=ejecutar)
+    with caplog.at_level("ERROR", logger="escalador"):
+        tofu.aplicar(1)  # la VM se crea sin permiso: su alta no sale
+        tofu.revisar(1)
+        tofu.revisar(1)
+    assert backend.recibidas == [] and caplog.text.count("python -m claves permiso") == 1  # avisa una vez
+    con_permiso(redis, claves)
+    tofu.revisar(1)
+    assert [tx["destino"] for tx in backend.recibidas] == [contrato.clave_publica(redis.hashes[CLAVES]["minero-cpu-0"])]
+    redis.hset("altas:en_camino", backend.recibidas[0]["destino"], "1")
+    tofu.revisar(1)
+    assert len(backend.recibidas) == 1  # en camino: no se vuelve a pedir
+    tofu.revisar(0)
+
+
 def test_tofu_le_pasa_las_claves_por_entorno_y_da_de_baja_las_que_sobran():
     redis, ejecutar, backend = HashesFalsos(), Ejecutar({"apply": "Apply complete!"}), BackendFalso()
     claves = ClavesVMs(redis, backend)

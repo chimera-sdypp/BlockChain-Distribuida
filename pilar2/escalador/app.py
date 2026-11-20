@@ -74,6 +74,7 @@ class ClavesVMs:
         self.redis, self.backend, self.prefijo = redis, backend, prefijo
         self.privada = privada or self._clave_propia()
         self.cuenta = contrato.clave_publica(self.privada)
+        self._avisado = False  # el aviso de que falta el permiso sale una vez, no en cada ciclo
 
     def _clave_propia(self):
         privada = self.redis.get(CLAVE_PROPIA)
@@ -86,10 +87,16 @@ class ClavesVMs:
     def tiene_permiso(self):
         prefijo = self.redis.hget(contrato.PERMISOS, self.cuenta)
         if prefijo is None or not self.prefijo.startswith(prefijo):
+            if self._avisado:
+                return False
+            self._avisado = True
             log.error("El escalador (%s) no tiene permiso en la cadena para dar de alta %s*: el organizador tiene que "
                       "correr `python -m claves permiso <su clave> --clave %s --prefijo %s --url <backend>`",
                       self.cuenta, self.prefijo, self.cuenta, self.prefijo)
             return False
+        if self._avisado:
+            log.info("El escalador ya tiene permiso para %s*", self.prefijo)
+            self._avisado = False
         return True
 
     def preparar(self, cantidad, ahora=None):
@@ -183,6 +190,11 @@ class Tofu:
         if self.claves:
             self.claves.retirar(cantidad)
 
+    def revisar(self, cantidad):
+        """Sin cambio de cantidad: las VMs que siguen sin alta (porque el permiso llegó después) la piden ahora."""
+        if self.claves and cantidad:
+            self.claves.preparar(cantidad)
+
 
 def cargar_ajustes():
     ajustes = Ajustes(
@@ -247,6 +259,8 @@ def ciclo(redis, decisor, aplicador, ahora=None):
             FALLIDOS.inc()
             raise
         APLICADOS.inc()
+    elif cantidad and hasattr(aplicador, "revisar"):
+        aplicador.revisar(cantidad)
     VMS.set(cantidad)
     return cantidad
 

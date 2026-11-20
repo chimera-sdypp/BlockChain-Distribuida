@@ -1,8 +1,12 @@
 # Versiones
 
-Versión actual: **0.8.1** (20/11/2026)
+Versión actual: **0.8.2** (20/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.2 — 20/11/2026
+
+- Arreglo (#87): los servicios vuelven a intentar la conexión a RabbitMQ cuando falla el DNS. Cuando GKE recreaba el nodo Spot de las apps, el backend y el frontend arrancaban antes de que el DNS del cluster resolviera `rabbitmq`, el hilo que conecta moría y quedaban en `0/1` hasta reiniciarlos a mano.
 
 ## 0.8.1 — 20/11/2026
 

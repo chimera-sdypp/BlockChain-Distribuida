@@ -32,4 +32,4 @@ python -m claves aprobar ~/claves/organizador.clave --cuenta <zoe> --nombre zoe 
 python -m claves transferir ~/claves/zoe.clave --destino <cuenta> --monto 10 --url https://…
 ```
 
-El panel `/organizador` muestra los pedidos, las cuentas y los suspendidos, y copia el comando de cada acción. En un cluster de prueba, `k8s/aprobar.sh <cuenta> <tipo> [nombre]` hace lo mismo con la clave de prueba. Tests: `python -m pytest claves`.
+El panel `/organizador` muestra los pedidos, las cuentas y los suspendidos, y copia el comando de cada acción. Con botones, sin comandos: el modo organizador de la [billetera descargable](../billetera/). En un cluster de prueba, `k8s/aprobar.sh <cuenta> <tipo> [nombre]` hace lo mismo con la clave de prueba. Tests: `python -m pytest claves`.

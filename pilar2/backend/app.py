@@ -602,12 +602,17 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
 
 
 # BC-78: la billetera descargada se abre desde el disco (origen «null») y le habla a la API desde otro origen. Sólo
-# las rutas públicas: las lecturas y lo que manda un cliente (transacciones y pedidos de alta). El panel firmado del
-# organizador y las firmas de los validadores (que son programas, no páginas) quedan afuera. No hay cookies.
+# las rutas públicas: las lecturas y lo que manda un cliente (transacciones y pedidos de alta), y, para su modo
+# organizador (BC-87), rechazar y reactivar, que van firmados con X-Organizador (la firma es la autorización: no hay
+# cookies). Las listas del panel firmado y las firmas de los validadores (programas, no páginas) quedan afuera.
 POST_PUBLICOS = ("/api/transacciones", "/api/transacciones/lote", "/api/altas")
+POST_ORGANIZADOR = ("/api/organizador/rechazar", "/api/organizador/reactivar")
+ENCABEZADOS_CORS = "content-type, x-organizador, x-tiempo, x-firma"
 
 
 def es_publica(ruta, metodo):
+    if metodo == "POST" and ruta in POST_ORGANIZADOR:
+        return True
     if not ruta.startswith("/api/") or ruta.startswith("/api/organizador"):
         return False
     return metodo in ("GET", "HEAD") or (metodo == "POST" and ruta in POST_PUBLICOS)
@@ -622,7 +627,7 @@ def agregar_cors(app):
             if es_publica(ruta, pedido):
                 return Response(status_code=204, headers={
                     "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST",
-                    "Access-Control-Allow-Headers": "content-type", "Access-Control-Max-Age": "600"})
+                    "Access-Control-Allow-Headers": ENCABEZADOS_CORS, "Access-Control-Max-Age": "600"})
         respuesta = await siguiente(request)
         if es_publica(ruta, request.method):
             respuesta.headers["Access-Control-Allow-Origin"] = "*"

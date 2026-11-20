@@ -105,6 +105,16 @@ const Verificador = (() => {
   const mensajeActa = (tx) => `${tipoDe(tx)}:${tx.origen}:${tx.destino}:${tx.nonce}:${tx.timestamp}:${tx.datos ?? ""}`;
   const mensajeFirmaBloque = (altura, hash) => `firma:${altura}:${hash}`;
   const mensajeAtestacion = (a) => `atestacion:${a.nodo}:${a.altura}:${a.punta}:${a.raiz}:${a.tiempo}`;
+  // Lo que firma un pedido con X-Minero o X-Organizador: método, ruta, hora y el cuerpo tal cual (contrato.mensaje_pedido).
+  const mensajePedido = (metodo, ruta, tiempo, cuerpo = "") => `${metodo.toUpperCase()}\n${ruta}\n${tiempo}\n${cuerpo}`;
+
+  // El modo organizador arma lo mismo que contrato.carga y contrato.acta (sin firmar: la firma la pone la página con
+  // la CryptoKey). `numero` es el nonce de «emision», uno solo para cargas y actas.
+  const armarCarga = (numero, destino, monto, timestamp) =>
+    ({ id: `carga-${numero}`, origen: EMISION, destino, monto, nonce: numero, timestamp });
+  const armarActa = (tipo, numero, destino, datos, timestamp) =>
+    ({ id: idActa(tipo, EMISION, numero), origen: EMISION, destino, monto: 0, nonce: numero, timestamp, datos });
+  const mensajeDe = (tx) => (esActa(tx) ? mensajeActa(tx) : mensajeTransaccion(tx));
 
   function emision(id, destino, monto, nonce, timestamp, datos = "") {
     const tx = { id, origen: EMISION, destino, monto, nonce, timestamp, firma: "" };
@@ -483,7 +493,8 @@ const Verificador = (() => {
 
   return { md5, verificarFirma, tipoDe, textoDeBloque, raizBloque, raizTransacciones, raizShares, listaShares, repartir,
     alturaFinalizada, raizMerkle, raizDeRama, hashHoja, hojas, raiz, estadoNuevo, copiar, aplicarBloque, finalidad,
-    mensajeTransaccion, mensajeAtestacion, mensajeFirmaBloque, cuentaValida, nombreValido, EMISION };
+    mensajeTransaccion, mensajeAtestacion, mensajeFirmaBloque, cuentaValida, nombreValido, EMISION,
+    mensajeActa, mensajePedido, mensajeDe, armarCarga, armarActa };
 })();
 
 if (typeof module !== "undefined") module.exports = Verificador;

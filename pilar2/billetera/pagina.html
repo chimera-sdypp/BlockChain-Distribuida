@@ -104,12 +104,18 @@
     <summary>Modo organizador</summary>
     <section>
       <h2>Tu clave de organizador</h2>
-      <p class="suave">Aprobar, dar de baja, cargar saldo y dar permisos son actas firmadas que entran en la cadena. Acá se
-        firman en este navegador, con la clave que cargues: es la misma página que bajaste y verificaste, no una que sirve
-        la nube. Lo mismo hace <span class="mono">python -m claves</span>.</p>
+      <p class="suave">Sólo para el organizador. Lo de abajo aparece cuando cargás su clave y el backend la reconoce: los
+        pedidos de alta y los mineros suspendidos no son públicos, se piden firmados con ella. Aprobar, dar de baja,
+        cargar saldo y dar permisos son actas firmadas que entran en la cadena; se firman en este navegador, en la página
+        que bajaste y verificaste, no en una que sirve la nube.</p>
       <label>Tu .jwk de organizador <input id="org-archivo" type="file" accept=".jwk,.json,application/json"></label>
       <p id="org-cuenta" class="mono suave">Sin clave cargada.</p>
+    </section>
+
+    <div id="org-panel" hidden>
+    <section>
       <button id="org-recargar" class="secundario" type="button">Actualizar las listas</button>
+      <button id="org-salir" class="secundario" type="button">Salir (olvidar la clave)</button>
     </section>
 
     <section>
@@ -153,6 +159,7 @@
       <div class="tabla"><table><thead><tr><th>acta o carga</th><th>qué</th><th>estado</th></tr></thead>
         <tbody id="org-firmadas"></tbody></table></div>
     </section>
+    </div>
   </details>
 </main>
 
@@ -420,16 +427,33 @@ const firmadas = [];      // [{id, que, estado, motivo?}], la más nueva primero
 const firmarOrg = async (texto) => hex(await crypto.subtle.sign({ name: "Ed25519" }, org.privada, codificador.encode(texto)));
 const ahora = () => Math.floor(Date.now() / 1000);
 
+// La sección sólo se muestra con la clave del organizador: la prueba es que el backend acepte su firma en una lectura
+// del panel (BC-88). Ocultarla es de forma; lo que protege los datos es que esas rutas piden la firma.
+function salirOrg(motivo) {
+  org = null;
+  $("org-panel").hidden = true;
+  $("org-archivo").value = "";
+  $("org-cuenta").textContent = motivo || "Sin clave cargada.";
+}
+
 $("org-archivo").addEventListener("change", async (e) => {
+  let candidato;
   try {
     const jwk = JSON.parse(await e.target.files[0].text());
     const privada = await crypto.subtle.importKey("jwk", { kty: "OKP", crv: "Ed25519", d: jwk.d, x: jwk.x },
                                                   { name: "Ed25519" }, false, ["sign"]);
-    org = { privada, cuenta: hex(deB64url(jwk.x)) };
-    $("org-cuenta").textContent = `Organizador: ${org.cuenta}`;
-    await recargarOrg();
-  } catch (error) { anotar(`No es un .jwk Ed25519: ${error.message}`, "mal"); }
+    candidato = { privada, cuenta: hex(deB64url(jwk.x)) };
+  } catch (error) { return salirOrg(`No es un .jwk Ed25519: ${error.message}`); }
+  org = candidato;
+  try {
+    const r = await pedidoOrg("GET", "/api/organizador/altas");
+    if (!r.ok) return salirOrg(`El backend no la reconoce como la del organizador (${r.status}): ${errorDe(r.cuerpo)}`);
+  } catch (error) { return salirOrg(`No se pudo comprobar la clave: ${error.message}`); }
+  $("org-cuenta").textContent = `Organizador: ${org.cuenta}`;
+  $("org-panel").hidden = false;
+  await recargarOrg();
 });
+$("org-salir").addEventListener("click", () => salirOrg());
 
 // El número siguiente de «emision»: el mayor entre el que dice el backend y el último que usó esta página (el NCT
 // todavía puede no haber validado el anterior).
@@ -458,13 +482,17 @@ async function firmarYMandar(armar) {
   for (const [tx, que] of armar(() => numero++, ahora())) await mandarFirmada(tx, que);
 }
 
-// Rechazar un pedido y reactivar un minero no van a la cadena: son pedidos firmados con X-Organizador.
-async function pedidoOrg(ruta, datos) {
+// Lo que no va a la cadena (leer los pendientes y los suspendidos, rechazar un pedido, reactivar un minero) son
+// pedidos firmados con X-Organizador: método, ruta, hora y cuerpo, como los de los mineros.
+async function pedidoOrg(metodo, ruta, datos) {
   if (!org) throw new Error("primero cargá tu .jwk de organizador");
-  const cuerpo = JSON.stringify(datos), tiempo = ahora();
-  const firma = await firmarOrg(Verificador.mensajePedido("POST", ruta, tiempo, cuerpo));
-  const r = await api(ruta, { method: "POST", body: cuerpo, headers: { "content-type": "application/json",
+  const cuerpo = datos === undefined ? "" : JSON.stringify(datos), tiempo = ahora();
+  const firma = await firmarOrg(Verificador.mensajePedido(metodo, ruta, tiempo, cuerpo));
+  return api(ruta, { method: metodo, body: cuerpo || undefined, headers: { "content-type": "application/json",
     "X-Organizador": org.cuenta, "X-Tiempo": String(tiempo), "X-Firma": firma } });
+}
+async function accionOrg(ruta, datos) {
+  const r = await pedidoOrg("POST", ruta, datos);
   if (!r.ok) throw new Error(`${ruta} contestó ${r.status}: ${errorDe(r.cuerpo)}`);
 }
 
@@ -504,24 +532,28 @@ const cargar = (destino, monto, nombre) => firmarYMandar((siguiente, t) =>
 const MOTIVOS = { estadistica: "sin solución imposible", reverificacion: "otro minero encontró la solución" };
 
 async function recargarOrg() {
-  const [altas, cuentas, suspendidos] = await Promise.all([api("/api/altas/pendientes"), api("/api/cuentas"), api("/api/suspendidos")]);
+  if (!org) return;
+  let altas, cuentas, suspendidos;
+  try {
+    [altas, cuentas, suspendidos] = await Promise.all([pedidoOrg("GET", "/api/organizador/altas"), api("/api/cuentas"),
+                                                       pedidoOrg("GET", "/api/organizador/suspendidos")]);
+  } catch (error) { anotar(`El backend no respondió: ${error.message}`, "mal"); return; }
+  if ([altas, suspendidos].some((r) => r.status === 401 || r.status === 403)) {
+    return salirOrg(`El backend dejó de reconocer la clave como la del organizador (${altas.status}).`);
+  }
   const fallida = [altas, cuentas, suspendidos].find((r) => !r.ok);
   if (fallida) { anotar(`El backend no respondió (${fallida.status}): ${errorDe(fallida.cuerpo)}`, "mal"); return; }
-  const delOrg = cuentas.cuerpo.cuentas.find((c) => c.tipo === "organizador");
-  if (org && delOrg && delOrg.cuenta !== org.cuenta) {
-    anotar(`Esa clave no es la del organizador de la cadena (${corto(delOrg.cuenta)}): el NCT va a rechazar lo que firmes.`, "mal");
-  }
   tablaOrg("org-altas", ["nombre", "tipo", "cuenta", "saldo inicial", ""], altas.cuerpo.pendientes.map((p) => {
     const monto = el("input", { type: "number", min: "0", step: "1", placeholder: "0" });
     return el("tr", {}, el("td", {}, p.nombre || "—"), el("td", {}, p.tipo), el("td", { clase: "mono", title: p.cuenta }, corto(p.cuenta)),
       el("td", {}, p.tipo === "usuario" ? monto : "—"),
       el("td", {}, boton("Aprobar", () => aprobar(p, Number(monto.value || 0))),
-        boton("Rechazar", () => pedidoOrg("/api/organizador/rechazar", { cuenta: p.cuenta }), { confirmar: true, clase: "secundario" })));
+        boton("Rechazar", () => accionOrg("/api/organizador/rechazar", { cuenta: p.cuenta }), { confirmar: true, clase: "secundario" })));
   }), "No hay pedidos.");
   tablaOrg("org-suspendidos", ["nombre", "cuenta", "motivo", ""], suspendidos.cuerpo.suspendidos.map((s) =>
     el("tr", {}, el("td", {}, s.nombre || "—"), el("td", { clase: "mono", title: s.cuenta }, corto(s.cuenta)),
       el("td", {}, MOTIVOS[s.motivo] || s.motivo),
-      el("td", {}, boton("Reactivar", () => pedidoOrg("/api/organizador/reactivar", { cuenta: s.cuenta }), { clase: "secundario" }),
+      el("td", {}, boton("Reactivar", () => accionOrg("/api/organizador/reactivar", { cuenta: s.cuenta }), { clase: "secundario" }),
         boton("Dar de baja", () => darDeBaja(s, MOTIVOS[s.motivo] || ""), { confirmar: true })))), "No hay mineros suspendidos.");
   tablaOrg("org-cuentas", ["nombre", "tipo", "cuenta", "saldo", ""], cuentas.cuerpo.cuentas.map((c) => {
     const monto = el("input", { type: "number", min: "1", step: "1", placeholder: "monto" });
@@ -565,7 +597,7 @@ $("org-permiso").addEventListener("click", async () => {
   } catch (error) { anotar(`No se pudo: ${error.message}`, "mal"); }
 });
 $("modo-org").addEventListener("toggle", () => { if ($("modo-org").open) recargarOrg(); });
-setInterval(() => { if ($("modo-org").open) recargarOrg(); }, 15_000);
+setInterval(() => { if ($("modo-org").open && org) recargarOrg(); }, 15_000);
 
 $("verificar").addEventListener("click", () => verificar(false));
 $("olvidar").addEventListener("click", () => verificar(true));

@@ -26,8 +26,10 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="necesita node (la billeter
 def test_las_actas_las_cargas_y_el_pedido_son_los_de_python(tmp_path):
     alice, bob = CUENTA["alice"], CUENTA["bob"]
     cuerpo = json.dumps({"cuenta": alice})
-    entrada = {"jwk": jwk(ORG), "pedido": {"metodo": "POST", "ruta": "/api/organizador/rechazar", "tiempo": T,
-                                            "cuerpo": cuerpo},
+    pedidos = [("POST", "/api/organizador/rechazar", cuerpo), ("GET", "/api/organizador/altas", ""),
+               ("GET", "/api/organizador/suspendidos", "")]
+    entrada = {"jwk": jwk(ORG),
+               "pedidos": [{"metodo": m, "ruta": r, "tiempo": T, "cuerpo": c} for m, r, c in pedidos],
                "txs": [{"tipo": "alta", "numero": 7, "destino": alice, "datos": "usuario:alice", "timestamp": T},
                        {"tipo": "carga", "numero": 8, "destino": alice, "monto": 500, "timestamp": T},
                        {"tipo": "baja", "numero": 9, "destino": bob, "datos": "sin solución imposible", "timestamp": T},
@@ -47,6 +49,6 @@ def test_las_actas_las_cargas_y_el_pedido_son_los_de_python(tmp_path):
     for tx in salida["txs"]:
         validar = contrato.validar_carga if tx["id"].startswith("carga-") else contrato.validar_acta
         assert validar(tx, CUENTA["organizador"]) == []
-    encabezados = contrato.firmar_pedido(ORG, "POST", "/api/organizador/rechazar", cuerpo.encode(), tiempo=T,
-                                         quien=contrato.ORGANIZADOR)
-    assert salida["pedido"] == encabezados["X-Firma"]
+    # BC-88: también las lecturas firmadas (sin cuerpo) que pide la billetera para mostrar la sección.
+    assert salida["pedidos"] == [contrato.firmar_pedido(ORG, m, r, c.encode(), tiempo=T, quien=contrato.ORGANIZADOR)["X-Firma"]
+                                 for m, r, c in pedidos]

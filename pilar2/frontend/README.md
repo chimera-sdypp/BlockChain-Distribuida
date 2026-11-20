@@ -8,8 +8,7 @@ La página del sistema: hacer transferencias y ver la cadena en vivo. El servici
 |---|---|
 | `GET /` | La página: un HTML con JS y CSS, sin frameworks ni build |
 | `GET /alta` | «Pedir el alta» (BC-58): genera el par en el navegador, baja la privada (JWK para un usuario, hex para un minero) y manda a `POST /api/altas` la pública con su firma |
-| `GET /organizador` | El panel del organizador: pedidos pendientes (aprobar, con saldo inicial, o rechazar), cuentas aprobadas (dar de baja), mineros suspendidos (reactivar o confirmar la baja, BC-75) y cargas de saldo. Se entra con el JWK del organizador; cada pedido va firmado con `X-Organizador`. Con «Recordarla» la `CryptoKey` no exportable queda en IndexedDB y el panel entra solo al recargar, hasta «Salir» |
-| `GET /comun.js` · `GET /estilos.css` | Lo que comparten las tres páginas: firmar con WebCrypto, llamar a la API y los estilos |
+| `GET /comun.js` · `GET /estilos.css` | Lo que comparten las páginas: firmar con WebCrypto, llamar a la API y los estilos |
 | `GET /eventos` | SSE: cada aviso de `eventos` como `event: <clave>` y `data: <JSON>`, más un comentario de keep-alive cada 15 s |
 | `GET /health` · `GET /metrics` | Los de `comun/` (sólo RabbitMQ), más `blockchain_sse_clientes` y `blockchain_eventos_reenviados_total{evento}` |
 

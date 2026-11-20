@@ -1,6 +1,5 @@
 // Lo que comparten las páginas: armar nodos, llamar a la API y firmar con WebCrypto Ed25519.
-// La privada se importa como CryptoKey no exportable: no sale nunca del navegador. Sólo el panel del organizador
-// la recuerda (en IndexedDB, como CryptoKey: sin poder leer sus bytes).
+// La privada se importa como CryptoKey no exportable: no sale nunca del navegador ni se guarda.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -50,15 +49,6 @@ async function firmar(clave, texto) {
 
 // Lo que firma el origen de una transacción (contrato v2); en una carga el origen es «emision».
 const mensajeTransaccion = (tx) => `${tx.origen}:${tx.destino}:${tx.monto}:${tx.nonce}:${tx.timestamp}`;
-
-// Un pedido firmado como los de los mineros: método, ruta, hora y cuerpo (BC-57); `quien` es el encabezado.
-async function pedidoFirmado(firmante, quien, metodo, ruta, datos) {
-  const cuerpo = datos === undefined ? "" : JSON.stringify(datos);
-  const tiempo = Math.floor(Date.now() / 1000);
-  const firma = await firmar(firmante.clave, `${metodo}\n${ruta}\n${tiempo}\n${cuerpo}`);
-  return api(ruta, { method: metodo, body: cuerpo || undefined, headers: {
-    "content-type": "application/json", [quien]: firmante.cuenta, "X-Tiempo": String(tiempo), "X-Firma": firma } });
-}
 
 function bajarArchivo(nombre, contenido) {
   const enlace = el("a", { href: URL.createObjectURL(new Blob([contenido], { type: "application/octet-stream" })),

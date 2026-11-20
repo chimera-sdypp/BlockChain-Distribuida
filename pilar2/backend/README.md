@@ -11,9 +11,8 @@ La API por la que entran las transferencias y se consulta su estado (pasos 1 y 2
 | `GET /api/transacciones/<id>` | `{id, origen, destino, monto, nonce, timestamp, firma, estado}`, más `motivo` (rechazada) o `bloque` (confirmada) · 404 |
 | `GET /api/cuentas/<cuenta>` | `{cuenta, saldo, comprometido, nonce, aprobada, tipo, nombre, alta_pedida}`: lo que necesita un cliente para firmar (el próximo nonce es `nonce + 1`). `emision` da la última carga |
 | `POST /api/altas` `{tipo, clave_publica, nombre, firma}` | 202 `{cuenta, estado: "pendiente"}` · 400 (firma o formato) · 409 (ya aprobada) · 429 (hay 1000 pendientes) |
-| `GET /api/organizador/altas` · `GET /api/organizador/cuentas` | Los pedidos pendientes y las cuentas aprobadas (con su saldo). Firmados por el organizador |
-| `POST /api/organizador/aprobar` `{cuenta, nombre?, carga?}` | La aprueba y, si viene `carga` (firmada por el organizador para esa cuenta, sólo a usuarios), la encola · 400 · 404 (sin pedido) |
-| `POST /api/organizador/rechazar` · `POST /api/organizador/baja` `{cuenta}` | Borra el pedido o saca la cuenta de `cuentas` (y de `suspendidos`) · 404 |
+| `GET /api/organizador/altas` · `GET /api/organizador/cuentas` | Los pedidos pendientes y las cuentas aprobadas (con su saldo). Firmados por el organizador: los pendientes no son públicos (BC-88) |
+| `POST /api/organizador/rechazar` `{cuenta}` | Borra el pedido · 404 (sin pedido). Aprobar y dar de baja son actas por `POST /api/transacciones` |
 | `GET /api/organizador/suspendidos` · `POST /api/organizador/reactivar` `{cuenta}` | Los mineros suspendidos por el gateway con su motivo y evidencia, y reactivar uno (BC-75) · 404 |
 | `GET /api/bloques?limite=20&desde=<altura>` | Los bloques del más nuevo al más viejo, con `altura`, `transactions` como lista y `minero` y `recompensa` sacados de la coinbase |
 | `GET /api/bloques/<hash>` | El bloque con su `altura` · 404 |
@@ -23,7 +22,7 @@ La API por la que entran las transferencias y se consulta su estado (pasos 1 y 2
 - **Formato y firma** (BC-56): valida con `validar_transaccion_firmada` del [contrato](../CONTRATO.md) y calcula el `id` con el contenido. La misma transacción reenviada da 409 (un Lua crea `tx:<id>` sólo si no existía). Las cargas de saldo (origen `emision`) tienen que estar firmadas por `ORGANIZADOR_CLAVE`. La cuenta, el nonce y el saldo los valida el NCT.
 - **Orden:** primero guarda `tx:<id>` «recibida» y después publica (con confirmación del broker). Al revés, el NCT podría pasarla a «pendiente» y el backend pisarla con «recibida».
 - **Fallas:** si la cola no confirma, borra los `tx:<id>` que no se publicaron y contesta 503. En un lote, `encoladas` dice cuáles sí entraron: ésas no se pueden sacar y el NCT las va a procesar, así que hay que reintentar sólo las demás.
-- **Panel del organizador** (BC-58): cada pedido a `/api/organizador/*` va firmado con la clave del organizador, como los de los mineros pero con `X-Organizador` (ver [Altas](../CONTRATO.md#altas)). Sin firma, firmado por otra clave o con la hora corrida más de 30 s: 403. Cada pedido, aprobación, rechazo, baja y carga deja una línea en el log, con la cuenta, el nombre y el monto.
+- **Rutas del organizador** (BC-58, BC-88): cada pedido a `/api/organizador/*` va firmado con la clave del organizador, como los de los mineros pero con `X-Organizador` (ver [Altas](../CONTRATO.md#altas)). Sin firma, firmado por otra clave o con la hora corrida más de 30 s: 403. Las usa el modo organizador de la [billetera](../billetera/) (con CORS en las cuatro que necesita) y `python -m claves`. Cada pedido, rechazo y reactivación deja una línea en el log.
 - **Lote:** todo o nada. Si una es inválida (400) o ya existía o está dos veces (409), no entra ninguna, y `errores` viene por índice.
 
 ## Configuración
@@ -75,4 +74,4 @@ La readiness usa `/health`: si el pod no llega a RabbitMQ o a Redis, sale del Se
 ## Contrato v3 (BC-78, BC-79, BC-80, BC-82)
 
 - `POST /api/transacciones` acepta también las actas del organizador (`alta-<n>`, `baja-<n>`, `permiso-<n>`) y las delegadas (`alta-<clave>-<n>`), con su firma. El panel ya no aprueba ni da de baja: eso escribía `cuentas` sin firma.
-- Lecturas públicas: `GET /api/altas/pendientes`, `/api/cuentas`, `/api/suspendidos`; `GET /api/bloques?orden=asc&desde=<altura>` (para bajar sólo lo nuevo); `GET /api/prueba/<cuenta>` (hoja y rama de Merkle sobre el estado de la punta); `GET /api/epocas/<n>` (la lista de shares con que se pagó la época).
+- Lecturas públicas: `GET /api/cuentas`; `GET /api/bloques?orden=asc&desde=<altura>` (para bajar sólo lo nuevo); `GET /api/prueba/<cuenta>` (hoja y rama de Merkle sobre el estado de la punta); `GET /api/epocas/<n>` (la lista de shares con que se pagó la época).

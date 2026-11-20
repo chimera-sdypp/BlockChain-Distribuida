@@ -41,7 +41,7 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "{{ $value }} minero(s) suspendido(s) esperan la decisión del organizador"
-            description: En el panel del organizador, «Mineros suspendidos», está la evidencia; reactivar o confirmar la baja.
+            description: En el modo organizador de la billetera, «Mineros suspendidos», está la evidencia; reactivar o confirmar la baja.
 
         # Contrato v3 (BC-80, BC-83, BC-86): que no haya que confiar en quien opera la nube.
         - alert: CacheDistintoDeLaCadena

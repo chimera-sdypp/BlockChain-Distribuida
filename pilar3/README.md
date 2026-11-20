@@ -15,6 +15,7 @@
 | `vms/` | Plantilla de las VMs minero-cpu, firewall y permisos (BC-35) | 4 · `pilar3-vms.yml` |
 | `vms/instancias/` | Las VMs `minero-cpu-0…N-1` (BC-35) | Ninguno: lo aplica el escalador |
 | [`pruebas/`](pruebas/README.md) | Pruebas de carga (BC-38 a BC-42) y cómo dejar GKE en sus condiciones | A mano: `pilar3-preparar-prueba.yml` |
+| [`demo/`](demo/README.md) | Un script por paso de la demo (BC-66), contra lo desplegado | A mano |
 
 Cada módulo tiene `provider.tf`, `variables.tf`, `main.tf` y `outputs.tf`. El state va a un bucket de GCS (`<proyecto>-tfstate`), con lock y con versionado. Nunca va al repo.
 

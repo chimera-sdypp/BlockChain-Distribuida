@@ -1,8 +1,15 @@
 # Versiones
 
-Versión actual: **0.8.0** (19/11/2026)
+Versión actual: **0.8.1** (20/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.1 — 20/11/2026
+
+Sólo herramientas de la demo y documentación: no cambia ningún servicio ni la cadena.
+
+- **Demo** (#85, BC-66): `pilar3/demo/demo.py`, un subcomando por paso contra el sistema desplegado, y `pilar3/demo/rafaga.py`, la ráfaga con una ventana para cambiar el ritmo en vivo (transferencias por segundo) o tirar varias juntas, con lo que esperan bloque, lo confirmado y un gráfico de los últimos 60 s.
+- README de la raíz con los pilares, el despliegue y la billetera.
 
 ## 0.8.0 — 19/11/2026
 

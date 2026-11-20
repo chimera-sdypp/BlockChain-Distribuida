@@ -107,11 +107,12 @@ class Backend:
         codigo, tx = self.pedir("GET", f"/api/transacciones/{id_}")
         return tx if codigo == 200 else None
 
-    def firmado(self, privada, metodo, ruta, cuerpo):
-        """Un pedido al panel (`/api/organizador/*`), firmado como el organizador (X-Organizador)."""
-        crudo = json.dumps(cuerpo).encode()
+    def firmado(self, privada, metodo, ruta, cuerpo=None):
+        """Un pedido al panel (`/api/organizador/*`), firmado como el organizador (X-Organizador). Sin cuerpo, una
+        lectura (los pendientes o los suspendidos, BC-88)."""
+        crudo = json.dumps(cuerpo).encode() if cuerpo is not None else b""
         encabezados = contrato.firmar_pedido(privada, metodo, ruta, crudo, quien=contrato.ORGANIZADOR)
-        pedido = urllib.request.Request(self.url + ruta, data=crudo, method=metodo,
+        pedido = urllib.request.Request(self.url + ruta, data=crudo or None, method=metodo,
                                         headers={"Content-Type": "application/json", **encabezados})
         try:
             with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
@@ -320,7 +321,8 @@ def principal(argumentos=None, salida=print):
         p.add_argument("--nonce", type=int, help="si no está, lo pide al backend (--url): el último + 1")
         p.add_argument("--url", help="el backend (https://<dominio>)")
         p.add_argument("--enviar", action="store_true", help="la manda al backend (si no, sólo la muestra)")
-    p = sub.add_parser("pendientes", help="los pedidos de alta que esperan al organizador")
+    p = sub.add_parser("pendientes", help="organizador: los pedidos de alta que esperan (firmado: no son públicos)")
+    p.add_argument("archivo", help="la clave del organizador")
     p.add_argument("--url")
     p = sub.add_parser("aprobar", help="organizador: firma el alta de una cuenta (y opcionalmente una carga)")
     p.add_argument("archivo", help="la clave del organizador")
@@ -398,7 +400,10 @@ def principal(argumentos=None, salida=print):
             salida(f"{codigo} {json.dumps(respuesta)}")
             return 0 if codigo == 202 else 1
     elif a.comando == "pendientes":
-        codigo, datos = _url(parser, a).pedir("GET", "/api/altas/pendientes")
+        codigo, datos = _url(parser, a).firmado(leer_privada(a.archivo), "GET", "/api/organizador/altas")
+        if codigo != 200:
+            salida(f"{codigo} {json.dumps(datos)}")
+            return 1
         for pedido in (datos or {}).get("pendientes", []):
             salida(f"{pedido['cuenta']}  {pedido.get('tipo'):<9} {pedido.get('nombre')}")
         return 0 if codigo == 200 else 1

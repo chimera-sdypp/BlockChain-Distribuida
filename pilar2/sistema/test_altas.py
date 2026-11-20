@@ -56,11 +56,11 @@ def test_un_usuario_aprobado_con_un_acta_y_saldo_puede_transferir(minero):
     privada, cuenta, nombre = pedir_alta()
     PRIVADAS[cuenta] = privada
     assert api("GET", f"/api/cuentas/{cuenta}")[1]["alta_pedida"] is True
-    assert cuenta in [p["cuenta"] for p in api("GET", "/api/altas/pendientes")[1]["pendientes"]]
+    assert cuenta in [p["cuenta"] for p in panel("GET", "/api/organizador/altas")[1]["pendientes"]]
 
     aprobar(cuenta, "usuario", nombre)                     # el alta entra en un bloque
     assert api("GET", f"/api/cuentas/{cuenta}")[1]["aprobada"] is True
-    assert cuenta not in [p["cuenta"] for p in api("GET", "/api/altas/pendientes")[1]["pendientes"]]
+    assert cuenta not in [p["cuenta"] for p in panel("GET", "/api/organizador/altas")[1]["pendientes"]]
     ahora = int(time.time())
     acta(lambda n: contrato.carga(ORGANIZADOR, n, cuenta, 50, ahora), esperar_bloque=True)
     assert saldo(cuenta) == 50
@@ -93,7 +93,7 @@ def test_un_minero_nuevo_queda_pedido_y_al_aprobarlo_empieza_a_trabajar():
     try:
         limite = time.monotonic() + 30
         while True:
-            pendientes = api("GET", "/api/altas/pendientes")[1]["pendientes"]
+            pendientes = panel("GET", "/api/organizador/altas")[1]["pendientes"]
             pedido = next((p for p in pendientes if p["cuenta"] == cuenta), None)
             if pedido:
                 break

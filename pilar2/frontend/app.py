@@ -3,7 +3,8 @@
 La página le pide los datos a la API del backend (`/api/*`, mismo dominio por el Ingress).
 Este servicio sólo sirve el HTML y reenvía al navegador los avisos del exchange `eventos`:
 cada pod tiene su propia cola atada, así que cada navegador recibe todos, esté en el pod que esté.
-Desde BC-58 sirve también «Pedir el alta» (/alta) y el panel del organizador (/organizador).
+Desde BC-58 sirve también «Pedir el alta» (/alta). El panel del organizador (/organizador) se sacó con BC-88: el
+organizador opera desde el modo organizador de la billetera descargable o con la herramienta de claves.
 """
 
 import asyncio
@@ -23,7 +24,6 @@ ESTATICOS = Path(__file__).parent / "estaticos"
 PAGINA = ESTATICOS / "index.html"
 # Las otras páginas (BC-58) y lo que comparten: ruta → (archivo, tipo).
 ARCHIVOS = {"/alta": ("alta.html", "text/html; charset=utf-8"),
-            "/organizador": ("organizador.html", "text/html; charset=utf-8"),
             "/comun.js": ("comun.js", "text/javascript; charset=utf-8"),
             "/estilos.css": ("estilos.css", "text/css; charset=utf-8")}
 KEEPALIVE = 15  # segundos: así el Ingress no corta las conexiones quietas

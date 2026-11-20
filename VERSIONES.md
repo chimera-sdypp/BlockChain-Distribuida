@@ -1,8 +1,16 @@
 # Versiones
 
-Versión actual: **0.7.1** (19/11/2026)
+Versión actual: **0.8.0** (19/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.0 — 19/11/2026
+
+El organizador opera desde la billetera descargable y sus listas dejan de ser públicas. No cambia el contrato de la cadena: no hace falta reiniciarla. Sí cambia la API: se borran rutas.
+
+- **Modo organizador en la billetera** (#82, BC-87): con el `.jwk` del organizador, botones para aprobar (con carga), rechazar, dar de baja, cargar saldo, dar permisos y reactivar mineros. Las actas y las cargas se firman en el navegador, desde el archivo verificado por su SHA-256; un test con node comprueba que salen idénticas a las de `comun/contrato.py`.
+- **Sin panel del organizador en la nube** (#83, BC-88): se borra `/organizador`. Los pedidos de alta y los mineros suspendidos ya no son públicos (se borran `GET /api/altas/pendientes` y `GET /api/suspendidos`): se leen en `/api/organizador/altas` y `/api/organizador/suspendidos`, firmados con `X-Organizador`. En la billetera, la sección del organizador aparece sólo cuando el backend acepta la firma de la clave cargada. `python -m claves pendientes` pide la clave del organizador. Las cuentas y los saldos siguen públicos.
+- El backend acepta CORS en las cuatro rutas firmadas que usa la billetera (las dos lecturas, rechazar y reactivar).
 
 ## 0.7.1 — 19/11/2026
 

@@ -1,8 +1,13 @@
 # Versiones
 
-Versión actual: **0.8.3** (21/11/2026)
+Versión actual: **0.8.4** (22/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.4 — 22/11/2026
+
+- **Puerta en Cloudflare** (#89): un Worker en `blockchain-chimera.chimera-sdypp.workers.dev` reenvía cada pedido al sistema en GKE, para entrar desde la red de la universidad, que filtra DuckDNS. Lo despliega el workflow «Pilar 3 · Cloudflare». La billetera, el nodo y los scripts de la demo usan esa URL por defecto; DuckDNS sigue andando y los mineros siguen entrando por la IP del gateway. Cambia la billetera: nuevo SHA-256 en el release.
+- **Informe final** (#92) en [`informe/informe-tpi-cerberus.pdf`](informe/informe-tpi-cerberus.pdf).
 
 ## 0.8.3 — 21/11/2026
 

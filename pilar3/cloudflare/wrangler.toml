@@ -1,0 +1,10 @@
+# El Worker que publica el sistema en https://blockchain-chimera.<cuenta>.workers.dev (ver README.md).
+#   npx wrangler@4 deploy --config pilar3/cloudflare/wrangler.toml
+name = "blockchain-chimera"
+main = "worker.mjs"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[vars]
+# A dónde reenvía: el Ingress de GKE, con el certificado de Let's Encrypt.
+ORIGEN = "https://blockchain-chimera.duckdns.org"

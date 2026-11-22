@@ -6,7 +6,7 @@ Lo corre cualquiera, sin permiso ni túnel: lee la API pública por HTTPS.
 
 ```bash
 cd pilar2 && pip install -r comun/requirements.txt
-python -m nodo --fuente https://blockchain-chimera.duckdns.org --datos ~/nodo-chimera          # :8090
+python -m nodo --fuente https://blockchain-chimera.chimera-sdypp.workers.dev --datos ~/nodo-chimera          # :8090
 ```
 
 | Ruta | Qué da |

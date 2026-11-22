@@ -669,7 +669,7 @@ if (typeof module !== "undefined") module.exports = Verificador;
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const POR_DEFECTO = "https://blockchain-chimera.duckdns.org";
+const POR_DEFECTO = "https://blockchain-chimera.chimera-sdypp.workers.dev";
 const hex = (bytes) => Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const deB64url = (t) => Uint8Array.from(atob(t.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));

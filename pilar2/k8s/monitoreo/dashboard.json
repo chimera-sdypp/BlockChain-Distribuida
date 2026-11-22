@@ -188,8 +188,8 @@
     {
       "type": "timeseries",
       "id": 2,
-      "title": "Transacciones recibidas por resultado",
-      "description": "POST /api/transacciones del backend, por segundo.",
+      "title": "Transacciones recibidas y capacidad",
+      "description": "POST /api/transacciones del backend, por segundo. «capacidad» (BC-89): TX_POR_CAJA del NCT dividido SEGUNDOS_POR_BLOQUE del TrP, lo más que el sistema confirma por segundo. Si lo aceptado la supera un rato, la cola crece: sumar mineros no la sube (el prefijo sube y el bloque vuelve a tardar lo mismo).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -262,6 +262,31 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "capacidad"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8a8a8a"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    6,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
           }
         ]
       },
@@ -285,6 +310,16 @@
           },
           "expr": "sum by (resultado) (rate(blockchain_tx_recibidas_total{pod=~\"(${app:regex})-.*\"}[1m]))",
           "legendFormat": "{{resultado}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(blockchain_tx_por_bloque_maximo{pod=~\"(${app:regex})-.*\"}) / max(blockchain_tiempo_bloque_esperado_segundos{pod=~\"(${app:regex})-.*\"})",
+          "legendFormat": "capacidad",
           "range": true
         }
       ]

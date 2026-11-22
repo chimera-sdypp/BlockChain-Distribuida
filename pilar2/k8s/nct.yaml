@@ -29,7 +29,7 @@ spec:
             - { name: RABBIT_HOST, value: rabbitmq }
             - { name: REDIS_SENTINELS, value: "redis:26379" }
             - { name: VENTANA_SEGUNDOS, value: "30" }
-            - { name: TX_POR_CAJA, value: "100" }
+            - { name: TX_POR_CAJA, value: "1000" }
             - { name: TAREA_VENCE_SEGUNDOS, value: "600" }
             # BC-73: la tarea sin bloque vence a los 240 s y el TrP la rearma con un carácter menos (0 = no).
             - { name: EMERGENCIA_SEGUNDOS, value: "240" }

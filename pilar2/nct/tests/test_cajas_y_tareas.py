@@ -19,42 +19,50 @@ def cajas(redis):
     return [json.loads(caja) for caja in redis.lrange("cajas", 0, -1)]
 
 
-def test_cerrar_cajas_parte_las_pendientes_en_cajas_de_como_mucho_n(armar, redis):
+def test_cerrar_cajas_arma_una_sola_caja_de_como_mucho_n(armar, redis):
     nct = armar(tx_por_caja=2)
     nct.cargar_genesis()
     ids = [tx["id"] for tx in pendientes(redis, nct, 5)]
 
-    nct.cerrar_cajas()
+    assert nct.cerrar_cajas() == 1
 
-    assert cajas(redis) == [ids[0:2], ids[2:4], ids[4:5]]
-    assert redis.llen("tx:pendientes") == 0
+    assert cajas(redis) == [ids[0:2]]
+    assert redis.lrange("tx:pendientes", 0, -1) == ids[2:]  # esperan al bloque siguiente
 
 
-def test_lo_que_llega_despues_va_a_la_caja_siguiente(armar, redis):
+def test_mientras_hay_una_caja_lo_que_llega_espera_en_pendientes(armar, redis):
     nct = armar()
     nct.cargar_genesis()
     primeras = [tx["id"] for tx in pendientes(redis, nct, 2)]
     nct.cerrar_cajas()
-    despues = [tx["id"] for tx in pendientes(redis, nct, 1)]
-    nct.cerrar_cajas()
-    nct.cerrar_cajas()  # sin pendientes no arma cajas vacías
+    despues = [tx["id"] for tx in pendientes(redis, nct, 3)]
 
-    assert cajas(redis) == [primeras, despues]
+    assert nct.cerrar_cajas() == 0  # BC-89: no se apila otra caja detrás de la que se mina
+    assert cajas(redis) == [primeras]
+    assert redis.lrange("tx:pendientes", 0, -1) == despues
 
 
-def test_dos_replicas_cerrando_cajas_a_la_vez_no_repiten_transacciones(armar, redis):
-    nct = armar(tx_por_caja=3)
+def test_sin_pendientes_no_arma_cajas_vacias(armar, redis):
+    nct = armar()
+    nct.cargar_genesis()
+
+    assert nct.cerrar_cajas() == 0
+    assert cajas(redis) == []
+
+
+def test_dos_replicas_cerrando_cajas_a_la_vez_arman_una_sola(armar, redis):
+    nct = armar(tx_por_caja=30)
     nct.cargar_genesis()
     ids = [tx["id"] for tx in pendientes(redis, nct, 40)]
-    replicas = [armar(tx_por_caja=3) for _ in range(4)]
+    replicas = [armar(tx_por_caja=30) for _ in range(4)]
     hilos = [threading.Thread(target=r.cerrar_cajas) for r in replicas]
     for hilo in hilos:
         hilo.start()
     for hilo in hilos:
         hilo.join()
 
-    en_cajas = [id_ for caja in cajas(redis) for id_ in caja]
-    assert sorted(en_cajas) == sorted(ids)
+    assert cajas(redis) == [ids[:30]]
+    assert redis.lrange("tx:pendientes", 0, -1) == ids[30:]
 
 
 def test_el_tic_corre_una_sola_vez_por_ventana_entre_las_replicas(armar, redis):
@@ -98,6 +106,17 @@ def test_no_arma_otra_tarea_mientras_hay_una_en_curso(armar, redis, publicador):
     assert len(publicador.tareas()) == 1
 
 
+def test_armar_sin_caja_cierra_una_con_lo_que_espera(armar, redis, publicador):
+    nct = armar()
+    nct.cargar_genesis()
+    txs = pendientes(redis, nct, 3)
+
+    assert nct.armar_si_libre() is not None  # sin esperar el tic
+
+    [tarea] = publicador.tareas()
+    assert tarea["transacciones"] == txs and redis.llen("tx:pendientes") == 0
+
+
 def test_sin_cajas_no_arma_y_no_se_queda_con_la_tarea_actual(armar, redis, publicador):
     nct = armar()
     nct.cargar_genesis()
@@ -138,5 +157,6 @@ def test_las_metricas_de_pendientes_y_en_cajas_salen_de_redis(armar, redis):
     nct.cerrar_cajas()
     pendientes(redis, nct, 1)
 
-    assert REGISTRY.get_sample_value("blockchain_tx_pendientes") == 1
-    assert REGISTRY.get_sample_value("blockchain_tx_en_cajas") == 3
+    assert REGISTRY.get_sample_value("blockchain_tx_pendientes") == 2
+    assert REGISTRY.get_sample_value("blockchain_tx_en_cajas") == 2
+    assert REGISTRY.get_sample_value("blockchain_tx_por_bloque_maximo") == 2

@@ -13,7 +13,7 @@ Transferencias firmadas entre cuentas sobre una cadena de bloques con prueba de 
 
 ## Desplegado
 
-- La página y la API: <https://blockchain-chimera.duckdns.org>. Hay un health-check por servicio en `/salud/<servicio>` (backend, frontend, nct, trp y gateway).
+- La página y la API: <https://blockchain-chimera.chimera-sdypp.workers.dev> (por Cloudflare, también desde la red de la universidad) o <https://blockchain-chimera.duckdns.org> (directo a GKE). Hay un health-check por servicio en `/salud/<servicio>` (backend, frontend, nct, trp y gateway).
 - Los mineros se conectan al gateway: `http://136.80.87.183:8081`.
 - Los nodos verificadores: `/nodos/0` y `/nodos/1`.
 - La billetera es [`billetera.html`, en el último release](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/latest). Se comprueba con el SHA-256 de las notas y se abre desde el disco.

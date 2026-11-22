@@ -1,0 +1,41 @@
+# La puerta en Cloudflare (pilar3/cloudflare): el Worker de workers.dev que reenvía al sistema en GKE,
+# para entrar desde la red de la universidad, que filtra DuckDNS. Necesita los secrets
+# CLOUDFLARE_API_TOKEN (plantilla «Edit Cloudflare Workers») y CLOUDFLARE_ACCOUNT_ID.
+name: Pilar 3 · Cloudflare
+
+on:
+  push:
+    branches: [dev]
+    paths: ["pilar3/cloudflare/**", ".github/workflows/pilar3-cloudflare.yml"]
+  pull_request:
+    branches: [dev]
+    paths: ["pilar3/cloudflare/**", ".github/workflows/pilar3-cloudflare.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests del Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test pilar3/cloudflare/worker.test.mjs
+
+  desplegar:
+    name: Desplegar en workers.dev
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: pilar3/cloudflare
+          command: deploy

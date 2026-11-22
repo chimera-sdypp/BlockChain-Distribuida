@@ -1,6 +1,6 @@
 # Pilar 3 — Despliegue, pruebas y escalabilidad
 
-> **Desplegado** en el proyecto `chimera-blockchain` (org `distribuidos-chimera`). Sistema en `https://blockchain-chimera.duckdns.org`
+> **Desplegado** en el proyecto `chimera-blockchain` (org `distribuidos-chimera`). Sistema en `https://blockchain-chimera.chimera-sdypp.workers.dev` (el Worker de [cloudflare/](cloudflare/), que reenvía a `https://blockchain-chimera.duckdns.org`)
 > y estado de cada servicio en `/salud/<servicio>`; los mineros entran por `http://<IP del gateway>:8081`.
 > Sin las variables `GCP_*` en el repo los pipelines sólo validan (`fmt` y `validate`).
 
@@ -79,7 +79,7 @@ Para conectarse: `tofu output -raw conectarse`.
   - Workload Identity se configura con la anotación del ServiceAccount.
 
   KEDA lo prende y lo apaga según el Prometheus del Pipeline 2 (0 pods en reposo).
-- **Health-check público:** `https://blockchain-chimera.duckdns.org/salud/<servicio>` para `backend`, `frontend`, `nct`, `trp` y `gateway`. Devuelve el `/health` del servicio: `{servicio: estado, rabbitmq: …, redis: …}`, y 503 si algo está caído. El escalador no tiene, porque apagado es su estado normal.
+- **Health-check público:** `https://blockchain-chimera.chimera-sdypp.workers.dev/salud/<servicio>` para `backend`, `frontend`, `nct`, `trp` y `gateway`. Devuelve el `/health` del servicio: `{servicio: estado, rabbitmq: …, redis: …}`, y 503 si algo está caído. El escalador no tiene, porque apagado es su estado normal.
 - La imagen del minero GPU no va en este pipeline: la publica `ci.yml` en GHCR.
 
 ## Pipeline 4 · VMs minero-cpu

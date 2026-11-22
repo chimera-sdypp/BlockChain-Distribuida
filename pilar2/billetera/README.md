@@ -15,7 +15,7 @@ Reglas fijas: la clave del organizador (vacía: la del génesis) y la recompensa
 ```bash
 cd pilar2
 python billetera/armar.py                                         # pagina.html + verificador.js → billetera.html
-node billetera/verificar_en_vivo.cjs https://blockchain-chimera.duckdns.org <cuenta>   # lo mismo, desde la terminal
+node billetera/verificar_en_vivo.cjs https://blockchain-chimera.chimera-sdypp.workers.dev <cuenta>   # lo mismo, desde la terminal
 python -m pytest billetera                                        # el JS contra Python, sobre el mismo vector (con node)
 ```
 

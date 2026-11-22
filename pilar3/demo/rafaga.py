@@ -248,7 +248,7 @@ def abrir(url):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--sistema", default="https://blockchain-chimera.duckdns.org", help="la API del sistema")
+    p.add_argument("--sistema", default="https://blockchain-chimera.chimera-sdypp.workers.dev", help="la API del sistema")
     p.add_argument("--puerto", type=int, default=8765)
     p.add_argument("--sin-ventana", action="store_true", help="no abre el navegador")
     a = p.parse_args()

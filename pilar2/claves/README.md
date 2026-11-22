@@ -27,7 +27,7 @@ Para el organizador (contrato v3): cada decisión es un acta firmada con su clav
 ```bash
 cd pilar2
 python -m claves generar ~/claves/zoe.clave                                   # muestra la cuenta de zoe
-python -m claves alta ~/claves/zoe.clave --nombre zoe --url https://blockchain-chimera.duckdns.org
+python -m claves alta ~/claves/zoe.clave --nombre zoe --url https://blockchain-chimera.chimera-sdypp.workers.dev
 python -m claves aprobar ~/claves/organizador.clave --cuenta <zoe> --nombre zoe --carga 500 --url https://…
 python -m claves transferir ~/claves/zoe.clave --destino <cuenta> --monto 10 --url https://…
 ```

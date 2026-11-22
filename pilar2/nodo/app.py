@@ -1,6 +1,6 @@
 """Nodo verificador (BC-83) y validador (BC-86): una copia propia de la cadena que verifica cada bloque entero.
 
-    python -m nodo --fuente https://blockchain-chimera.duckdns.org --datos ~/nodo-chimera            # verificador
+    python -m nodo --fuente https://blockchain-chimera.chimera-sdypp.workers.dev --datos ~/nodo-chimera            # verificador
     python -m nodo --fuente https://… --datos ~/validador --validador                                  # validador
 
 Lo corre cualquiera, sin permiso ni túnel: sólo lee la API pública (`/api/bloques?orden=asc`, `/api/epocas/<n>`).

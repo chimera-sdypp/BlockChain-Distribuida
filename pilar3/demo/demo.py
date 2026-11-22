@@ -47,7 +47,8 @@ def decir(texto=""):
 
 
 def get(url):
-    with urllib.request.urlopen(url, timeout=20) as respuesta:
+    pedido = urllib.request.Request(url, headers={"User-Agent": "chimera-demo"})  # el de urllib lo frena Cloudflare
+    with urllib.request.urlopen(pedido, timeout=20) as respuesta:
         return json.loads(respuesta.read())
 
 

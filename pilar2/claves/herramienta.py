@@ -71,6 +71,10 @@ def jwk(privada):
             "x": _b64url(bytes.fromhex(contrato.clave_publica(privada)))}
 
 
+# Cloudflare (workers.dev) rechaza con 403 (error 1010) el User-Agent por defecto de urllib.
+AGENTE = "chimera-claves"
+
+
 class Backend:
     """Lo que usa la herramienta del backend: cuentas, nonces, transacciones, pedidos y el panel firmado."""
 
@@ -80,7 +84,7 @@ class Backend:
     def pedir(self, metodo, ruta, cuerpo=None, encabezados=None):
         datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
         pedido = urllib.request.Request(self.url + ruta, data=datos, method=metodo,
-                                        headers={"Content-Type": "application/json", **(encabezados or {})})
+                                        headers={"Content-Type": "application/json", "User-Agent": AGENTE, **(encabezados or {})})
         try:
             with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
                 return respuesta.status, json.loads(respuesta.read() or b"null")
@@ -113,7 +117,7 @@ class Backend:
         crudo = json.dumps(cuerpo).encode() if cuerpo is not None else b""
         encabezados = contrato.firmar_pedido(privada, metodo, ruta, crudo, quien=contrato.ORGANIZADOR)
         pedido = urllib.request.Request(self.url + ruta, data=crudo or None, method=metodo,
-                                        headers={"Content-Type": "application/json", **encabezados})
+                                        headers={"Content-Type": "application/json", "User-Agent": AGENTE, **encabezados})
         try:
             with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
                 return respuesta.status, json.loads(respuesta.read() or b"null")

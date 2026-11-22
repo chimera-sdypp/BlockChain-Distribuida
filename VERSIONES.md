@@ -1,8 +1,13 @@
 # Versiones
 
-Versión actual: **0.8.2** (20/11/2026)
+Versión actual: **0.8.3** (21/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.3 — 21/11/2026
+
+- **Bloques que se llevan toda la cola** (#90, BC-89): el NCT cierra una caja sólo cuando no hay otra en la fila, y al confirmarse un bloque el siguiente sale en el acto con todo lo que llegó mientras se minaba, hasta `TX_POR_CAJA`, que pasa de 100 a 1000. Hasta la 0.8.2 cada tic apilaba cajas de 100 y se minaba una por bloque: la capacidad era 100 tx por minuto y, con la ráfaga de 10 tx/s de la demo del 20/11, la cola crecía sin techo (sumar mineros no la sube: el prefijo sube y el bloque vuelve a tardar un minuto). No cuesta más PoW: lo que se mina lleva la raíz de las transacciones. Probado en k3s con la ráfaga de 10 tx/s durante 5 min y 3 mineros CPU (prefijo 7): 3010 de 3010 confirmadas, la cola se vació 76 s después de cortar.
+- Grafana: métrica `blockchain_tx_por_bloque_maximo` y línea «capacidad» (`TX_POR_CAJA` / `SEGUNDOS_POR_BLOQUE`) en el panel de transacciones recibidas.
 
 ## 0.8.2 — 20/11/2026
 

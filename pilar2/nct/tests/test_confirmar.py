@@ -7,7 +7,7 @@ from prometheus_client import REGISTRY
 
 from comun import contrato
 from comun.tests.claves import CUENTA, carga
-from nct.tests.escenario import datos, guardar_recibida, minar, saldo, tarea_en_curso
+from nct.tests.escenario import BILLETERA, datos, guardar_recibida, minar, saldo, tarea_en_curso
 
 
 def avisos_de_bloque(publicador):
@@ -56,6 +56,23 @@ def test_despues_de_confirmar_arma_la_tarea_siguiente(armar, redis, publicador):
     [_, siguiente] = publicador.tareas()
     assert siguiente["previous_hash"] == solucion["hash"] and siguiente["altura"] == 2
     assert redis.get("tarea:actual") == siguiente["tarea"]
+
+
+def test_el_bloque_siguiente_se_lleva_todo_lo_que_llego_mientras_se_minaba(armar, redis, publicador):
+    """BC-89: con una ráfaga no se apilan cajas; el bloque siguiente sale con todo lo acumulado."""
+    nct = armar(tx_por_caja=10)
+    id_tarea = tarea_en_curso(redis, nct)
+    llegaron = [guardar_recibida(redis, BILLETERA("alice", "carol", 1)) for _ in range(4)]
+    for tx in llegaron:
+        nct.validar(tx)
+    nct.tic()  # el ticker no apila otra caja detrás de la que se mina
+    assert redis.llen("cajas") == 1 and redis.llen("tx:pendientes") == 4
+
+    nct.procesar_solucion(minar(redis, id_tarea))
+
+    [_, siguiente] = publicador.tareas()
+    assert [tx["id"] for tx in siguiente["transacciones"]] == [tx["id"] for tx in llegaron]
+    assert redis.llen("tx:pendientes") == 0 and redis.llen("cajas") == 1
 
 
 def test_una_solucion_repetida_no_duplica_el_bloque_y_repite_el_aviso(armar, redis, publicador):

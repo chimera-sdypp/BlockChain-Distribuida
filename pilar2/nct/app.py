@@ -148,21 +148,19 @@ end
 return rechazadas
 """
 
-# Cierra cajas (BC-25): saca todo tx:pendientes y lo agrega al final de `cajas` en listas JSON de
-# ids de como mucho N. Atómico: con dos réplicas, ninguna transacción queda en dos cajas.
-# KEYS: tx:pendientes, cajas. ARGV: N. Devuelve cuántas cajas armó.
+# Cierra una caja (BC-25, BC-89): sólo si la fila `cajas` está vacía, saca las primeras N de tx:pendientes y
+# las pone como una lista JSON de ids. Mientras se mina un bloque, lo que llega espera en tx:pendientes; al
+# confirmarse, la caja siguiente se lleva todo lo acumulado (hasta N). Hasta BC-89 se cerraban cajas de N cada
+# ventana y se minaba una por bloque: con una ráfaga la fila crecía sin techo. Atómico: con dos réplicas,
+# ninguna transacción queda en dos cajas ni hay dos cajas a la vez.
+# KEYS: tx:pendientes, cajas. ARGV: N. Devuelve cuántas cajas armó (0 o 1).
 LUA_CERRAR_CAJAS = """
-local ids = redis.call('LRANGE', KEYS[1], 0, -1)
+if redis.call('LLEN', KEYS[2]) > 0 then return 0 end
+local ids = redis.call('LRANGE', KEYS[1], 0, tonumber(ARGV[1]) - 1)
 if #ids == 0 then return 0 end
-redis.call('DEL', KEYS[1])
-local n, cajas = tonumber(ARGV[1]), 0
-for i = 1, #ids, n do
-  local caja = {}
-  for j = i, math.min(i + n - 1, #ids) do caja[#caja + 1] = ids[j] end
-  redis.call('RPUSH', KEYS[2], cjson.encode(caja))
-  cajas = cajas + 1
-end
-return cajas
+redis.call('LTRIM', KEYS[1], #ids, -1)
+redis.call('RPUSH', KEYS[2], cjson.encode(ids))
+return 1
 """
 
 # Suelta una marca (tarea:actual, el lock del ticker) sólo si sigue siendo la nuestra.
@@ -337,7 +335,7 @@ return ARGV[2]
 
 TAREA_ACTUAL, TICKER = contrato.TAREA_ACTUAL, "ticker"
 COLA_TAREAS = contrato.COLAS[1]  # tareas
-VENTANA, TX_POR_CAJA, TAREA_VENCE, ESPERA_NONCE = 30, 100, 600, 60
+VENTANA, TX_POR_CAJA, TAREA_VENCE, ESPERA_NONCE = 30, 1000, 600, 60
 
 BLOQUES = Counter("blockchain_bloques", "Bloques confirmados por esta réplica del NCT")
 TIEMPO_BLOQUE = Histogram("blockchain_tiempo_bloque_segundos", "Desde que se arma la caja hasta que su bloque se confirma",
@@ -347,6 +345,8 @@ SIN_REPLICA = Counter("blockchain_bloques_sin_replica",
 TX_PENDIENTES = Gauge("blockchain_tx_pendientes", "Transacciones validadas que esperan caja")
 TX_EN_CAJAS = Gauge("blockchain_tx_en_cajas",
                     "Transacciones apiladas en cajas esperando bloque (las dos réplicas reportan lo mismo: usar max)")
+TX_POR_BLOQUE = Gauge("blockchain_tx_por_bloque_maximo", "Transacciones por bloque como mucho (TX_POR_CAJA): dividido "
+                      "el tiempo esperado por bloque, la capacidad del sistema en tx/s")
 TX_RECHAZADAS = Counter("blockchain_tx_rechazadas", "Transacciones rechazadas por el NCT", ["motivo"])
 # v3: el caché contra la cadena.
 DIVERGENCIAS = Counter("blockchain_estado_divergencias", "Valores del caché de Redis que no coincidían con la cadena "
@@ -431,6 +431,7 @@ class Nct:
         self._relevar = redis.register_script(LUA_RELEVAR)
         TX_PENDIENTES.set_function(self._contar_pendientes)
         TX_EN_CAJAS.set_function(self._contar_en_cajas)
+        TX_POR_BLOQUE.set(tx_por_caja)
 
     def cargar_genesis(self):
         """Si la cadena está vacía, carga el génesis con los saldos iniciales y aprueba esas cuentas.
@@ -619,6 +620,8 @@ class Nct:
     def armar_si_libre(self):
         """Si no hay tarea en curso y hay cajas, arma el bloque candidato con la primera y lo publica.
 
+        Si la fila está vacía cierra una caja con lo que esperaba (BC-89): así, al confirmarse un bloque, el
+        siguiente sale enseguida con todo lo que llegó mientras se minaba, sin esperar el tic.
         La caja queda primera en `cajas` mientras se mina (la saca el consenso al confirmar): si
         el NCT muere, `tarea:actual` vence y la misma caja se vuelve a armar. Devuelve el id o None.
         """
@@ -626,6 +629,8 @@ class Nct:
         if not self.redis.set(TAREA_ACTUAL, id_tarea, nx=True, ex=self.vence()):
             return None
         caja = self.redis.lindex(contrato.CAJAS, 0)
+        if caja is None and self.cerrar_cajas():
+            caja = self.redis.lindex(contrato.CAJAS, 0)
         if caja is None:
             self._soltar(keys=[TAREA_ACTUAL], args=[id_tarea])
             return None

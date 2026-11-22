@@ -9,11 +9,12 @@ Transferencias firmadas entre cuentas sobre una cadena de bloques con prueba de 
 | [`pilar1/`](pilar1/README.md) | El minero MD5 en CUDA, del hola mundo al minero acotado a un rango, y la comparativa CPU contra GPU |
 | [`pilar2/`](pilar2/README.md) | Los servicios (backend, frontend, NCT, TrP, gateway, escalador), los mineros, el nodo verificador, la herramienta de claves y la billetera. El formato de todo está en [`CONTRATO.md`](pilar2/CONTRATO.md) |
 | [`pilar3/`](pilar3/README.md) | OpenTofu, los 4 pipelines, los manifiestos de GKE, las [pruebas de carga](pilar3/pruebas/README.md) y la [demo](pilar3/demo/README.md) |
+| [`informe/`](informe/informe-tpi-cerberus.pdf) | El informe final, en PDF |
 | [`VERSIONES.md`](VERSIONES.md) | Qué entró en cada versión (tag `vX.Y.Z` en `main`) |
 
 ## Desplegado
 
-- La página y la API: <https://blockchain-chimera.duckdns.org>. Hay un health-check por servicio en `/salud/<servicio>` (backend, frontend, nct, trp y gateway).
+- La página y la API: <https://blockchain-chimera.chimera-sdypp.workers.dev> (por Cloudflare, también desde la red de la universidad) o <https://blockchain-chimera.duckdns.org> (directo a GKE). Hay un health-check por servicio en `/salud/<servicio>` (backend, frontend, nct, trp y gateway).
 - Los mineros se conectan al gateway: `http://136.80.87.183:8081`.
 - Los nodos verificadores: `/nodos/0` y `/nodos/1`.
 - La billetera es [`billetera.html`, en el último release](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/latest). Se comprueba con el SHA-256 de las notas y se abre desde el disco.

@@ -10,7 +10,7 @@
     matar nct|trp|gateway|redis  borra un pod (en redis, el primario) y confirma una transferencia enseguida
     operador                   el operador infla un saldo en Redis: el NCT lo rechaza y lo corrige desde la cadena
 
-Variables: SISTEMA (https://blockchain-chimera.duckdns.org), GATEWAY (http://136.80.87.183:8081), KUBE_GKE
+Variables: SISTEMA (https://blockchain-chimera.chimera-sdypp.workers.dev), GATEWAY (http://136.80.87.183:8081), KUBE_GKE
 (~/.kube/tpi-gke.yaml), KUBE_K3S (~/.kube/config, el k3s con la RTX 4060) y PROYECTO (el de GCP, para ver las VMs). alice, bob y carol son las cuentas de
 prueba del génesis (pilar2/comun/tests/claves.py).
 """
@@ -32,7 +32,7 @@ from claves.herramienta import Backend  # noqa: E402
 from comun import contrato  # noqa: E402
 from comun.tests.claves import CUENTA, PRIVADA  # noqa: E402
 
-SISTEMA = os.environ.get("SISTEMA", "https://blockchain-chimera.duckdns.org").rstrip("/")
+SISTEMA = os.environ.get("SISTEMA", "https://blockchain-chimera.chimera-sdypp.workers.dev").rstrip("/")
 GATEWAY = os.environ.get("GATEWAY", "http://136.80.87.183:8081").rstrip("/")
 KUBE_GKE = os.path.expanduser(os.environ.get("KUBE_GKE", "~/.kube/tpi-gke.yaml"))
 KUBE_K3S = os.path.expanduser(os.environ.get("KUBE_K3S", "~/.kube/config"))

@@ -10,7 +10,7 @@ Transferencias firmadas entre cuentas sobre una cadena de bloques con prueba de 
 | [`pilar2/`](pilar2/README.md) | Los servicios (backend, frontend, NCT, TrP, gateway, escalador), los mineros, el nodo verificador, la herramienta de claves y la billetera. El formato de todo está en [`CONTRATO.md`](pilar2/CONTRATO.md) |
 | [`pilar3/`](pilar3/README.md) | OpenTofu, los 4 pipelines, los manifiestos de GKE, las [pruebas de carga](pilar3/pruebas/README.md) y la [demo](pilar3/demo/README.md) |
 | [`informe/`](informe/informe-tpi-cerberus.pdf) | El informe final, en PDF |
-| [`videos/`](videos/) | La demo grabada sobre GKE ([video 3, Tomás](videos/video3-tomas.mp4): mineros, tramposos, validadores e historial) |
+| Videos | La demo grabada sobre GKE, en los releases: [video 3, Tomás](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/download/v0.8.4/video3-tomas.mp4) (mineros, tramposos, validadores e historial) |
 | [`VERSIONES.md`](VERSIONES.md) | Qué entró en cada versión (tag `vX.Y.Z` en `main`) |
 
 ## Desplegado

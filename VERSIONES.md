@@ -1,8 +1,15 @@
 # Versiones
 
-Versión actual: **0.8.4** (22/11/2026)
+Versión actual: **0.8.5** (23/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.5 — 23/11/2026
+
+Sólo herramientas y documentación: no cambia ningún servicio ni la cadena.
+
+- Arreglo (#94): la herramienta de claves, `rafaga.py` y `demo.py` mandan su propio User-Agent. Cloudflare rechazaba el de Python (error 1010), así que fallaban con la URL del Worker, que es la de por defecto desde la 0.8.4.
+- **Video de la demo** (#95, #96): sección en el README; los videos son adjuntos del release v0.8.4, porque GitHub no acepta archivos de más de 100 MB en el repo.
 
 ## 0.8.4 — 22/11/2026
 

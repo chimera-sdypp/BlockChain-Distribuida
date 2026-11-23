@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# La ráfaga de la demo: N transferencias chiquitas (1 a 5) en ronda entre alice, bob y carol, firmadas
+# Una ráfaga: N transferencias chiquitas (1 a 5) en ronda entre alice, bob y carol, firmadas
 # con sus claves de prueba y con el nonce de cada cuenta, y sigue cada una hasta que se confirma o se
 # rechaza. Reemplaza a tpi-gcp/tx-prueba.sh, que mandaba transacciones sin firma (contrato v1).
 #

@@ -12,7 +12,8 @@
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`trampas.py`](trampas.py) | BC-76: mineros que mienten a propósito contra el sistema desplegado |
 | [`operador.py`](operador.py) | BC-85: lo que haría el operador de la nube (tocar Redis, editar o reescribir bloques, inflar shares, un validador que firma dos historias) y que se note |
-| [`rafaga.sh`](rafaga.sh) | La ráfaga de la demo: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
+| [`rafaga.sh`](rafaga.sh) | Una ráfaga: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
+| [`rafaga.py`](rafaga.py) | La misma ráfaga con ventana: el ritmo (transferencias por segundo) se mueve en vivo, hay botones para tirar varias juntas y muestra las que esperan bloque, las confirmadas y un gráfico de los últimos 60 s |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
 
@@ -272,7 +273,7 @@ Los paneles «Rangos por minero por minuto» y «Rangos por tipo», de la fila �
 
 Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de prueba del génesis (alice, bob y carol, de `pilar2/comun/tests/claves.py`), que en GKE tienen saldos altos ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.
 
-La ráfaga de la demo: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`.
+Una ráfaga: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`, o con ventana: `pilar2/.venv/bin/python pilar3/pruebas/rafaga.py [--sistema https://…]`.
 
 ## Ajuste de dificultad (BC-60)
 

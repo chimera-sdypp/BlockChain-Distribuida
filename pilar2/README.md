@@ -66,7 +66,7 @@ kubectl apply -k k8s/monitoreo && kubectl apply -k k8s/escalador
 
 - La página y la API, por el Ingress: `http://localhost` (`/api` → backend; `/` y `/eventos` → frontend). Las altas se piden en `/alta` y el organizador las aprueba en el modo organizador de la [billetera](billetera/) o con `python -m claves`, con su clave (en k3s, la de prueba `organizador` de `comun/tests/claves.py`).
 - Los mineros, al gateway por su LoadBalancer: `GATEWAY_URL=http://localhost:8081` y su clave (la generan la primera vez y muestran su cuenta). El minero queda pedido solo y el organizador lo aprueba desde la billetera (o `k8s/aprobar.sh <cuenta> minero <alias>`). El CPU con `python -m minero_cpu`; el GPU con `python -m minero_gpu` o su imagen.
-- Las cuentas del génesis son las de prueba alice, bob y carol (`comun/tests/claves.py`: sus privadas se derivan del nombre, sirven para probar). La ráfaga de la demo: `../pilar3/pruebas/rafaga.sh http://localhost 20`.
+- Las cuentas del génesis son las de prueba alice, bob y carol (`comun/tests/claves.py`: sus privadas se derivan del nombre, sirven para probar). Una ráfaga: `../pilar3/pruebas/rafaga.sh http://localhost 20`.
 - 2 réplicas de cada servicio; el escalador, 0 o 1 pod según KEDA.
 
 ### Pruebas del sistema desplegado

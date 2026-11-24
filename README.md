@@ -23,7 +23,6 @@ Grabada sobre GKE en tres partes, para ver en orden. Los videos son adjuntos del
 | [Video 2](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/download/v0.8.4/video2.mp4) | Una ráfaga de transferencias (qué escala y por qué), un pod que se mata y el operador que infla un saldo |
 | [Video 3](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/download/v0.8.4/video3.mp4) | Salen las GPU y entra la VM, los mineros que mienten, los validadores 2 de 3 y el historial de dificultad |
 
-Para sumar uno: `gh release upload v0.8.4 video1.mp4` y cambiar «Video 1 (falta)» por `[Video 1](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/download/v0.8.4/video1.mp4)`.
 
 ## Desplegado
 

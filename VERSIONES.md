@@ -1,8 +1,15 @@
 # Versiones
 
-Versión actual: **0.8.5** (23/11/2026)
+Versión actual: **0.8.6** (24/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.8.6 — 24/11/2026
+
+Sólo documentación: no cambia ningún servicio ni la cadena, y no despliega nada en GKE.
+
+- **Los tres videos de la demo** (#98, #99): enlaces en el README a los videos 1 y 2; el 3 tiene música de fondo, como los otros. Siguen como adjuntos del release v0.8.4.
+- `rafaga.py` pasa a `pilar3/pruebas/` y se borra `pilar3/demo/` (`demo.py` y su guion), que era sólo para la demo en vivo del 20/11.
 
 ## 0.8.5 — 23/11/2026
 

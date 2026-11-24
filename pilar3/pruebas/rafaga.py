@@ -1,8 +1,8 @@
-"""La ráfaga de la demo con una ventana: el ritmo (transferencias por segundo) se mueve en vivo y un botón tira
+"""Una ráfaga con ventana: el ritmo (transferencias por segundo) se mueve en vivo y un botón tira
 N juntas. Firma en ronda con las cuentas de prueba del génesis (alice → bob → carol → alice), lleva el nonce de
 cada una y sigue cada transferencia hasta que entra en un bloque o se rechaza.
 
-    pilar2/.venv/bin/python pilar3/demo/rafaga.py [--sistema https://…] [--puerto 8765] [--sin-ventana]
+    pilar2/.venv/bin/python pilar3/pruebas/rafaga.py [--sistema https://…] [--puerto 8765] [--sin-ventana]
 
 Abre la ventana con Chrome en modo app (o en el navegador). Ctrl+C la cierra.
 """

@@ -47,6 +47,8 @@ SHARES_TAREA = "tarea:{}:shares"     # conjunto «minero:nonce» de la tarea, pa
 TAREA_SIN_SOLUCION = "tarea:{}:sin_solucion"  # conjunto con los rangos que volvieron sin solución (TrP)
 # BC-70: una tarea terminada (y sus dos conjuntos) vence a esta hora. Lo que importa quedó en el bloque.
 TAREA_GUARDA = 3600
+# BC-94: una transacción rechazada vence a esta hora: le alcanza a la billetera para mostrar el motivo.
+RECHAZADA_GUARDA = 3600
 # BC-73: dificultad por tiempo.
 CAJA_ARMADA = "caja:armada"          # hash {caja, desde}: cuándo se armó por primera vez la caja que se está minando
 PREFIJO_REFERENCIA = "prefijo:referencia"  # hash {potencia, altura, prefijo, cuando}: el último recálculo por potencia

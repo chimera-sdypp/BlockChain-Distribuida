@@ -50,10 +50,20 @@ resource "google_container_cluster" "blockchain" {
   }
 
   # El Ingress lo atiende Traefik (Pipeline 2): sin esto, GKE además crearía su balanceador HTTP (pago).
+  # Habilita el addon de NetworkPolicy (Calico) para aplicar las políticas de BC-104 sin recrear el cluster.
   addons_config {
     http_load_balancing {
       disabled = true
     }
+    network_policy_config {
+      disabled = false
+    }
+  }
+
+  # Calico en vez de Dataplane V2 para no forzar la recreación del cluster existente (BC-104).
+  network_policy {
+    enabled  = true
+    provider = "CALICO"
   }
 
   # Que un tofu destroy lo pueda borrar al terminar la evaluación.
@@ -86,16 +96,21 @@ resource "google_project_iam_member" "nodos" {
 locals {
   nodegroups = {
     # Con taint: sólo entran los pods que lo toleran (RabbitMQ, Redis, Traefik, KEDA, observabilidad).
-    infra = { nodos = var.nodos_infra, taint = true }
-    apps  = { nodos = var.nodos_apps, taint = false }
+    infra = { min = var.nodos_infra, max = var.nodos_infra_max, taint = true }
+    apps  = { min = var.nodos_apps, max = var.nodos_apps_max, taint = false }
   }
 }
 
 resource "google_container_node_pool" "nodegroup" {
-  for_each   = local.nodegroups
-  name       = each.key
-  cluster    = google_container_cluster.blockchain.id
-  node_count = each.value.nodos
+  for_each           = local.nodegroups
+  name               = each.key
+  cluster            = google_container_cluster.blockchain.id
+  initial_node_count = each.value.min
+
+  autoscaling {
+    min_node_count = each.value.min
+    max_node_count = each.value.max
+  }
 
   node_config {
     machine_type    = var.maquina
@@ -123,6 +138,10 @@ resource "google_container_node_pool" "nodegroup" {
   management {
     auto_repair  = true
     auto_upgrade = true
+  }
+
+  lifecycle {
+    ignore_changes = [initial_node_count]
   }
 }
 

@@ -61,6 +61,7 @@ Para conectarse: `tofu output -raw conectarse`.
 - **KEDA** usa el chart 2.21.0, el mismo que en k3s.
 - **RabbitMQ y Redis** usan los manifiestos del Pilar 2 sin cambios: [`servicios-base/`](k8s/servicios-base/kustomization.yaml) sólo les agrega el nodeSelector y la toleration de infra. Sus Services son internos.
 - **El Secret `blockchain-secretos`** sale de los secretos del ambiente `produccion` de GitHub: `RABBIT_USUARIO`, `RABBIT_CLAVE`, `RABBIT_COOKIE` y `REDIS_CLAVE`. Los mineros no usan un secreto compartido: firman con su clave (BC-57).
+- **El Secret `escalador-clave`** (BC-95) sale del secreto `ESCALADOR_CLAVE` del mismo ambiente: la privada con que el escalador firma las altas delegadas de sus VMs. Sin él, el Pipeline 2 falla y el escalador no arranca (hasta la v3 la generaba y la guardaba en Redis). Cada VM genera su propia clave al arrancar y publica sólo la pública en sus guest attributes: ninguna privada pasa por Redis ni por el state de `vms/instancias`. Al rotar la del escalador, el organizador le da un `permiso-` a la clave nueva.
 - **Cuentas en GKE** ([`k8s/apps/nct-saldos.yaml`](k8s/apps/nct-saldos.yaml)): el génesis trae las cuentas de prueba alice, bob y carol con saldos altos (las firman las pruebas de carga), y `ORGANIZADOR_CLAVE` es la del organizador de GKE, cuya privada no está en el repo. Los mineros se aprueban con `pilar2/k8s/aprobar.sh` (`kubectl exec` en el Redis).
 - **Observabilidad (BC-37):** los mismos charts y values que en k3s ([pilar2](../pilar2/README.md)), más [`monitoreo.yaml`](helm/monitoreo.yaml) y [`loki.yaml`](helm/loki.yaml), que los mandan al nodegroup de infra. La contraseña de Grafana sale del secreto `GRAFANA_CLAVE` del ambiente. Se entra por port-forward: `kubectl -n monitoring port-forward svc/monitoreo-grafana 3000:80`.
 
@@ -86,7 +87,7 @@ Para conectarse: `tofu output -raw conectarse`.
 - **En un PR:** gitleaks, build de la imagen del minero CPU, `fmt`, `validate` (también de `instancias/`) y `plan` comentado.
 - **Al mergear a `main`:** push de la imagen a Artifact Registry (tag = sha) y `apply` de la plantilla. Necesita la variable `GATEWAY_URL`, la IP pública del gateway (`http://<ip>:8081`).
 - **La VM:** Container-Optimized OS con un startup-script ([`arrancar.sh`](vms/arrancar.sh)) que:
-  1. lee su clave Ed25519 de la metadata de la instancia (`clave-minero`): la genera el escalador, que además aprueba su cuenta en `cuentas` (BC-57). Queda en `/run`, que está en RAM;
+  1. genera su clave Ed25519 la primera vez (el minero la guarda en `/var/lib/minero`) y publica sólo la pública en sus guest attributes (`minero/publica`); el escalador la lee y firma su alta delegada (BC-57, BC-95). La privada no sale de la VM;
   2. baja la imagen con la cuenta de servicio de la VM;
   3. arranca el minero con `MINERO_ID` = nombre de la VM y `CLAVE_PRIVADA`.
 

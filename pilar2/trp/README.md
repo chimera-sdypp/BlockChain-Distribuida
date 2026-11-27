@@ -99,7 +99,7 @@ Nuestros shares tienen dificultad fija (el prefijo menos un carácter) y un tope
 | `SEGUNDOS_POR_BLOQUE` | `60` | Tiempo esperado por bloque en segundos (1 minuto, alineado con el contrato) |
 | `VENTANA_AJUSTE` | `5` | Cantidad de bloques minados entre cada ajuste por tiempo |
 | `AJUSTE_MAXIMO` | `1` | Cambio máximo de caracteres hexadecimales por ajuste |
-| `PREFIJO_BASE` | `6` | Tope máximo de largo de prefijo permitido en el sistema |
+| `PREFIJO_BASE` | `6` | Tope máximo de largo de prefijo permitido en el sistema. Nunca se baja del piso del génesis (v4, BC-97): si `PREFIJO_BASE` o la potencia dan menos, va el piso (motivo `piso`) |
 | `PREFIJO_INICIAL` | `0` | `0`: arranca según potencia viva; `> 0`: fuerza ese largo inicial para pruebas de convergencia |
 | `AJUSTAR_PREFIJO` | `1` | `1`: ajuste dinámico; `0`: fijo en `PREFIJO_BASE` (para pruebas de prefijos) |
 | `ESPACIO_NONCES` | `2**32` | Espacio de búsqueda `[0, ESPACIO - 1]`. Al menos `16^PREFIJO_BASE × 4`: si no, el TrP no arranca (BC-73) |

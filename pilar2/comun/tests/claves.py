@@ -5,6 +5,9 @@ nombre sirve: `CUENTA["zoe"]` deriva la de zoe la primera vez que se pide.
 
     from comun.tests.claves import CUENTA, PRIVADA, firmada
     firmada("alice", "bob", 10, nonce=1)   # contrato.transaccion con las claves de prueba
+
+v4: lo firmado lleva el hash del génesis. Por defecto es el de la cadena de prueba (`CADENA`: el génesis de
+comun/tests/cadena.py con alice 100 y bob 50); para otra cadena, `cadena=<hash del génesis>`.
 """
 
 import hashlib
@@ -33,19 +36,36 @@ for _nombre in NOMBRES:
     CUENTA[_nombre]
 
 
+# El génesis de la cadena de prueba por defecto (comun/tests/cadena.py), y su hash: el id con que se firma.
+GENESIS = contrato.bloque_genesis({CUENTA["alice"]: 100, CUENTA["bob"]: 50}, FECHA, organizador=CUENTA["organizador"],
+                                  nombres={CUENTA["alice"]: "alice", CUENTA["bob"]: "bob"})
+CADENA = GENESIS["block_hash"]
+_ACTUAL = [lambda: CADENA]
+
+
+def cadena_actual():
+    """La cadena con que firman los ayudantes si no se les pasa otra: CADENA, o la que fijó `usar_cadena`."""
+    return _ACTUAL[0]()
+
+
+def usar_cadena(leer=None):
+    """Los tests con Redis: `leer()` da el génesis que cargó el NCT (cada test tiene el suyo). Sin nada, CADENA."""
+    _ACTUAL[0] = leer or (lambda: CADENA)
+
+
 def cuenta(nombre_o_cuenta):
     """La cuenta de un nombre de prueba; si ya es una cuenta (64 hex), ella misma."""
     return nombre_o_cuenta if contrato.cuenta_valida(nombre_o_cuenta) else CUENTA[nombre_o_cuenta]
 
 
-def firmada(origen, destino, monto, nonce=1, timestamp=FECHA):
+def firmada(origen, destino, monto, nonce=1, timestamp=FECHA, cadena=None):
     """Una transferencia firmada por la cuenta de prueba `origen` (un nombre)."""
-    return contrato.transaccion(PRIVADA[origen], cuenta(destino), monto, nonce, timestamp)
+    return contrato.transaccion(PRIVADA[origen], cuenta(destino), monto, nonce, timestamp, cadena=cadena or cadena_actual())
 
 
-def carga(numero, destino, monto, timestamp=FECHA):
+def carga(numero, destino, monto, timestamp=FECHA, cadena=None):
     """Una carga de saldo firmada por el organizador de prueba."""
-    return contrato.carga(PRIVADA["organizador"], numero, cuenta(destino), monto, timestamp)
+    return contrato.carga(PRIVADA["organizador"], numero, cuenta(destino), monto, timestamp, cadena=cadena or cadena_actual())
 
 
 class Billetera:
@@ -54,6 +74,15 @@ class Billetera:
     def __init__(self):
         self.nonces = {}
 
-    def __call__(self, origen, destino, monto, timestamp=FECHA):
+    def __call__(self, origen, destino, monto, timestamp=FECHA, cadena=None):
         self.nonces[origen] = self.nonces.get(origen, 0) + 1
-        return firmada(origen, destino, monto, self.nonces[origen], timestamp)
+        return firmada(origen, destino, monto, self.nonces[origen], timestamp, cadena)
+
+
+def sembrar_genesis(redis):
+    """Deja en Redis el génesis de la cadena de prueba (CADENA), como si lo hubiera cargado el NCT: así el backend y el
+    gateway verifican contra él (v4). Sólo si la cadena está vacía."""
+    import json
+    if redis.llen("cadena") == 0:
+        redis.hset(f"bloque:{CADENA}", mapping={**GENESIS, "transactions": json.dumps(GENESIS["transactions"])})
+        redis.rpush("cadena", CADENA)

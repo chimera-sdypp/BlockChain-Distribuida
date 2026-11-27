@@ -7,7 +7,8 @@ Se saltean si no está SISTEMA_URL. Las corre k8s/probar_sistema.sh, que arma la
 
 Contrato v2: las transferencias van firmadas. alice, bob y carol son las cuentas de prueba del génesis
 (comun/tests/claves.py); las demás se generan acá. Contrato v3: se aprueban con un `alta-<n>` firmado por el
-organizador (ORGANIZADOR_ARCHIVO, o la de prueba que usa el k3s), que entra en la cadena.
+organizador (ORGANIZADOR_ARCHIVO, o la de prueba que usa el k3s), que entra en la cadena. Contrato v4: lo firmado
+lleva el hash del génesis, que se lee de /api/cadena (y se vuelve a leer si la cadena se reinicia).
 """
 
 import json
@@ -23,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual, usar_cadena
 from minero_cpu.minero import Gateway, Minero
 
 URL = os.environ.get("SISTEMA_URL", "").rstrip("/")
@@ -61,6 +62,17 @@ def api(metodo, ruta, cuerpo=None, intentos=30):
             if intento == intentos - 1:
                 raise
             time.sleep(1)
+
+
+def genesis():
+    """El hash del génesis del sistema desplegado (v4): va en todo lo que se firma."""
+    codigo, datos = api("GET", "/api/cadena")
+    assert codigo == 200, f"/api/cadena: {codigo} {datos}"
+    return datos["genesis"]
+
+
+if URL:
+    usar_cadena(genesis)
 
 
 # --- Cuentas y transferencias firmadas ---------------------------------------------------------
@@ -105,12 +117,12 @@ def aprobar(cuenta_, tipo="usuario", nombre="", esperar_bloque=None):
     nombre = nombre or cuenta_[:12]
     esperar_bloque = tipo != "minero" if esperar_bloque is None else esperar_bloque
     ahora = int(time.time())
-    return acta(lambda n: contrato.alta(ORGANIZADOR, n, cuenta_, tipo, nombre, ahora), esperar_bloque)
+    return acta(lambda n: contrato.alta(ORGANIZADOR, n, cuenta_, tipo, nombre, ahora, cadena=cadena_actual()), esperar_bloque)
 
 
 def dar_de_baja(cuenta_, esperar_bloque=False):
     ahora = int(time.time())
-    return acta(lambda n: contrato.baja(ORGANIZADOR, n, cuenta_, "prueba", ahora), esperar_bloque)
+    return acta(lambda n: contrato.baja(ORGANIZADOR, n, cuenta_, "prueba", ahora, cadena=cadena_actual()), esperar_bloque)
 
 
 def nuevo_usuario(prefijo="u", aprobada=False, tipo="usuario"):
@@ -134,7 +146,7 @@ def siguiente_nonce(cuenta_):
 def firmada(origen, destino, monto, nonce=None):
     origen = cuenta(origen)
     nonce = siguiente_nonce(origen) if nonce is None else nonce
-    return contrato.transaccion(PRIVADAS[origen], cuenta(destino), monto, nonce)
+    return contrato.transaccion(PRIVADAS[origen], cuenta(destino), monto, nonce, cadena=cadena_actual())
 
 
 def transferir(origen, destino, monto):

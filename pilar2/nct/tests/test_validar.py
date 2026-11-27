@@ -8,7 +8,7 @@ import pytest
 from redis.exceptions import ConnectionError
 
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA, carga
+from comun.tests.claves import CUENTA, PRIVADA, carga, cadena_actual
 from nct.tests.escenario import confirmar, guardar_recibida, recibida
 
 
@@ -116,7 +116,7 @@ def test_un_usuario_dado_de_baja_no_puede_transferir(armar, redis):
     from comun.tests.claves import PRIVADA
     nct = armar()
     nct.cargar_genesis()
-    confirmar(redis, nct, [contrato.baja(PRIVADA["organizador"], 1, CUENTA["alice"], "se fue", 1793836800)])
+    confirmar(redis, nct, [contrato.baja(PRIVADA["organizador"], 1, CUENTA["alice"], "se fue", 1793836800, cadena=cadena_actual())])
     assert not redis.hexists("cuentas", CUENTA["alice"])
     tx = recibida(redis, "alice", "bob", 1)
 
@@ -234,7 +234,7 @@ def test_una_carga_del_organizador_no_mira_saldo_y_sube_el_nonce_de_emision(arma
 def test_una_carga_firmada_por_otro_se_rechaza(armar, redis):
     nct = armar()
     nct.cargar_genesis()
-    falsa = guardar_recibida(redis, contrato.carga(PRIVADA["alice"], 1, CUENTA["alice"], 5000, 1793836800))
+    falsa = guardar_recibida(redis, contrato.carga(PRIVADA["alice"], 1, CUENTA["alice"], 5000, 1793836800, cadena=cadena_actual()))
 
     nct.validar(falsa)
 

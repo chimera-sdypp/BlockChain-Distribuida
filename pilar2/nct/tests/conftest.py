@@ -6,7 +6,7 @@ import pytest
 import redis as redislib
 
 from comun import config
-from comun.tests.claves import CUENTA
+from comun.tests.claves import CUENTA, usar_cadena
 from nct import app as nct
 from nct.tests import escenario
 
@@ -39,7 +39,9 @@ def redis():
     cliente = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                              db=BASE_PRUEBAS, decode_responses=True)
     cliente.flushdb()
+    usar_cadena(lambda: cliente.lindex("cadena", 0) or None)  # v4: se firma con el génesis que cargó el NCT
     yield cliente
+    usar_cadena()
     cliente.flushdb()
 
 

@@ -19,6 +19,7 @@ python -m nodo --fuente https://blockchain-chimera.chimera-sdypp.workers.dev --d
 | `/api/finalidad` | la altura finalizada según las firmas de validadores, verificadas acá |
 | `/health`, `/metrics` | `blockchain_nodo_altura`, `_atraso`, `_punta`, `_rechazos_total`, `_conflictos_total`, `_finalizada` |
 
+- **Piso de prefijo (v4, BC-97):** el del génesis; con `--prefijo-minimo N` (`PREFIJO_MINIMO`) exige uno mayor. Una historia reminada desde el génesis con prefijo bajo no la acepta, aunque el nodo arranque de cero.
 - **Historia reescrita:** si la fuente muestra otro bloque a una altura que el nodo ya verificó (o pierde bloques), es un conflicto: lo anota, alerta y no sigue esa cadena.
 - **Al arrancar** sigue desde su copia (con un snapshot cada 100 bloques); la primera vez baja todo desde el génesis.
 - **En el cluster:** StatefulSet de 2 con su disco ([`k8s/nodo/`](../k8s/nodo/)), publicados en `/nodos/0` y `/nodos/1`. Las alertas `NodoRechazoUnBloque` y `NodosNoCoinciden` están en [`k8s/monitoreo/alertas.yaml`](../k8s/monitoreo/alertas.yaml). Los que más valen son los que corre otra gente fuera de la nube.

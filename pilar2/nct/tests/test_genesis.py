@@ -17,8 +17,9 @@ def test_con_la_cadena_vacia_carga_el_genesis_con_los_saldos_iniciales(armar, re
     assert bloque["altura"] == "0"
     assert redis.hgetall("saldos") == {CUENTA["alice"]: "100", CUENTA["bob"]: "50", CUENTA["carol"]: "0"}
     ids = [tx["id"] for tx in json.loads(bloque["transactions"])]
-    # v3: primero el organizador (los que verifican lo leen de acá) y después las cuentas de prueba
-    assert ids == [f"organizador-{CUENTA['organizador']}"] + sorted(f"genesis-{CUENTA[n]}" for n in ("alice", "bob", "carol"))
+    # v3: primero el organizador (los que verifican lo leen de acá), v4: las reglas, y después las cuentas de prueba
+    assert ids == [f"organizador-{CUENTA['organizador']}", "reglas"] + sorted(f"genesis-{CUENTA[n]}" for n in
+                                                                              ("alice", "bob", "carol"))
     texto = contrato._texto(contrato.CEROS, int(bloque["timestamp"]), json.loads(bloque["transactions"]),
                             contrato.RAIZ_VACIA)
     assert contrato.hash_bloque(texto, 0) == hash_ and bloque["raiz_estado"] == contrato.RAIZ_VACIA
@@ -72,3 +73,15 @@ def test_saldos_iniciales_del_entorno():
         except ValueError:
             continue
         raise AssertionError(f"aceptó {malo}")
+
+
+def test_el_genesis_lleva_el_piso_de_prefijo_y_el_nct_rechaza_soluciones_por_debajo(armar, redis):
+    """v4 (BC-97): PREFIJO_MINIMO queda en el génesis; una tarea con menos (el TrP no la arma) no da bloque."""
+    from nct.tests.escenario import minar, tarea_en_curso
+    nct = armar(prefijo_minimo=2)
+    id_tarea = tarea_en_curso(redis, nct, prefijo="0")
+    genesis = json.loads(redis.hget(f"bloque:{redis.lindex('cadena', 0)}", "transactions"))
+    assert contrato.prefijo_minimo_de({"transactions": genesis}) == 2
+    assert nct.procesar_solucion(minar(redis, id_tarea)) == "rechazada"
+    assert redis.llen("cadena") == 1
+

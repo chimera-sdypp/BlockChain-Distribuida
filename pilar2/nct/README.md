@@ -72,7 +72,7 @@ Después, `WAIT` espera a que una réplica de Redis tenga el bloque, se publica 
 
 ## Génesis
 
-Al arrancar, si `cadena` está vacía, un Lua carga el bloque génesis (`previous_hash` en ceros, una transacción `genesis-<cuenta>` desde `emision` por cada saldo inicial, sin minar), los `saldos` y esas cuentas aprobadas como usuarios. Aunque arranquen las 2 réplicas juntas, entra uno solo.
+Al arrancar, si `cadena` está vacía, un Lua carga el bloque génesis (`previous_hash` en ceros, el organizador, `reglas` con el piso de prefijo (v4) y una transacción `genesis-<cuenta>` desde `emision` por cada saldo inicial, sin minar), los `saldos` y esas cuentas aprobadas como usuarios. Aunque arranquen las 2 réplicas juntas, entra uno solo.
 
 ## Configuración
 
@@ -80,6 +80,7 @@ Al arrancar, si `cadena` está vacía, un Lua carga el bloque génesis (`previou
 |---|---|---|
 | `SALDOS_INICIALES` | `{}` | Los saldos del génesis: `{cuenta: saldo}` o `{cuenta: {saldo, nombre}}`. En k3s y GKE, las cuentas de prueba alice, bob y carol |
 | `ORGANIZADOR_CLAVE` | — | La cuenta del organizador: sólo sus cargas entran |
+| `PREFIJO_MINIMO` | 6 | El piso de prefijo que se escribe en el génesis (v4, BC-97): un bloque con menos no vale. Sólo cuenta al crear la cadena |
 | `ESPERA_NONCE_SEGUNDOS` | 60 | Cuánto espera una transacción con el nonce adelantado |
 | `FONDO_EPOCA` | 100 | Lo que se reparte por época entre los que mandaron shares |
 | `VENTANA_SEGUNDOS` | 30 | Cada cuánto se cierran cajas |

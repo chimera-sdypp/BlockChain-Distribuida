@@ -11,7 +11,7 @@ import pytest
 from claves import herramienta
 from comun import contrato, estado
 from comun.tests.cadena import Cadena
-from comun.tests.claves import CUENTA, FECHA, PRIVADA, carga, firmada
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, carga, firmada, cadena_actual
 
 
 class Servidor:
@@ -69,7 +69,7 @@ def atestar(privada, e, **cambios):
 def servidor():
     c = Cadena()
     c.agregar([firmada("alice", "bob", 30), carga(1, "carol", 7)])
-    c.agregar([contrato.alta(PRIVADA["organizador"], 2, CUENTA["carol"], "usuario", "carol", FECHA)])
+    c.agregar([contrato.alta(PRIVADA["organizador"], 2, CUENTA["carol"], "usuario", "carol", FECHA, cadena=cadena_actual())])
     s = Servidor(c)
     yield s
     s.servidor.shutdown()

@@ -1,0 +1,11 @@
+13:06:24 Minero honesto-operador (honesto) arrancó: 72b276782548
+13:06:24 ── reminada ──
+13:06:30 Bloque 1 reminado con prefijo 1: 0000008d0c10208f42504c102afc2fd8 → 0a7b5a19d2a2e3795acda7e8839efe74
+13:06:31 [OK] reminada: un nodo nuevo baja la historia reminada con prefijo 1 → rechazado en 1: el prefijo tiene 1 caracteres y el piso de la cadena es 6
+13:06:39 ── pago-epoca ──
+13:08:15 Bloque 10: part-0-24b51e9f5cc09ae906ab4b9fe4f8385d97a2e9c1b687d73cf8cb449488f9e9f5 con 10^6 más y la lista de la época 0 borrada
+13:08:16 [OK] pago-epoca: la época 0 paga 10^6 más que el fondo, sin la lista publicada → rechazado en 10: los pagos de la época 0 suman 1000100, más que el fondo (100)
+13:08:25 ── otra-cadena ──
+13:08:25 [OK] otra-cadena: una transferencia de carol firmada para otra cadena, con el nonce siguiente → 400 {'errores': ['firma: no es la del origen sobre génesis:origen:destino:monto:nonce:timestamp']}
+13:08:25 [OK] otra-cadena: una carga del organizador firmada para otra cadena, con el nonce siguiente → 400 {'errores': ['firma: no es la del organizador']}
+13:08:25 [OK] otra-cadena: la misma transferencia firmada para esta cadena → 202

@@ -1,6 +1,6 @@
 // Firma con el modo organizador de la billetera lo que pide test_organizador.py, con WebCrypto como el navegador:
 //   node firmar_organizador.cjs entrada.json  →  {txs: [...], pedidos: [firma, …]}
-// entrada = {jwk, txs: [{tipo: carga|alta|baja|permiso, numero, destino, monto?, datos?, timestamp}],
+// entrada = {jwk, cadena (el hash del génesis), txs: [{tipo: carga|alta|baja|permiso, numero, destino, monto?, datos?, timestamp}],
 //            pedidos: [{metodo, ruta, tiempo, cuerpo}]}
 "use strict";
 const fs = require("fs");
@@ -17,9 +17,9 @@ const hex = (bytes) => Buffer.from(bytes).toString("hex");
   for (const t of entrada.txs) {
     const tx = t.tipo === "carga" ? Verificador.armarCarga(t.numero, t.destino, t.monto, t.timestamp)
                                   : Verificador.armarActa(t.tipo, t.numero, t.destino, t.datos, t.timestamp);
-    txs.push({ ...tx, firma: await firmar(Verificador.mensajeDe(tx)) });
+    txs.push({ ...tx, firma: await firmar(Verificador.mensajeDe(tx, entrada.cadena)) });
   }
   const pedidos = [];
-  for (const p of entrada.pedidos) pedidos.push(await firmar(Verificador.mensajePedido(p.metodo, p.ruta, p.tiempo, p.cuerpo)));
+  for (const p of entrada.pedidos) pedidos.push(await firmar(Verificador.mensajePedido(p.metodo, p.ruta, p.tiempo, p.cuerpo, entrada.cadena)));
   process.stdout.write(JSON.stringify({ txs, pedidos }));
 })();

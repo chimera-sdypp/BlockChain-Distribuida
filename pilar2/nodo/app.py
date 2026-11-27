@@ -109,11 +109,13 @@ def cargar_clave(archivo, privada=None):
 
 class Nodo:
     def __init__(self, almacen, fuente, privada, validador=False, organizador="", fondo_epoca=contrato.FONDO_EPOCA,
-                 snapshot_cada=100):
+                 snapshot_cada=100, prefijo_minimo=0):
         self.almacen, self.fuente, self.privada = almacen, fuente, privada
         self.cuenta = contrato.clave_publica(privada)
         self.validador, self.snapshot_cada = validador, snapshot_cada
-        self.reglas = estado_cadena.Reglas(organizador=organizador, fondo_epoca=fondo_epoca, shares=self._shares)
+        # v4 (BC-97): el piso de prefijo lo trae el génesis; `prefijo_minimo` es uno propio, por si se exige más.
+        self.reglas = estado_cadena.Reglas(organizador=organizador, fondo_epoca=fondo_epoca, shares=self._shares,
+                                           prefijo_minimo=prefijo_minimo)
         self.estado = estado_cadena.Estado()
         self.lock = threading.RLock()
         self.conflicto = None      # {altura, mia, fuente}: la fuente reescribió algo que ya estaba verificado
@@ -133,7 +135,8 @@ class Nodo:
                 log.warning("El snapshot propio no sirve: se recorre la copia desde el génesis")
                 self.estado = estado_cadena.Estado()
             reglas = estado_cadena.Reglas(organizador=self.reglas.organizador, fondo_epoca=self.reglas.fondo_epoca,
-                                          shares=self._shares, verificar_firmas=False)  # ya los verificó al guardarlos
+                                          shares=self._shares, verificar_firmas=False,  # ya los verificó al guardarlos
+                                          prefijo_minimo=self.reglas.prefijo_minimo)
             for bloque in self.almacen.bloques(desde=self.estado.altura + 1):
                 problemas, _ = estado_cadena.aplicar_bloque(self.estado, bloque, reglas)
                 if problemas:
@@ -393,6 +396,8 @@ def principal(argumentos=None):
                         help="firma los bloques que verifica, si su clave es un validador en la cadena (VALIDADOR=1)")
     parser.add_argument("--organizador", default=os.environ.get("ORGANIZADOR_CLAVE", ""),
                         help="la cuenta del organizador que se espera en el génesis (si no, se toma la del génesis)")
+    parser.add_argument("--prefijo-minimo", type=int, default=int(os.environ.get("PREFIJO_MINIMO", "0")),
+                        help="piso de prefijo propio (PREFIJO_MINIMO); vale el mayor entre éste y el del génesis")
     parser.add_argument("--puerto", type=int, default=int(os.environ.get("PUERTO", "8090")))
     parser.add_argument("--intervalo", type=float, default=float(os.environ.get("INTERVALO_SEGUNDOS", "3")))
     a = parser.parse_args(argumentos)
@@ -401,7 +406,8 @@ def principal(argumentos=None):
     registro.configurar("nodo", os.environ.get("LOG_NIVEL", "INFO"), os.environ.get("LOGS_DIR", str(Path(a.datos) / "logs")))
     privada = cargar_clave(a.clave or Path(a.datos) / "nodo.clave", os.environ.get("NODO_CLAVE"))
     nodo = Nodo(Almacen(Path(a.datos) / "cadena.sqlite"), Fuente(a.fuente), privada, validador=a.validador,
-                organizador=a.organizador, fondo_epoca=int(os.environ.get("FONDO_EPOCA", contrato.FONDO_EPOCA)))
+                organizador=a.organizador, fondo_epoca=int(os.environ.get("FONDO_EPOCA", contrato.FONDO_EPOCA)),
+                prefijo_minimo=a.prefijo_minimo)
     nodo.arrancar()
     log.info("Nodo %s siguiendo %s%s", nodo.cuenta, a.fuente, " (validador)" if a.validador else "")
     app = web.crear_app("nodo", {"fuente": lambda: nodo.fuente.viva, "cadena": lambda: not nodo.conflicto})

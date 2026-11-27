@@ -12,7 +12,7 @@ data "google_service_account" "escalador" {
 }
 
 # ---------------------------------------------------------------- Cuenta de las VMs
-# Sólo puede bajar la imagen y escribir logs. La clave del minero le llega por metadata (BC-57).
+# Sólo puede bajar la imagen y escribir logs. La clave del minero la genera la propia VM (BC-95).
 resource "google_service_account" "minero" {
   account_id   = "minero-cpu"
   display_name = "VMs minero-cpu"
@@ -73,6 +73,9 @@ resource "google_compute_instance_template" "minero" {
   }
 
   metadata = {
+    # BC-95: la VM publica su clave pública en sus guest attributes (sólo ella puede escribirlos) y el escalador la
+    # lee de ahí (compute.instances.getGuestAttributes, que está en compute.instanceAdmin.v1).
+    enable-guest-attributes = "TRUE"
     startup-script = templatefile("${path.module}/arrancar.sh", {
       imagen      = var.imagen
       gateway_url = var.gateway_url

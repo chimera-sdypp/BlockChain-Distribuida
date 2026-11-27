@@ -47,6 +47,8 @@
       <label>El backend <input id="url" class="mono" spellcheck="false"></label>
       <label>La clave del organizador (vacía: la del génesis) <input id="organizador" class="mono" spellcheck="false"></label>
     </div>
+    <p class="suave">La cadena (el hash de su génesis, que va en todo lo que firmás: lo firmado no sirve en otra cadena):
+      <span id="genesis" class="mono">—</span></p>
     <label>Nodos para comparar (uno por renglón: <span class="mono">url [clave del nodo]</span>)
       <textarea id="nodos" class="mono" spellcheck="false"></textarea></label>
     <button id="guardar" class="secundario" type="button">Guardar</button>
@@ -203,6 +205,13 @@ async function api(ruta, opciones, raiz = base()) {
   const cuerpo = await respuesta.json().catch(() => ({}));
   return { ok: respuesta.ok, status: respuesta.status, cuerpo };
 }
+// v4 (BC-99): todo lo que se firma lleva adelante el hash del génesis de la cadena. Se lee de /api/cadena y se muestra.
+async function genesis() {
+  const { ok, status, cuerpo } = await api("/api/cadena");
+  if (!ok || !/^[0-9a-f]{32}$/.test(cuerpo.genesis || "")) throw new Error(`el backend no dio el génesis de la cadena (${status})`);
+  $("genesis").textContent = cuerpo.genesis;
+  return cuerpo.genesis;
+}
 const errorDe = (c) => [].concat(c.errores ? Object.values(c.errores).flat() : [], c.error ? [c.error] : []).join("; ") || "sin detalle";
 
 // ── La clave (Ed25519 con WebCrypto) ──
@@ -239,7 +248,10 @@ $("pedir").addEventListener("click", async () => {
   if (!clave) return anotar("Primero cargá o generá una clave.", "mal");
   const tipo = $("tipo").value, nombre = $("alias").value.trim();
   if (!Verificador.nombreValido(nombre)) return ($("msg-alta").textContent = "El nombre: de 1 a 32 letras, números, «_», «.» o «-».");
-  const pedido = { tipo, clave_publica: clave.cuenta, nombre, firma: await firmar(`alta:${tipo}:${clave.cuenta}:${nombre}`) };
+  let cadena;
+  try { cadena = await genesis(); } catch (error) { return ($("msg-alta").textContent = error.message); }
+  const pedido = { tipo, clave_publica: clave.cuenta, nombre,
+                   firma: await firmar(Verificador.mensajeAlta(tipo, clave.cuenta, nombre, cadena)) };
   const { ok, status, cuerpo } = await api("/api/altas", { method: "POST", headers: { "content-type": "application/json" },
                                                           body: JSON.stringify(pedido) });
   $("msg-alta").textContent = ok ? "Pedido. Queda aprobado cuando el organizador firma tu alta y entra en un bloque."
@@ -252,8 +264,10 @@ $("transferir").addEventListener("click", async () => {
   if (!Verificador.cuentaValida(destino) || !Number.isInteger(monto) || monto < 1) return ($("msg-tx").textContent = "Destino: una cuenta (64 hex). Monto: entero ≥ 1.");
   const cuenta = await api(`/api/cuentas/${clave.cuenta}`);
   if (!cuenta.ok) return ($("msg-tx").textContent = `No se pudo leer tu nonce: ${errorDe(cuenta.cuerpo)}`);
+  let cadena;
+  try { cadena = await genesis(); } catch (error) { return ($("msg-tx").textContent = error.message); }
   const tx = { origen: clave.cuenta, destino, monto, nonce: cuenta.cuerpo.nonce + 1, timestamp: Math.floor(Date.now() / 1000) };
-  tx.firma = await firmar(Verificador.mensajeTransaccion(tx));
+  tx.firma = await firmar(Verificador.mensajeTransaccion(tx, cadena));
   const { ok, status, cuerpo } = await api("/api/transacciones", { method: "POST", headers: { "content-type": "application/json" },
                                                                   body: JSON.stringify(tx) });
   if (!ok) return ($("msg-tx").textContent = `No entró (${status}): ${errorDe(cuerpo)}`);
@@ -338,7 +352,12 @@ async function verificar(desdeCero = false) {
   $("comparacion").replaceChildren();
   const id = `${base()}|${$("organizador").value.trim()}`;
   try {
-    const copia = desdeCero ? copiaVacia() : (await leerCopia(id)) || copiaVacia();
+    let copia = desdeCero ? copiaVacia() : (await leerCopia(id)) || copiaVacia();
+    const actual = await genesis().catch(() => null);
+    if (copia.hashes[0] && actual && copia.hashes[0] !== actual) {
+      anotar(`La cadena se reinició (génesis ${actual}): se verifica desde cero.`, "aviso");
+      copia = copiaVacia();
+    }
     const inicio = performance.now();
     const { nuevos, rechazado } = await sincronizar(copia);
     await guardarCopia(id, copia);
@@ -465,7 +484,7 @@ async function siguienteEmision() {
 }
 
 async function mandarFirmada(tx, que) {
-  const firmada = { ...tx, firma: await firmarOrg(Verificador.mensajeDe(tx)) };
+  const firmada = { ...tx, firma: await firmarOrg(Verificador.mensajeDe(tx, await genesis())) };
   const { ok, status, cuerpo } = await api("/api/transacciones", { method: "POST", headers: { "content-type": "application/json" },
                                                                   body: JSON.stringify(firmada) });
   if (!ok) throw new Error(`${firmada.id} no entró (${status}): ${errorDe(cuerpo)}`);
@@ -487,7 +506,7 @@ async function firmarYMandar(armar) {
 async function pedidoOrg(metodo, ruta, datos) {
   if (!org) throw new Error("primero cargá tu .jwk de organizador");
   const cuerpo = datos === undefined ? "" : JSON.stringify(datos), tiempo = ahora();
-  const firma = await firmarOrg(Verificador.mensajePedido(metodo, ruta, tiempo, cuerpo));
+  const firma = await firmarOrg(Verificador.mensajePedido(metodo, ruta, tiempo, cuerpo, await genesis()));
   return api(ruta, { method: metodo, body: cuerpo || undefined, headers: { "content-type": "application/json",
     "X-Organizador": org.cuenta, "X-Tiempo": String(tiempo), "X-Firma": firma } });
 }

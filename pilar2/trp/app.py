@@ -4,6 +4,7 @@
 - Recibe lo que devuelven los mineros y le pasa al NCT el ganador (BC-22): `resultados` → `soluciones`.
 """
 
+import json
 import logging
 import re
 import threading
@@ -108,14 +109,35 @@ def errores_tarea(tarea):
     return errores
 
 
+_PISOS = {}  # génesis → su piso de prefijo (no cambia mientras la cadena sea la misma)
+
+
+def piso_de_la_cadena(redis):
+    """El piso de prefijo que fijó el génesis (v4, BC-97): ninguna tarea baja de ahí, ni sin mineros ni en la bajada
+    de emergencia, porque los nodos rechazarían el bloque. Sin génesis, 1."""
+    genesis = redis.lindex(contrato.CADENA, 0) if hasattr(redis, "lindex") else None
+    if not genesis:
+        return 1
+    if genesis not in _PISOS:
+        guardadas = redis.hget(contrato.BLOQUE.format(genesis), "transactions")
+        if guardadas is None:
+            return 1
+        _PISOS[genesis] = contrato.prefijo_minimo_de({"transactions": json.loads(guardadas)})
+    return _PISOS[genesis]
+
+
 def elegir_prefijo_con_motivo(redis, ajustes, ahora, armada=None):
     """(prefijo, motivo, potencia en hashes/s): BC-60 y BC-73 (ver `particion.decidir_prefijo`), con la potencia
     viva juntada según el criterio (BC-59). Sin ajuste, la potencia es None porque no se mira.
 
     `armada`: cuándo se armó por primera vez la caja de la tarea (la manda el NCT), para la bajada de emergencia.
     Si hubo un recálculo por potencia (o es el primero de la cadena), queda en `prefijo:referencia`.
+    v4: nunca menos que el piso de la cadena (motivo «piso»): si no hay potencia para el piso, la tarea espera.
     """
+    piso = piso_de_la_cadena(redis)
     if not ajustes.ajustar:
+        if ajustes.prefijo_base < piso:
+            return "0" * piso, "piso", None
         return "0" * ajustes.prefijo_base, "fijo", None
     nodos = [redis.hgetall(clave) for clave in redis.scan_iter(match=contrato.NODOS, count=contrato.NODOS_POR_SCAN)]
     potencia = potencia_viva(nodos, ahora, ajustes.vivo_segundos, ajustes.criterio)
@@ -123,6 +145,10 @@ def elegir_prefijo_con_motivo(redis, ajustes, ahora, armada=None):
     bloques = [b for b in (redis.hgetall(contrato.BLOQUE.format(h)) for h in hashes) if b]
     referencia = redis.hgetall(contrato.PREFIJO_REFERENCIA)
     largo, motivo, nueva = decidir_prefijo(potencia, bloques, ajustes, referencia, ahora, armada)
+    if largo < piso:
+        largo, motivo = piso, "piso"
+        if nueva is not None:
+            nueva = {**nueva, "prefijo": piso}
     if nueva is not None:
         redis.hset(contrato.PREFIJO_REFERENCIA, mapping=nueva)
         if motivo in ("inicial", "potencia"):

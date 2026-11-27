@@ -205,9 +205,13 @@ class Gateway:
 
     # ── Quién pide: la firma y la aprobación (BC-57) ──
 
+    def genesis(self):
+        """El hash del bloque 0 (v4, BC-99): los pedidos van firmados sobre él, así lo firmado para otra cadena no sirve."""
+        return self.redis.lindex(contrato.CADENA, 0)
+
     def autenticar(self, encabezados, metodo, ruta, cuerpo, ahora=None):
         """(minero, None) si el pedido está firmado y en hora por un minero aprobado; si no, (None, (código, motivo))."""
-        minero, motivo = contrato.verificar_pedido(encabezados, metodo, ruta, cuerpo, ahora=ahora)
+        minero, motivo = contrato.verificar_pedido(encabezados, metodo, ruta, cuerpo, ahora=ahora, cadena=self.genesis())
         if motivo:
             RECHAZOS.labels("firma").inc()
             log.warning("Pedido %s %s rechazado: %s", metodo, ruta, motivo)
@@ -928,6 +932,19 @@ def agregar_rutas(app, gateway):
     app.post("/keepalive")(ruta("POST", gateway.keepalive))
     app.get("/tasks/next")(ruta("GET", gateway.siguiente))
     app.get("/epocas/{n}")(ruta("GET", gateway.epoca))
+
+    @app.get("/cadena")
+    async def cadena():
+        """v4: el hash del génesis, sin firma. El minero lo pone adelante de lo que firma; si la cadena se reinicia,
+        sus pedidos dan 401 y lo vuelve a leer."""
+        try:
+            genesis = await run_in_threadpool(gateway.genesis)
+        except redislib.RedisError as falla:
+            log.error("Redis no respondió al leer el génesis: %r", falla)
+            return JSONResponse({"error": "Redis no disponible"}, status_code=503)
+        if not genesis:
+            return JSONResponse({"error": "la cadena todavía no tiene génesis"}, status_code=503)
+        return {"genesis": genesis}
 
     @app.get("/mineros")
     async def mineros():

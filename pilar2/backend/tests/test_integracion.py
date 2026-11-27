@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import app as backend
 from comun import Rabbit, config, contrato, estado, web
-from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada
+from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada, sembrar_genesis
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -30,6 +30,7 @@ def entorno():
     redis = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                            db=BASE_PRUEBAS, decode_responses=True)
     redis.flushdb()
+    sembrar_genesis(redis)
     app = web.crear_app("backend", {})
     backend.agregar_rutas(app, redis, publicador, cola=cola, organizador=CUENTA["organizador"])
     yield TestClient(app), cola, redis

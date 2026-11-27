@@ -3,7 +3,7 @@
 import json
 
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA, Billetera, cuenta
+from comun.tests.claves import CUENTA, PRIVADA, Billetera, cuenta, cadena_actual
 
 BILLETERA = Billetera()  # la vacía conftest.py antes de cada test
 
@@ -19,7 +19,7 @@ def recibida(redis, origen, destino, monto, nonce=None):
     if nonce is None:
         tx = BILLETERA(origen, destino, monto)
     else:
-        tx = contrato.transaccion(PRIVADA[origen], cuenta(destino), monto, nonce, 1793836800)
+        tx = contrato.transaccion(PRIVADA[origen], cuenta(destino), monto, nonce, 1793836800, cadena=cadena_actual())
     return guardar_recibida(redis, tx)
 
 

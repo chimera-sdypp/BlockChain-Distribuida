@@ -1,5 +1,5 @@
 # Las VMs minero-cpu-0…N-1. Lo aplica el escalador (BC-29) desde su pod, no un pipeline:
-#   tofu apply -var cantidad=N        (con TF_VAR_claves: la clave de cada VM, que pone el escalador)
+#   tofu apply -var cantidad=N        (BC-95: sin claves; cada VM genera la suya)
 # Por eso tiene su propio state: un apply del Pipeline 4 no puede borrar las VMs que levantó él.
 # En el pod, el bucket y las variables llegan por entorno:
 #   TF_CLI_ARGS_init="-backend-config=bucket=<proyecto>-tfstate"  TF_VAR_proyecto  TF_VAR_zona

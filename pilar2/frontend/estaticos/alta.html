@@ -90,7 +90,7 @@ $("form-alta").addEventListener("submit", async (evento) => {
     bajarArchivo(archivo, tipo === "usuario"
       ? JSON.stringify({ kty: "OKP", crv: "Ed25519", d: jwk.d, x: jwk.x }) + "\n"
       : hex(deBase64url(jwk.d)) + "\n");
-    const firma = await firmar(par.privateKey, `alta:${tipo}:${cuenta}:${nombre}`);
+    const firma = await firmar(par.privateKey, mensajeAlta(tipo, cuenta, nombre, await genesis()));
     const { ok, cuerpo } = await api("/api/altas", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tipo, clave_publica: cuenta, nombre, firma }) });
     if (!ok) { mostrarMensaje(`No se pudo pedir el alta: ${errorDe(cuerpo)}`, true); return; }

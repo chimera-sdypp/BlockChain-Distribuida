@@ -197,7 +197,8 @@ return 0
 # El caché del estado (v3) sale de las transacciones del bloque, según su efecto (lo calcula Python):
 #   transferencia: le resta al origen, le suma al destino y baja lo comprometido;
 #   emitir: le suma al destino (coinbase, participación o carga);
-#   alta / baja: la cuenta entra o sale de `cuentas` (y de los pedidos y las altas en camino);
+#   alta / baja: la cuenta entra o sale de `cuentas` (y de los pedidos y las altas en camino); v4: una baja del
+#     organizador la deja en `vetadas` y un alta del organizador la saca;
 #   permiso: la clave entra o sale de `permisos`; nada: shares de la época.
 # Y en `nonces:confirmados`, el nonce de quien firmó. Se anota el historial (BC-54). Cada tx:<id> queda
 # como puntero, {estado: confirmada, bloque} (BC-70): su contenido ya está en el bloque. La coinbase,
@@ -249,8 +250,10 @@ for i = primera, ultima, 8 do
     redis.call('HSET', 'cuentas', destino, extra)
     redis.call('HDEL', 'altas:pendientes', destino)
     redis.call('HDEL', 'altas:en_camino', destino)
+    if origen == 'emision' then redis.call('HDEL', 'vetadas', destino) end
   elseif efecto == 'baja' then
     redis.call('HDEL', 'cuentas', destino)
+    if origen == 'emision' then redis.call('HSET', 'vetadas', destino, 1) end
     redis.call('HDEL', 'suspendidos', destino)
     redis.call('HDEL', 'altas:en_camino', destino)
   elseif efecto == 'permiso' then
@@ -414,10 +417,11 @@ class Nct:
     def __init__(self, redis, publicador, saldos_iniciales=None, organizador="", wait_replicas=1, wait_ms=1000,
                  ventana=VENTANA, tx_por_caja=TX_POR_CAJA, tarea_vence=TAREA_VENCE, espera_nonce=ESPERA_NONCE,
                  fondo_epoca=contrato.FONDO_EPOCA, tarea_guarda=contrato.TAREA_GUARDA,
-                 emergencia=contrato.EMERGENCIA_SEGUNDOS, revisar_cada=60, snapshot_cada=100):
+                 emergencia=contrato.EMERGENCIA_SEGUNDOS, revisar_cada=60, snapshot_cada=100, prefijo_minimo=1):
         self.redis, self.publicador = redis, publicador
         self.saldos_iniciales = SALDOS_INICIALES if saldos_iniciales is None else saldos_iniciales
         self.organizador = organizador
+        self.prefijo_minimo = prefijo_minimo  # v4 (BC-97): el piso de prefijo que va al génesis
         self.wait_replicas, self.wait_ms = wait_replicas, wait_ms
         self.ventana, self.tx_por_caja, self.tarea_vence = ventana, tx_por_caja, tarea_vence
         self.espera_nonce, self.fondo_epoca, self.tarea_guarda = espera_nonce, fondo_epoca, tarea_guarda
@@ -454,7 +458,8 @@ class Nct:
         timestamp = int(time.time())
         saldos = {cuenta: d["saldo"] if isinstance(d, dict) else d for cuenta, d in self.saldos_iniciales.items()}
         nombres = {cuenta: d.get("nombre", "") for cuenta, d in self.saldos_iniciales.items() if isinstance(d, dict)}
-        bloque = contrato.bloque_genesis(saldos, timestamp, organizador=self.organizador, nombres=nombres)
+        bloque = contrato.bloque_genesis(saldos, timestamp, organizador=self.organizador, nombres=nombres,
+                                         prefijo_minimo=self.prefijo_minimo)
         campos = campos_bloque(bloque)
         cuentas = {cuenta: {"tipo": "usuario", "nombre": nombres.get(cuenta, ""), "alta": timestamp}
                    for cuenta in saldos}
@@ -465,7 +470,8 @@ class Nct:
             args=[bloque["block_hash"], len(campos), *plano(campos), len(saldos), *plano(dict(sorted(saldos.items()))),
                   *plano({c: json.dumps(d) for c, d in sorted(cuentas.items())})])
         if cargado:
-            log.info("Génesis cargado: %s con %d cuentas", bloque["block_hash"], len(saldos))
+            log.info("Génesis cargado: %s con %d cuentas y piso de prefijo %d", bloque["block_hash"], len(saldos),
+                     self.prefijo_minimo)
         return bool(cargado)
 
     # ── BC-24 y BC-56: validar ──
@@ -514,14 +520,15 @@ class Nct:
             tx = contrato.transaccion_guardada(id_, guardada)
         except (KeyError, ValueError):
             return FIRMA_INVALIDA  # le falta un campo o no es un número: no puede tener una firma que sirva
+        cadena = self.redis.lindex(contrato.CADENA, 0)  # v4: la firma es sobre el génesis de esta cadena
         if contrato.es_acta(tx):
-            if contrato.validar_acta(tx, self.organizador):
+            if contrato.validar_acta(tx, self.organizador, cadena):
                 return FIRMA_INVALIDA
             return estado_cadena.problema_de_acta(tx, self._cuenta_en_cache, self._permiso_en_cache,
-                                                  self.organizador) or ""
+                                                  self.organizador, self._vetada_en_cache) or ""
         if contrato.es_emision(tx):
-            return "" if not contrato.validar_carga(tx, self.organizador) else FIRMA_INVALIDA
-        return "" if not contrato.validar_transaccion_firmada(tx) else FIRMA_INVALIDA
+            return "" if not contrato.validar_carga(tx, self.organizador, cadena) else FIRMA_INVALIDA
+        return "" if not contrato.validar_transaccion_firmada(tx, cadena) else FIRMA_INVALIDA
 
     def _cuenta_en_cache(self, cuenta):
         datos = self.redis.hget(contrato.CUENTAS, cuenta)
@@ -529,6 +536,9 @@ class Nct:
 
     def _permiso_en_cache(self, clave):
         return self.redis.hget(contrato.PERMISOS, clave)
+
+    def _vetada_en_cache(self, cuenta):
+        return bool(self.redis.hexists(contrato.VETADAS, cuenta))
 
     def _avisar_estado(self, id_, estado, motivo=""):
         aviso = {"id": id_, "estado": estado}
@@ -583,8 +593,8 @@ class Nct:
                             cambios)
 
     def revisar_cache(self):
-        """Compara `saldos`, `nonces:confirmados`, `cuentas` y `permisos` con la cadena y, si difieren, gana la
-        cadena. Devuelve {campo: [(clave, cadena, caché)]} de lo que corrigió."""
+        """Compara `saldos`, `nonces:confirmados`, `cuentas`, `permisos` y `vetadas` con la cadena y, si difieren, gana
+        la cadena. Devuelve {campo: [(clave, cadena, caché)]} de lo que corrigió."""
         self._ultima_revision = time.time()
         for _ in range(5):
             with self.seguidor.lock:
@@ -757,7 +767,7 @@ class Nct:
             log.info("La tarea %s volvió sin solución: se rearma su caja con otro timestamp", id_tarea)
             return self.rearmar(id_tarea, tarea, "sin_solucion")
         transacciones = json.loads(tarea["transacciones"])
-        problema = self.verificar(tarea, transacciones, mensaje)
+        problema = self.verificar(tarea, transacciones, mensaje, self.piso())
         if problema:
             log.warning("La solución de %s para la tarea %s no sirve: %s", mensaje.get("minero"), id_tarea, problema)
             return self.rearmar(id_tarea, tarea, "rechazada")
@@ -775,15 +785,23 @@ class Nct:
             self.armar_si_libre()
         return estado
 
+    def piso(self):
+        """El piso de prefijo de la cadena (v4, BC-97), el que dice su génesis."""
+        with self.seguidor.lock:
+            return self.seguidor.ponerse_al_dia().prefijo_minimo
+
     @staticmethod
-    def verificar(tarea, transacciones, mensaje):
+    def verificar(tarea, transacciones, mensaje, piso=1):
         """NCT.3: el NCT nunca confía en el minero. Devuelve el problema, o None si sirve.
 
         El texto se arma acá con la coinbase de quien mandó el nonce y la recompensa que corresponde
         al prefijo: un nonce minado sobre el texto de otro minero, o con otra recompensa, no da el hash.
+        Un prefijo por debajo del piso de la cadena tampoco: los nodos rechazarían el bloque.
         """
         if not tarea.get("prefijo"):
             return "la tarea no tiene prefijo (lo escribe el TrP)"
+        if len(tarea["prefijo"]) < piso:
+            return f"el prefijo de la tarea tiene {len(tarea['prefijo'])} caracteres y el piso de la cadena es {piso}"
         if not contrato.cuenta_valida(mensaje.get("minero")):
             return "el minero no es una cuenta"
         if not isinstance(mensaje.get("nonce"), int) or isinstance(mensaje.get("nonce"), bool) or mensaje["nonce"] < 0:
@@ -886,6 +904,14 @@ def leer_organizador():
     return organizador
 
 
+def leer_prefijo_minimo():
+    """PREFIJO_MINIMO (v4, BC-97): el piso que se escribe en el génesis. Sólo cuenta al crear la cadena."""
+    piso = config.entero("PREFIJO_MINIMO", contrato.PREFIJO_MINIMO)
+    if not 1 <= piso <= 32:
+        raise ValueError("PREFIJO_MINIMO va de 1 a 32")
+    return piso
+
+
 def main():
     servicio = Servicio("nct", colas=contrato.COLAS)
     c = servicio.config
@@ -901,7 +927,8 @@ def main():
               tarea_guarda=config.entero("TAREA_GUARDA_SEGUNDOS", contrato.TAREA_GUARDA),
               emergencia=config.entero("EMERGENCIA_SEGUNDOS", contrato.EMERGENCIA_SEGUNDOS),
               revisar_cada=config.entero("REVISAR_ESTADO_SEGUNDOS", 60),
-              snapshot_cada=config.entero("SNAPSHOT_CADA", 100))
+              snapshot_cada=config.entero("SNAPSHOT_CADA", 100),
+              prefijo_minimo=leer_prefijo_minimo())
     nct.cargar_genesis()
     nct.arrancar()
     servicio.servir_http(en_hilo=True)

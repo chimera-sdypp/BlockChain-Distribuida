@@ -1,5 +1,8 @@
 {
- "descripcion": "Contrato v3. El mismo texto + nonce tiene que dar el mismo MD5 en Python, CUDA y la billetera del navegador. Claves: comun/tests/claves.py. Generado con comun/tests/generar_vector.py",
+ "descripcion": "Contrato v4. El mismo texto + nonce tiene que dar el mismo MD5 en Python, CUDA y la billetera del navegador. Lo firmado lleva adelante el hash del génesis (`cadena`). Claves: comun/tests/claves.py. Generado con comun/tests/generar_vector.py",
+ "cadena": "64094dc0a7641c985335b037a8ff534d",
+ "mensaje_transferencia": "64094dc0a7641c985335b037a8ff534d:0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1:8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5:250:1:1793836830",
+ "mensaje_alta": "64094dc0a7641c985335b037a8ff534d:alta:emision:a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f:1:1793836845:usuario:carol",
  "cuentas": {
   "alice": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
   "bob": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
@@ -17,8 +20,9 @@
    "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": "bob"
   },
   "organizador": "e3d316b540c0cb8b0ed8336394d485d3154a8e569e8a3fa29deb71fc371a7117",
+  "prefijo_minimo": 4,
   "timestamp": 1793836800,
-  "block_hash": "98250011763c68136cdd5239de153480",
+  "block_hash": "64094dc0a7641c985335b037a8ff534d",
   "bloque": {
    "previous_hash": "00000000000000000000000000000000",
    "timestamp": 1793836800,
@@ -31,6 +35,16 @@
      "nonce": 0,
      "timestamp": 1793836800,
      "firma": ""
+    },
+    {
+     "id": "reglas",
+     "origen": "emision",
+     "destino": "",
+     "monto": 0,
+     "nonce": 0,
+     "timestamp": 1793836800,
+     "firma": "",
+     "datos": "prefijo_minimo:4"
     },
     {
      "id": "genesis-0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
@@ -54,7 +68,7 @@
     }
    ],
    "nonce": 0,
-   "block_hash": "98250011763c68136cdd5239de153480",
+   "block_hash": "64094dc0a7641c985335b037a8ff534d",
    "prefijo": "",
    "minero": "",
    "recompensa": 0,
@@ -85,28 +99,28 @@
   }
  },
  "tarea": {
-  "previous_hash": "98250011763c68136cdd5239de153480",
-  "timestamp": 1793837105,
+  "previous_hash": "64094dc0a7641c985335b037a8ff534d",
+  "timestamp": 1793836899,
   "altura": 1,
   "prefijo": "0000",
   "transacciones": [
    {
-    "id": "d9b477f1968b9218d72c40068bc7351d",
+    "id": "76b1c8f6270f4fefaf9184c97ab2b83e",
     "origen": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
     "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
     "monto": 250,
     "nonce": 1,
     "timestamp": 1793836830,
-    "firma": "4a05278c3de57e4ffd62cd6d75aadad7a87b5d8515b0b4fdda0a29f95f9fecfc4da671658b6782aa1fa439c7ed738db199d051486158ec7f48e6651b5d2ed109"
+    "firma": "80c142e4c5e52c9c4cf207a52a57e48654dc9dee83f5b887c76fdf8704f13eb33354eaa1333501134e98e25b810b7fa1736d747d0024b0779ec9405e31788007"
    },
    {
-    "id": "d3afb236ab943bb3ccab322fe5333e70",
+    "id": "e98119ebc04bc83da8efcbdff4c52a0c",
     "origen": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
     "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
     "monto": 75,
     "nonce": 1,
     "timestamp": 1793836841,
-    "firma": "7a773c7886a8b921fc080e16cf2e624b68a27f1012ec70dd0d2c14e9673d569279759c5456537894449296ef9bd78bafe181578bff8573bd988f5cd0a7134301"
+    "firma": "35b1310ec9078ff0d45d0e6f10c1b868a018bbf9939ac6e34529ee95d008e590715dc687ed8a9ae794b5eca306e82ec0ff659f9e4c6107cb90cf46d3e70a7d02"
    },
    {
     "id": "alta-1",
@@ -116,7 +130,7 @@
     "nonce": 1,
     "timestamp": 1793836845,
     "datos": "usuario:carol",
-    "firma": "102e7709b30f6a8a16fd615f61ca169a53fdccc4adb1eae6d485e4ca408aa53aa57983a85fc1436b3db0adcc4399731c7cd2e40738cc767a9b6a9754f72d6601"
+    "firma": "4356d5d860997496809fbfa46ee37be1de8c4c9b04c3b94225fbe65d8ae2545bf0eee4a24a9aa9415611b6889d94a5669c8b250dbc5717fbf486e88a0372ec05"
    }
   ],
   "raiz_estado": "59ce7d5fdcbdbab54dc4eaa22f814984"
@@ -128,17 +142,17 @@
   "destino": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
   "monto": 40,
   "nonce": 0,
-  "timestamp": 1793837105,
+  "timestamp": 1793836899,
   "firma": ""
  },
- "raiz_transacciones": "d7fd5b7eb38b2f99f6eebb3b1ffacf56",
- "raiz": "1baa42b085b9f502ac0c07d84c67f813",
- "texto": "98250011763c68136cdd5239de153480;1793837105;1baa42b085b9f502ac0c07d84c67f813;",
- "nonce": 54420,
- "block_hash": "0000c33250af265699b3c0721aad3d1b",
+ "raiz_transacciones": "15dc3bc06eb5c28b99749d5305062c9d",
+ "raiz": "253eab3f85799eab1f0aac32258605dc",
+ "texto": "64094dc0a7641c985335b037a8ff534d;1793836899;253eab3f85799eab1f0aac32258605dc;",
+ "nonce": 54373,
+ "block_hash": "00000d482c6994fe890c7ab00e7c53c1",
  "bloque": {
-  "previous_hash": "98250011763c68136cdd5239de153480",
-  "timestamp": 1793837105,
+  "previous_hash": "64094dc0a7641c985335b037a8ff534d",
+  "timestamp": 1793836899,
   "transactions": [
    {
     "id": "cb-1-c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
@@ -146,26 +160,26 @@
     "destino": "c2ae82e433dfd5ebe064a439f3a8e63f9ab348ac40d390709c8c53d136e9f771",
     "monto": 40,
     "nonce": 0,
-    "timestamp": 1793837105,
+    "timestamp": 1793836899,
     "firma": ""
    },
    {
-    "id": "d9b477f1968b9218d72c40068bc7351d",
+    "id": "76b1c8f6270f4fefaf9184c97ab2b83e",
     "origen": "0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1",
     "destino": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
     "monto": 250,
     "nonce": 1,
     "timestamp": 1793836830,
-    "firma": "4a05278c3de57e4ffd62cd6d75aadad7a87b5d8515b0b4fdda0a29f95f9fecfc4da671658b6782aa1fa439c7ed738db199d051486158ec7f48e6651b5d2ed109"
+    "firma": "80c142e4c5e52c9c4cf207a52a57e48654dc9dee83f5b887c76fdf8704f13eb33354eaa1333501134e98e25b810b7fa1736d747d0024b0779ec9405e31788007"
    },
    {
-    "id": "d3afb236ab943bb3ccab322fe5333e70",
+    "id": "e98119ebc04bc83da8efcbdff4c52a0c",
     "origen": "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5",
     "destino": "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f",
     "monto": 75,
     "nonce": 1,
     "timestamp": 1793836841,
-    "firma": "7a773c7886a8b921fc080e16cf2e624b68a27f1012ec70dd0d2c14e9673d569279759c5456537894449296ef9bd78bafe181578bff8573bd988f5cd0a7134301"
+    "firma": "35b1310ec9078ff0d45d0e6f10c1b868a018bbf9939ac6e34529ee95d008e590715dc687ed8a9ae794b5eca306e82ec0ff659f9e4c6107cb90cf46d3e70a7d02"
    },
    {
     "id": "alta-1",
@@ -175,11 +189,11 @@
     "nonce": 1,
     "timestamp": 1793836845,
     "datos": "usuario:carol",
-    "firma": "102e7709b30f6a8a16fd615f61ca169a53fdccc4adb1eae6d485e4ca408aa53aa57983a85fc1436b3db0adcc4399731c7cd2e40738cc767a9b6a9754f72d6601"
+    "firma": "4356d5d860997496809fbfa46ee37be1de8c4c9b04c3b94225fbe65d8ae2545bf0eee4a24a9aa9415611b6889d94a5669c8b250dbc5717fbf486e88a0372ec05"
    }
   ],
-  "nonce": 54420,
-  "block_hash": "0000c33250af265699b3c0721aad3d1b",
+  "nonce": 54373,
+  "block_hash": "00000d482c6994fe890c7ab00e7c53c1",
   "prefijo": "0000",
   "altura": 1,
   "raiz_estado": "59ce7d5fdcbdbab54dc4eaa22f814984"
@@ -201,5 +215,5 @@
    "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f": 75
   }
  },
- "texto_de_alice": "98250011763c68136cdd5239de153480;1793837105;aea47d9de79a3e5484fef089b8718f6c;"
+ "texto_de_alice": "64094dc0a7641c985335b037a8ff534d;1793836899;83a6d58c647b158c0c98602b6ef4008a;"
 }

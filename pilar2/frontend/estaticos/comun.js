@@ -47,8 +47,18 @@ async function firmar(clave, texto) {
   return hex(new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, clave, new TextEncoder().encode(texto))));
 }
 
-// Lo que firma el origen de una transacción (contrato v2); en una carga el origen es «emision».
-const mensajeTransaccion = (tx) => `${tx.origen}:${tx.destino}:${tx.monto}:${tx.nonce}:${tx.timestamp}`;
+// Contrato v4 (BC-99): todo lo que se firma lleva adelante el hash del génesis de la cadena, así lo firmado para una
+// cadena no sirve en otra (después de un reinicio). Se lee de /api/cadena.
+async function genesis() {
+  const { ok, status, cuerpo } = await api("/api/cadena");
+  if (!ok || !/^[0-9a-f]{32}$/.test(cuerpo.genesis || "")) throw new Error(`el backend no dio el génesis de la cadena (${status})`);
+  return cuerpo.genesis;
+}
+
+// Lo que firma el origen de una transacción; en una carga el origen es «emision».
+const mensajeTransaccion = (tx, cadena) => `${cadena}:${tx.origen}:${tx.destino}:${tx.monto}:${tx.nonce}:${tx.timestamp}`;
+// Lo que firma quien pide el alta: demuestra que tiene la privada.
+const mensajeAlta = (tipo, cuenta, nombre, cadena) => `alta:${cadena}:${tipo}:${cuenta}:${nombre}`;
 
 function bajarArchivo(nombre, contenido) {
   const enlace = el("a", { href: URL.createObjectURL(new Blob([contenido], { type: "application/octet-stream" })),

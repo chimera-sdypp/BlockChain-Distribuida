@@ -104,11 +104,12 @@ def firmar_lotes(api, origenes, cantidad, lote, archivo):
     orígenes, de monto 1, cada una con el nonce siguiente de su origen. Devuelve los destinos."""
     nonces = {o: api.get(f"/api/cuentas/{cuenta(o)}")["nonce"] for o in origenes}
     destinos = [contrato.nueva_clave()[1] for _ in range(DESTINOS)]
+    cadena = api.get("/api/cadena")["genesis"]  # v4: lo firmado lleva el hash del génesis
     txs = []
     for k in range(cantidad):
         origen = origenes[k % len(origenes)]
         nonces[origen] += 1
-        txs.append(contrato.transaccion(PRIVADA[origen], destinos[k % DESTINOS], 1, nonces[origen]))
+        txs.append(contrato.transaccion(PRIVADA[origen], destinos[k % DESTINOS], 1, nonces[origen], cadena=cadena))
     lotes = [txs[i:i + lote] for i in range(0, cantidad, lote)]
     Path(archivo).write_text(json.dumps(lotes), encoding="utf-8")
     return set(destinos)

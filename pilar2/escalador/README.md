@@ -27,7 +27,7 @@ El tercero existe para que el escalador siga vivo hasta borrar sus VMs (sus mine
 - Se descuenta la **potencia efectiva** de los mineros vivos que no son nuestras VMs, GPU incluidas: `min(bench, lo que midió el gateway)` (BC-74). Decir `tipo: gpu` ya no alcanza: una «GPU» que no manda shares mide 0 y no le saca VMs a nadie. Sin trabajo (`tx:pendientes` y `cajas` vacías): 0.
 - **Trabado:** si hay trabajo y la caja que se está minando lleva `ESCALAR_SIN_BLOQUE_SEGUNDOS` (300) sin bloque (`caja:armada`), no se descuenta nada: alguien dice tener potencia que no aparece (por ejemplo, un minero que avisa pero nunca pide rangos y por eso no tiene medición).
 - **Sin oscilar:** sube recién tras `ESPERA_SUBIR_SEGUNDOS` seguidos en los que faltan VMs, y baja recién cuando el número menor se sostuvo `ESPERA_BAJAR_SEGUNDOS`.
-- **Cada VM con su clave (BC-57):** una VM no puede pedir el alta a mano. Antes del apply, el escalador genera el par de cada VM `minero-cpu-<n>` que falte, lo guarda en `escalador:claves` (así el pod siguiente usa las mismas), aprueba la pública en `cuentas` como minero con ese nombre y le pasa la privada a OpenTofu por entorno (`TF_VAR_claves`, no en los argumentos). La VM la lee de su metadata (`clave-minero`). Después de borrar VMs, da de baja sus cuentas. No hay token compartido.
+- **Cada VM con su clave (BC-57, BC-95):** la VM la genera al arrancar (`pilar3/vms/arrancar.sh`), la guarda en su disco y publica sólo la pública en sus guest attributes (`minero/publica`, que sólo ella puede escribir). En cada ciclo el escalador la lee con la API de Compute (`AtributosGCE`, con la cuenta del pod por Workload Identity) y, si no está en la cadena, firma su alta delegada. Si la VM se recreó con otra clave, da de baja la vieja; al borrar VMs, sus cuentas. Ninguna privada pasa por Redis ni por el state de OpenTofu.
 - Nuestras VMs se reconocen por el alias de `nodo:<cuenta>`, que el gateway saca de `cuentas` (lo escribió el escalador): `minero-cpu-<n>`. Un minero cualquiera no puede hacerse pasar por una VM.
 
 | Variable | Por defecto | Qué es |
@@ -70,10 +70,10 @@ Probado el 09/11 (contrato v1) con `VMS_ACTIVAS=0` y el minero CPU local haciend
 
 ## Permiso en la cadena (contrato v3, BC-79)
 
-El escalador ya no escribe `cuentas`. Tiene su propia clave (`ESCALADOR_CLAVE`, o la que genera la primera vez y guarda en `escalador:clave`; la pública sale en el log al arrancar) y, para cada VM nueva, firma un **alta delegada** (`alta-<su clave>-<n>`) que manda al backend (`BACKEND_URL`). Al borrar la VM, una baja delegada. Para eso necesita, una sola vez, el permiso del organizador:
+El escalador ya no escribe `cuentas`. Tiene su propia clave (`ESCALADOR_CLAVE`, desde el Secret `escalador-clave`; sin ella, con `VMS_ACTIVAS=1`, no arranca. La pública sale en el log al arrancar) y, para cada VM nueva, firma un **alta delegada** (`alta-<su clave>-<n>`) que manda al backend (`BACKEND_URL`). Al borrar la VM, una baja delegada. Para eso necesita, una sola vez, el permiso del organizador:
 
 ```bash
 python -m claves permiso organizador.clave --clave <clave del escalador> --prefijo minero-cpu- --url https://…
 ```
 
-Con ese permiso sólo puede dar de alta y de baja mineros `minero-cpu-*`: no aprueba usuarios ni carga saldo. El gateway deja minar a la VM apenas el NCT valida su alta, así puede minar el bloque que la confirma aunque no haya otros mineros.
+Con ese permiso sólo puede dar de alta y de baja mineros `minero-cpu-*`: no aprueba usuarios ni carga saldo. Una cuenta que dio de baja el organizador queda vetada (v4): el escalador no la vuelve a dar de alta (lo avisa una vez en el log). El gateway deja minar a la VM apenas el NCT valida su alta, así puede minar el bloque que la confirma aunque no haya otros mineros.

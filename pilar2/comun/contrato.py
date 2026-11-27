@@ -583,23 +583,34 @@ def firmar_pedido(privada_hex, metodo, ruta, cuerpo=b"", tiempo=None, quien=MINE
             "X-Firma": firmar(privada_hex, mensaje_pedido(metodo, ruta, tiempo, cuerpo))}
 
 
-def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MINERO):
-    """(cuenta, None) si el pedido está bien firmado y en hora; (None, motivo) si no.
+def problema_de_cabeceras(encabezados, ahora=None, quien=MINERO):
+    """El motivo por el que un pedido firmado no puede servir, mirando sólo las cabeceras (la cuenta y la hora); vacío
+    si puede. BC-94: el gateway lo mira antes de leer el cuerpo, así un pedido viejo o sin cuenta no le hace leer nada.
 
     `encabezados` puede ser un dict o los headers de Starlette (que no distinguen mayúsculas).
     `quien` es el encabezado con la cuenta: X-Minero o X-Organizador.
     """
-    def leer(nombre):
-        return encabezados.get(nombre) or encabezados.get(nombre.lower())
-
-    cuenta, tiempo, firma = leer(quien), leer("X-Tiempo"), leer("X-Firma")
+    cuenta, tiempo = _cabecera(encabezados, quien), _cabecera(encabezados, "X-Tiempo")
     if not cuenta_valida(cuenta):
-        return None, f"{quien}: clave pública Ed25519 en hex"
+        return f"{quien}: clave pública Ed25519 en hex"
     if not isinstance(tiempo, str) or not re.fullmatch(r"[0-9]{1,12}", tiempo):
-        return None, "X-Tiempo: segundos Unix"
+        return "X-Tiempo: segundos Unix"
     ahora = int(time.time()) if ahora is None else ahora
     if abs(ahora - int(tiempo)) > VENTANA_PEDIDO:
-        return None, f"X-Tiempo: corrido más de {VENTANA_PEDIDO} s"
+        return f"X-Tiempo: corrido más de {VENTANA_PEDIDO} s"
+    return ""
+
+
+def _cabecera(encabezados, nombre):
+    return encabezados.get(nombre) or encabezados.get(nombre.lower())
+
+
+def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MINERO):
+    """(cuenta, None) si el pedido está bien firmado y en hora; (None, motivo) si no (ver problema_de_cabeceras)."""
+    motivo = problema_de_cabeceras(encabezados, ahora, quien)
+    if motivo:
+        return None, motivo
+    cuenta, tiempo, firma = (_cabecera(encabezados, n) for n in (quien, "X-Tiempo", "X-Firma"))
     if not verificar_firma(cuenta, mensaje_pedido(metodo, ruta, tiempo, cuerpo), firma):
         return None, f"X-Firma: no es la {_QUIEN.get(quien, quien)} sobre el pedido"
     return cuenta, None

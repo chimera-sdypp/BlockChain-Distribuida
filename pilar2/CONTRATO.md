@@ -133,6 +133,7 @@ Reemplazan a `MINER_TOKEN` (BC-57). Cada pedido al gateway lleva:
 - Si la hora está corrida más de 30 s (`VENTANA_PEDIDO`), se rechaza: un pedido grabado no se puede volver a mandar después.
 - El `minero` del cuerpo tiene que ser el de `X-Minero`. Firma mala: 401; minero no aprobado en `cuentas`: 403, y queda pedido en `altas:pendientes` con el `alias` de su `/hello` (si lo anotó antes otro pedido, el `/hello` le corrige el nombre). Ante un 403 el minero repite sólo el `/hello` hasta que lo aprueben.
 - El panel del organizador usa lo mismo, con `X-Organizador` en vez de `X-Minero` (`quien=ORGANIZADOR`).
+- **Antes de leer el cuerpo (BC-94):** el gateway mira la cuenta y la hora de los encabezados (`problema_de_cabeceras`) y, si no sirven, contesta 401 sin leer nada. Un cuerpo de más de 64 KB (`CUERPO_MAXIMO`; el más grande de verdad, un `/results` con 64 shares, pesa un par de KB) da **413**: por `Content-Length` sin leerlo, o al pasarse mientras llega. La firma cubre el cuerpo, así que verificarla (y anotar el pedido de alta de un minero nuevo) necesita leerlo, siempre con ese tope. El gateway no pasa por Traefik (tiene su LoadBalancer, la IP de los mineros): estos topes son los suyos, y no tiene límite de ritmo porque lo que pasa la firma es de un minero.
 
 ## Altas
 

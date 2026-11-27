@@ -90,7 +90,8 @@ def test_el_nonce_de_otro_minero_no_es_un_share(cliente, redis, colas):
 def test_los_shares_de_un_rango_que_no_tiene_prestado_no_cuentan(cliente, otro, redis, colas):
     prestar(cliente, redis, colas)
     respuesta = otro.post("/results", resultado(nombre="minero2", shares=shares_de(nombre="minero2")[:5]))
-    assert respuesta.json() == {"shares": 0} and epoca(redis, "minero2") is None
+    # Y como es un «sin solución» ajeno, tampoco llega al TrP (BC-92).
+    assert respuesta.status_code == 409 and respuesta.json()["shares"] == 0 and epoca(redis, "minero2") is None
 
 
 def test_con_la_tarea_cerrada_ya_no_entran(cliente, redis, colas):

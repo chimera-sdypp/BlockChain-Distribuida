@@ -191,7 +191,7 @@ Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-minero
 | `POST /bench` | `{minero, segundos, hashes_por_segundo}` | 204 |
 | `GET /tasks/next` | — (el minero sale de `X-Minero`: el préstamo queda a su nombre) | 200 `{tarea, rango, bloque, desde, hasta, prefijo, altura}`, con `bloque = texto_para(tarea, minero)`, o 204 sin trabajo. Si ya tiene un préstamo vivo, ese mismo (BC-74) |
 | `GET /epocas/<n>` | — | 200 `{epoca, publicada, shares, raiz?}`: cuántos shares suyos figuran en la lista publicada de la época (BC-82) |
-| `POST /results` | lo mismo que `resultados`, más `shares` (lista de nonces) | 202 `{shares: los que sumó}` |
+| `POST /results` | lo mismo que `resultados`, más `shares` (lista de nonces) | 202 `{shares: los que sumó}`; 400 si la tarea no tiene ese rango, 409 si es un `sin_solucion` de un rango que no tiene prestado (BC-92) |
 | `POST /keepalive` | `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` (cada 5 s) | 200 `{cortar: true \| false, shares?, presentarse?}`; `presentarse: true` si su `nodo:<id>` no tiene bench (p. ej. se reinició la cadena): el minero repite `/hello` y `/bench` antes del próximo rango |
 
 ## Lo que mide el gateway (BC-74)
@@ -218,6 +218,7 @@ Un `sin_solucion` no se puede verificar: es el *block withholding attack* de los
   - Los shares se verifican con el texto del primero y se le acreditan a quien reverificó. El TrP no espera la reverificación.
 - **Suspensión:** queda en `suspendidos` con el motivo y la evidencia; el gateway le contesta 403 y su préstamo vuelve a la cola. El organizador, en el panel, la **reactiva** o **confirma la baja**: un minero honesto puede fallar una vez (un bug, una GPU que se reinicia), así que la baja la decide una persona.
 - **Aviso por pocos shares:** si en sus últimos 3 préstamos mandó menos de un cuarto de los shares esperados según su bench, queda una línea en el log (`blockchain_pocos_shares_total`). Es una señal, no una prueba: no suspende.
+- **Rangos ajenos (BC-92):** los dos chequeos de arriba miran el préstamo, así que un `sin_solucion` de un rango que el minero no tiene prestado no puede llegar al TrP: si no, con unos pocos números inventados la tarea queda «agotada» y el NCT la rearma sin fin. El gateway contesta **400** si la tarea no tiene ese número de rango (`rango_de_la_tarea`: de 0 a `rangos` − 1, o su reverificación) y **409** a un `sin_solucion` o una reverificación de un rango que no es de quien lo manda; lo cuenta en `blockchain_resultados_ajenos_total` y en `resultados_ajenos` del historial. No suspende: a un minero honesto le pasa si su préstamo venció. Una solución de un rango ajeno sí pasa, porque el TrP verifica el hash. El TrP, además, descarta los rangos fuera de [0, `rangos`).
 - **Descartada, la tarea trampa:** prestar un rango de un bloque ya resuelto, con el texto del ganador, donde se sabe que hay solución. Se puede detectar: el `previous_hash` de ese texto ya no es la punta, y la punta es pública en `/api/bloques`. Un tramposo contestaría bien las trampas y mentiría en el resto, y a ése lo agarran igual la estadística o la reverificación. La idea viene de los *forced errors* de Truebit y de las tareas *gold standard* del crowdsourcing.
 
 ## Claves de Redis

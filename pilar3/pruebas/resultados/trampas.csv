@@ -9,3 +9,7 @@ retener,acaparar: el plazo le saca el rango,a los ~120 s (sin medición),"1 cort
 gpu-falsa,el escalador pide VMs aunque haya una «GPU» viva,1 o más VMs,1 VM(s) pedidas,sí
 gpu-falsa,"sin bloque en 240 s, el prefijo baja",motivo emergencia,"prefijos [5], motivos ['emergencia']",sí
 bench-bajo,el ajuste por tiempo pasa el techo del bench declarado,prefijo > 5 sin cambiar la potencia,"bench declarado 5.26e+04 H/s (techo 5); prefijo de cada bloque, en orden: [7, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7]",sí
+rangos-ajenos,ningún «sin solución» ajeno se acepta,sólo 409 y 400,"4 tareas atacadas, respuestas {'400': 40, '409': 36}",sí
+rangos-ajenos,el TrP no da tareas por agotadas,0 (o alguna sin solución de verdad: e^-4),0 tarea(s) agotadas,sí
+rangos-ajenos,los bloques siguen saliendo con prefijo 7 (180 s),2 o más,3 bloque(s),sí
+rangos-ajenos,el honesto no se suspende,no suspendido,no suspendido,sí

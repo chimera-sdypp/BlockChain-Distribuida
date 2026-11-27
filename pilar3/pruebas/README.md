@@ -305,7 +305,7 @@ La primera corrida de ese día se descartó: mostró que el gateway medía mal l
 
 ```bash
 KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
-    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo]
+    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo,rangos-ajenos]
 ```
 
 | Escenario | Quiénes | Qué se comprueba |
@@ -314,6 +314,7 @@ KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
 | `retener` | `retener` y `acaparar`, sin nadie que mine | El plazo les saca el rango (sin medición, a los 120 s): con la tarea abierta, nada más se los puede sacar (BC-74) |
 | `gpu-falsa` | Sólo una «GPU» que avisa y nunca pide rangos, con trabajo apilado | El escalador pide VMs igual (BC-74) y, sin bloque en 240 s, el prefijo baja por emergencia (BC-73) |
 | `bench-bajo` | Sólo uno que declara la centésima parte de su bench, con `PREFIJO_BASE=8` | El ajuste por tiempo sube el prefijo por encima del techo que da ese bench (BC-73) |
+| `rangos-ajenos` | Honesto y uno que en cada tarea manda «sin solución» de los rangos 0 a 9 que no son suyos y de 1000 a 1009, con el prefijo fijo en 7 | Ningún resultado ajeno se acepta (409 y 400), el TrP no da tareas por agotadas y los bloques siguen saliendo (BC-92, la prueba de la devolución) |
 
 Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en [`resultados/trampas.log`](resultados/trampas.log).
 
@@ -323,6 +324,8 @@ Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en
 - `bench-alto` declaró 1,18 GH/s y el sistema contó lo medido: 1,34 MH/s. El honesto midió 2,64 MH/s con un bench de 2,19 MH/s (lo medido es una estimación: el sistema usa el menor) y no se lo suspendió.
 - Con sólo la «GPU» falsa, el escalador pidió 1 VM y, a los 240 s sin bloque, el prefijo bajó de 6 a 5 por emergencia.
 - `bench-bajo` declaró 52,6 kH/s (techo 5). Con el tope en 8, el prefijo de cada bloque fue 5 (ocho bloques), 6 (cinco) y 7: el tiempo pasó el techo. Con la regla anterior se quedaba en 5.
+
+**27/11, `rangos-ajenos` en el k3s con el arreglo de BC-92: 4 de 4.** Se usó la misma prueba de la devolución, con el prefijo fijo en 7 durante 180 s. El atacante atacó 4 tareas y mandó 76 «sin solución» ajenos: el gateway contestó 36 con 409 (rangos que la tarea tiene, pero no eran suyos) y 40 con 400 (los 1000 a 1009). El TrP no dio ninguna tarea por agotada, salieron 3 bloques y el honesto no quedó suspendido. Antes del arreglo, con el prefijo 7 no salía ningún bloque.
 
 
 ## El operador de la nube (BC-85)

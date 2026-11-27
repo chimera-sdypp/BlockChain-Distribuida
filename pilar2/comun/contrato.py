@@ -68,11 +68,17 @@ REVERIFICACION = 1_000_000           # se suma al número de rango de una reveri
 def prob_sin_solucion(tamano, prefijo):
     """Probabilidad de que un rango de `tamano` nonces no tenga ningún hash con `prefijo` (BC-75): e^(-N / 16^p)."""
     return math.exp(-tamano / 16 ** len(prefijo))
+
+
+def rango_de_la_tarea(rango, rangos):
+    """Si `rango` es un número que existe en una tarea partida en `rangos` (BC-92): uno del TrP, de 0 a rangos - 1,
+    o su reverificación (BC-75)."""
+    return 0 <= rango < rangos or REVERIFICACION <= rango < REVERIFICACION + rangos
 # BC-70: lo que se le saca a tx:<id> al confirmarla. Ya está en el bloque: queda {estado, bloque}.
 CAMPOS_COPIADOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "datos", "motivo")
 EPOCA, HISTORIAL = "epoca:{}", "historial:{}"
 CAMPOS_HISTORIAL = ("alta", "bloques", "recompensas", "shares", "rangos", "segundos_conectado", "ultimo_aviso",
-                    "hashes_por_segundo", "conectado")
+                    "hashes_por_segundo", "conectado", "resultados_ajenos")
 CONECTADOS = "mineros:conectados"    # conjunto: los mineros con conectado = 1, para darlos por desconectados
 TIPOS_CUENTA = ("usuario", "minero", "organizador", "validador")
 # Versión 3: el estado que sale de la cadena (lo reconstruye comun/estado.py; Redis es caché)

@@ -11,8 +11,10 @@ Cada trampa es uno de los ataques del epic BC-72, y el sistema tiene que detecta
 | `retener` | Toma un rango y manda keep-alive sin minarlo | El plazo se lo saca (BC-74) |
 | `sin-solucion` | Contesta «sin solución» sin buscar | Queda suspendido (BC-75) |
 | `guardar` | Busca, y si encuentra el nonce contesta «sin solución» | Queda suspendido (BC-75) |
+| `rangos-ajenos` | En cada tarea nueva manda «sin solución» de los rangos 0 a 9 que no son suyos y de 1000 a 1009, y después mina el suyo | Ninguno llega al TrP (409 y 400) y los bloques siguen saliendo (BC-92) |
 """
 
+import json
 import logging
 import time
 
@@ -22,7 +24,8 @@ from .minero import Minero
 
 log = logging.getLogger("minero_cpu")
 
-TRAMPAS = ("bench-alto", "bench-bajo", "gpu-falsa", "acaparar", "retener", "sin-solucion", "guardar")
+TRAMPAS = ("bench-alto", "bench-bajo", "gpu-falsa", "acaparar", "retener", "sin-solucion", "guardar", "rangos-ajenos")
+AJENOS = (*range(10), *range(1000, 1010))  # los del profesor (1000 a 1009) y los que la tarea sí tiene
 
 
 class MineroTramposo(Minero):
@@ -30,7 +33,7 @@ class MineroTramposo(Minero):
         if trampa not in TRAMPAS:
             raise ValueError(f"TRAMPA va {', '.join(TRAMPAS)}, no {trampa!r}")
         super().__init__(*args, **opciones)
-        self.trampa = trampa
+        self.trampa, self.tareas_atacadas = trampa, set()
         if trampa == "gpu-falsa":
             self.tipo, self.placa = "gpu", "NVIDIA GeForce RTX 4090 (falsa)"
         log.warning("Minero TRAMPOSO (%s): sólo para pruebas", trampa)
@@ -60,6 +63,26 @@ class MineroTramposo(Minero):
             return True
         if self.trampa == "guardar":
             return self._guardar()
+        if self.trampa == "rangos-ajenos":
+            return self._rangos_ajenos()
+        return super().un_rango()
+
+    def _rangos_ajenos(self):
+        """Pide un rango para saber el id de la tarea y la da por agotada con «sin solución» de rangos que no son
+        suyos (la devolución, punto 2). Después mina el suyo como un honesto: el gateway le vuelve a dar el mismo."""
+        codigo, rango = self._insistir("GET", "/tasks/next")
+        if codigo != 200 or not rango:
+            return False
+        if rango["tarea"] not in self.tareas_atacadas:
+            self.tareas_atacadas.add(rango["tarea"])
+            codigos = {}
+            for numero in AJENOS:
+                if numero != rango["rango"]:
+                    c, _ = self.gateway.pedir("POST", "/results", {"tarea": rango["tarea"], "rango": numero,
+                                                                   "minero": self.cuenta, "sin_solucion": True})
+                    codigos[c] = codigos.get(c, 0) + 1
+            log.warning("Trampa: «sin solución» de %d rangos ajenos de la tarea %s; el gateway contestó %s",
+                        sum(codigos.values()), rango["tarea"], json.dumps(dict(sorted(codigos.items()))))
         return super().un_rango()
 
     def _retener(self, pedidos):

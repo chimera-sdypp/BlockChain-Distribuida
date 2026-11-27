@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from comun import config, contrato, redisdb
-from trp.resultados import SOLUCIONES, recibir
+from trp.resultados import SIN_SOLUCION_RANGOS, SOLUCIONES, recibir
 
 from comun.tests.claves import CUENTA
 
@@ -162,3 +162,24 @@ def test_con_dos_pods_sale_una_sola_solucion():
             h.join()
         real.delete(f"tarea:{id_}")
         assert len(publicados) == 1, (intento, publicados)
+
+
+# --- Rangos que la tarea no tiene (BC-92) ---------------------------------------------------------
+def test_los_rangos_inventados_no_agotan_la_tarea(redis, publicados):
+    # El ataque del profesor: 10 «sin solución» de rangos que no existen. El TrP no confía en el gateway.
+    for numero in range(1000, 1010):
+        enviar(redis, publicados, rango=numero, sin_solucion=True)
+    enviar(redis, publicados, rango=3, sin_solucion=True)  # la tarea tiene 3: del 0 al 2
+    assert publicados == [] and redis.scard(SIN_SOLUCION_RANGOS.format("t1")) == 0
+    assert redis.hget("tarea:t1", "ganador") is None
+
+
+def test_un_rango_fuera_de_la_tarea_con_solucion_tambien_se_descarta(redis, publicados):
+    enviar(redis, publicados, rango=3, **con_nonce())
+    assert publicados == [] and redis.hget("tarea:t1", "ganador") is None
+
+
+def test_con_los_rangos_de_verdad_se_agota_igual(redis, publicados):
+    for numero in (1000, 0, 1, 2):
+        enviar(redis, publicados, rango=numero, sin_solucion=True)
+    assert publicados == [(SOLUCIONES, {"tarea": "t1", "sin_solucion": True})]

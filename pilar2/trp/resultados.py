@@ -62,6 +62,10 @@ def recibir(resultado, redis, publicar):
     tarea = redis.hgetall(clave)
     if "prefijo" not in tarea or "transacciones" not in tarea:
         return _descartar("tarea_desconocida", "Resultado de una tarea que no partió el TrP (%s); se descarta", id_)
+    # BC-92: el TrP no confía en el gateway. Con números inventados en el conjunto, la tarea se daría por agotada.
+    if not 0 <= resultado["rango"] < int(tarea["rangos"]):
+        return _descartar("fuera_de_rango", "%s mandó el rango %s de la tarea %s, que tiene %s; se descarta",
+                          resultado["minero"], resultado["rango"], id_, tarea["rangos"])
 
     if resultado.get(SIN_SOLUCION):
         redis.sadd(SIN_SOLUCION_RANGOS.format(id_), resultado["rango"])  # conjunto: un rango repetido no suma

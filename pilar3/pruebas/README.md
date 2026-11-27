@@ -14,6 +14,7 @@
 | [`operador.py`](operador.py) | BC-85: lo que haría el operador de la nube (tocar Redis, editar o reescribir bloques, inflar shares, un validador que firma dos historias) y que se note |
 | [`rafaga.sh`](rafaga.sh) | Una ráfaga: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
 | [`rafaga.py`](rafaga.py) | La misma ráfaga con ventana: el ritmo (transferencias por segundo) se mueve en vivo, hay botones para tirar varias juntas y muestra las que esperan bloque, las confirmadas y un gráfico de los últimos 60 s |
+| [`limites.py`](limites.py) | BC-94: los límites contra el sistema desplegado (403 de una clave sin alta sin rastro en Redis, vencimiento de la rechazada, 413, GET sin límite y 429 del lote) |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
 
@@ -351,3 +352,15 @@ KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/operador.py \
 Resultados en [`resultados/operador.csv`](resultados/operador.csv) y el detalle en [`resultados/operador.log`](resultados/operador.log).
 
 **19/11, en el k3s con la v3: 16 de 16.** Lo que el operador sí puede hacer sigue igual: no incluir transacciones, elegir el prefijo y apagar el sistema (ver [el modelo de confianza](../../pilar2/CONTRATO.md#modelo-de-confianza-el-operador-de-la-nube-bc-85)).
+
+## Límites (BC-94)
+
+`pilar2/.venv/bin/python pilar3/pruebas/limites.py --sistema <URL>`, con `kubectl` apuntando al cluster (lee Redis por
+`kubectl exec`). Repite la prueba del profesor (una clave recién generada transfiere: 403 y nada en Redis), comprueba
+que la rechazada vence y que los límites de Traefik ([`k8s/limites/`](../../pilar2/k8s/limites/)) cortan: 413 a un
+cuerpo de más de 1 MB y 429 a una ráfaga a `/api/transacciones/lote`, sin tocar los GET. La ráfaga gasta el burst del
+lote de esa IP: hay que esperar unos segundos antes de un bulk.
+
+Los límites son por IP y por réplica de Traefik, y las pruebas de carga los respetan (no hay excepciones):
+`rafaga.py` (hasta 100 tx/s y tiradas de 1.000) entra en los 100/s con burst de 1.000 de los POST sueltos, y los bulks
+(lotes de 1.000 con 10 usuarios virtuales) en los 5/s con burst de 20 del lote.

@@ -1,0 +1,63 @@
+# Límites de Traefik para lo que escribe en Redis (BC-94): los POST de /api pasan por acá, con tope de cuerpo y de ritmo
+# por IP. Los GET siguen por el Ingress de siempre (ingress.yaml), sin límite: la billetera y rafaga.py consultan el
+# estado de cada transacción muchas veces.
+#
+# - Cuerpo: 1 MB. Un lote de 1.000 transferencias (el máximo del backend) pesa unos 420 KB.
+# - Ritmo: rafaga.py manda hasta 100 tx/s y tiradas de 1.000 juntas; los bulks de k6, lotes de 1.000 con 10 usuarios
+#   virtuales, uno detrás del otro. Las pruebas de carga respetan estos límites: no hay excepciones.
+# - Cada réplica de Traefik cuenta por su lado (en memoria): con N réplicas el límite real es hasta N veces éste.
+# - La IP es la que ve Traefik. En GKE, detrás de Cloudflare y del LoadBalancer, la toma de X-Forwarded-For
+#   (pilar3/k8s/apps/limites-gke.yaml y pilar3/helm/traefik.yaml).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: cuerpo-maximo
+spec:
+  buffering:
+    maxRequestBodyBytes: 1048576
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ritmo-api
+spec:
+  rateLimit:
+    average: 100
+    period: 1s
+    burst: 1000
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ritmo-lote
+spec:
+  rateLimit:
+    average: 5
+    period: 1s
+    burst: 20
+---
+# Más prioridad que el Ingress (que da a cada regla la prioridad de su largo, menos de 100).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: api-escritura
+spec:
+  routes:
+    - match: Method(`POST`) && PathPrefix(`/api/transacciones/lote`)
+      kind: Rule
+      priority: 1010
+      middlewares:
+        - name: cuerpo-maximo
+        - name: ritmo-lote
+      services:
+        - name: backend
+          port: http
+    - match: Method(`POST`) && PathPrefix(`/api`)
+      kind: Rule
+      priority: 1000
+      middlewares:
+        - name: cuerpo-maximo
+        - name: ritmo-api
+      services:
+        - name: backend
+          port: http

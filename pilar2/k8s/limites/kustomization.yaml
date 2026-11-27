@@ -1,0 +1,8 @@
+# Límites de ritmo y de cuerpo para los POST de /api (BC-94). Usan Middleware e IngressRoute de Traefik (k3s y GKE
+# lo traen): por eso van aparte, como nodo/.
+#   kubectl apply -k pilar2/k8s/limites
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: blockchain
+resources:
+  - limites.yaml

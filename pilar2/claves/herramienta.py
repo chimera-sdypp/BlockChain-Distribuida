@@ -177,6 +177,12 @@ def aprobar(backend, privada_organizador, cuenta, tipo, nombre, carga=None, sali
         raise ValueError("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
     if carga and tipo != "usuario":
         raise ValueError("la carga es sólo para usuarios (los mineros cobran minando)")
+    estado = backend.cuenta(cuenta)
+    if estado.get("aprobada") or estado.get("alta_en_camino"):
+        # BC-93: la cadena rechaza el alta repetida, pero la carga es válida sola y se cargaría dos veces.
+        salida(f"La cuenta {cuenta} ya {'tiene alta' if estado.get('aprobada') else 'tiene un alta en camino'}: "
+               "no se manda nada")
+        return 1
     txs = actas_de_aprobacion(privada_organizador, backend.nonce(contrato.EMISION), cuenta, tipo, nombre, carga)
     return mandar_y_seguir(backend, txs, salida, esperar)
 

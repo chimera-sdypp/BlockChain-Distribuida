@@ -284,24 +284,29 @@ def _igual(tx, esperada):
     return _sin_datos_vacios(tx) == _sin_datos_vacios(esperada)
 
 
+ALTA_REPETIDA = "la cuenta ya tiene alta"
+
+
 def problema_de_acta(tx, cuenta_de, permiso_de, organizador):
     """Lo que depende del estado en un acta ya firmada; None si vale. `cuenta_de(c)` da {tipo, nombre} o None,
     `permiso_de(clave)` el prefijo o None. Lo usan el NCT (con el caché, al validar) y `aplicar_bloque`."""
     tipo, destino = contrato.tipo_de(tx), tx["destino"]
     if tipo in ("alta", "baja") and destino == organizador:
         return "el organizador no se da de alta ni de baja: está en el génesis"
+    existente = cuenta_de(destino)
+    if tipo == "alta" and existente:
+        # BC-93: aprobar dos veces la misma cuenta no puede volver a darle el alta (ni su carga inicial). Después de
+        # una baja la cuenta ya no está: se puede volver a dar de alta (el escalador reusa la clave de cada VM).
+        return ALTA_REPETIDA
     if not contrato.es_delegada(tx):
         return None
     prefijo = permiso_de(tx["origen"])
     if not prefijo:
         return "sin permiso: la clave no tiene un permiso del organizador"
-    existente = cuenta_de(destino)
     if tipo == "alta":
         tipo_cuenta, nombre = contrato.datos_alta(tx)
         if tipo_cuenta != "minero" or not nombre.startswith(prefijo):
             return f"sin permiso: sólo puede dar de alta mineros {prefijo}*"
-        if existente and (existente.get("tipo") != "minero" or not str(existente.get("nombre", "")).startswith(prefijo)):
-            return "sin permiso: la cuenta ya existe y no es uno de sus mineros"
     elif not existente or existente.get("tipo") != "minero" or not str(existente.get("nombre", "")).startswith(prefijo):
         return f"sin permiso: sólo puede dar de baja mineros {prefijo}*"
     return None

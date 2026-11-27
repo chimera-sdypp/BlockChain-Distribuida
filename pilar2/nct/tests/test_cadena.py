@@ -53,6 +53,57 @@ def test_un_alta_firmada_por_otro_o_repetida_se_rechaza(armar, redis):
     assert estado_tx(redis, "alta-1") == ["rechazada", "firma inválida"]
 
 
+# ── Alta repetida (BC-93) ──
+
+def test_la_prueba_del_profesor_dos_aprobaciones_seguidas_cargan_una_sola_vez(armar, redis):
+    """Dos `claves aprobar --carga 50` seguidos: alta-1, carga-2, alta-3 y carga-4. Antes quedaban las cuatro y el
+    saldo en 100. El alta repetida (la primera está en camino) se rechaza y la carga que la sigue se queda esperando
+    su número hasta que vence: el saldo queda en 50."""
+    nct = armar(espera_nonce=60)
+    nct.cargar_genesis()
+    zoe = CUENTA["zoe"]
+    txs = [contrato.alta(ORG, 1, zoe, "usuario", "zoe", FECHA), contrato.carga(ORG, 2, zoe, 50, FECHA),
+           contrato.alta(ORG, 3, zoe, "usuario", "zoe", FECHA), contrato.carga(ORG, 4, zoe, 50, FECHA)]
+
+    assert [nct.validar(guardar_recibida(redis, tx)) for tx in txs] == ["pendiente", "pendiente", "rechazada",
+                                                                       "en_espera"]
+    assert estado_tx(redis, "alta-3") == ["rechazada", estado_cadena.ALTA_REPETIDA]
+    assert json.loads(redis.hget("altas:en_camino", zoe))["tx"] == "alta-1"  # la primera sigue en camino
+    assert nct.vencer_espera(ahora=FECHA * 2) == ["carga-4"]
+    nct.cerrar_cajas()
+    id_tarea = nct.armar_si_libre()
+    redis.hset(f"tarea:{id_tarea}", "prefijo", "0")
+    from nct.tests.escenario import minar, saldo
+    assert nct.procesar_solucion(minar(redis, id_tarea)) == "confirmada"
+    assert saldo(redis, "zoe") == 50 and emision(redis) == 2
+
+
+def test_un_alta_repetida_que_espera_su_numero_tambien_se_rechaza(armar, redis):
+    """Dos réplicas: alta-3 llega antes que carga-2 y espera. Cuando entra carga-2 se destraba, y el Lua la rechaza
+    aunque Python no la haya visto repetida al llegar (la primera todavía no estaba en camino)."""
+    nct = armar()
+    nct.cargar_genesis()
+    zoe = CUENTA["zoe"]
+    assert nct.validar(guardar_recibida(redis, contrato.alta(ORG, 1, zoe, "usuario", "zoe", FECHA))) == "pendiente"
+    assert nct.validar(guardar_recibida(redis, contrato.alta(ORG, 3, zoe, "usuario", "zoe", FECHA))) == "en_espera"
+    assert nct.validar(guardar_recibida(redis, contrato.carga(ORG, 2, zoe, 50, FECHA))) == "pendiente"
+    assert estado_tx(redis, "alta-3") == ["rechazada", estado_cadena.ALTA_REPETIDA]
+    assert redis.lrange("tx:pendientes", 0, -1) == ["alta-1", "carga-2"]
+
+
+def test_un_alta_de_una_cuenta_que_ya_esta_en_la_cadena_se_rechaza(armar, redis):
+    nct = armar()
+    nct.cargar_genesis()
+    zoe = CUENTA["zoe"]
+    confirmar(redis, nct, [contrato.alta(ORG, 1, zoe, "usuario", "zoe", FECHA)])
+    assert nct.validar(guardar_recibida(redis, contrato.alta(ORG, 2, zoe, "usuario", "zoe", FECHA))) == "rechazada"
+    assert estado_tx(redis, "alta-2") == ["rechazada", estado_cadena.ALTA_REPETIDA]
+    assert not redis.hexists("altas:en_camino", zoe)
+    # Después de la baja, sí.
+    confirmar(redis, nct, [contrato.baja(ORG, 2, zoe, "se fue", FECHA)])
+    assert nct.validar(guardar_recibida(redis, contrato.alta(ORG, 3, zoe, "usuario", "zoe", FECHA))) == "pendiente"
+
+
 def test_el_escalador_con_permiso_da_de_alta_sus_mineros_y_nada_mas(armar, redis):
     nct = armar()
     nct.cargar_genesis()

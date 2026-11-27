@@ -173,6 +173,43 @@ def test_una_clave_con_permiso_da_de_alta_y_de_baja_solo_sus_mineros():
     assert vm not in c.estado.cuentas and c.estado.nonces[CUENTA["escalador"]] == 2
 
 
+# ── Alta repetida (BC-93) ──
+
+def test_un_alta_repetida_no_vale_ni_en_otro_bloque_ni_en_el_mismo():
+    c = Cadena()
+    zoe = CUENTA["zoe"]
+    c.agregar([contrato.alta(PRIVADA["organizador"], 1, zoe, "usuario", "zoe", FECHA)])
+    otra = contrato.alta(PRIVADA["organizador"], 2, zoe, "usuario", "zoe", FECHA)
+    assert any(estado.ALTA_REPETIDA in p for p in c.verificar(c.armar([otra])))
+    a_alice = contrato.alta(PRIVADA["organizador"], 2, ALICE, "usuario", "alice", FECHA)  # alta del génesis
+    assert any(estado.ALTA_REPETIDA in p for p in c.verificar(c.armar([a_alice])))
+    dos_juntas = [contrato.alta(PRIVADA["organizador"], 2, CUENTA["vm0"], "minero", "gpu-1", FECHA),
+                  contrato.alta(PRIVADA["organizador"], 3, CUENTA["vm0"], "minero", "gpu-1", FECHA)]
+    assert any(estado.ALTA_REPETIDA in p for p in c.verificar(c.armar(dos_juntas)))
+
+
+def test_despues_de_una_baja_se_puede_volver_a_dar_de_alta():
+    c = Cadena()
+    zoe = CUENTA["zoe"]
+    c.agregar([contrato.alta(PRIVADA["organizador"], 1, zoe, "usuario", "zoe", FECHA)])
+    c.agregar([contrato.baja(PRIVADA["organizador"], 2, zoe, "se fue", FECHA)])
+    c.agregar([contrato.alta(PRIVADA["organizador"], 3, zoe, "usuario", "zoe", FECHA)])
+    assert c.estado.cuentas[zoe]["nombre"] == "zoe"
+
+
+def test_el_escalador_tampoco_repite_el_alta_pero_si_despues_de_la_baja():
+    """El escalador reusa la clave de cada VM: la vuelve a dar de alta cuando la recrea, después de la baja."""
+    c = Cadena()
+    escalador, vm = PRIVADA["escalador"], CUENTA["vm0"]
+    c.agregar([contrato.permiso(PRIVADA["organizador"], 1, CUENTA["escalador"], "minero-cpu-", FECHA)])
+    c.agregar([contrato.alta(escalador, 1, vm, "minero", "minero-cpu-0", FECHA, delegada=True)])
+    repetida = contrato.alta(escalador, 2, vm, "minero", "minero-cpu-0", FECHA, delegada=True)
+    assert any(estado.ALTA_REPETIDA in p for p in c.verificar(c.armar([repetida])))
+    c.agregar([contrato.baja(escalador, 2, vm, "la VM se borró", FECHA, delegada=True)])
+    c.agregar([contrato.alta(escalador, 3, vm, "minero", "minero-cpu-0", FECHA, delegada=True)])
+    assert vm in c.estado.cuentas
+
+
 def test_sin_permiso_o_con_el_permiso_revocado_no_puede():
     c = Cadena()
     alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", FECHA, delegada=True)

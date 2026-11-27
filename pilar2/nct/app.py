@@ -59,8 +59,10 @@ return 1
 #     repetido»). Uno mayor llegó antes que el anterior (dos réplicas consumen en paralelo): queda en
 #     espera:<cuenta> hasta que entre el que falta; el ticker rechaza las que esperan de más.
 #   - Al aceptar una, se destraban las que esperaban el nonce siguiente.
-# KEYS: tx:<id>, saldos, comprometido, tx:pendientes, nonces, cuentas, tx:en_espera.
-# ARGV: id, motivo si la firma no sirve (o vacío), ahora, 1 si es un acta.
+#   - BC-93: un alta de una cuenta que ya está en `cuentas` o con otra alta en camino se rechaza; si no, queda en
+#     `altas:en_camino` en el mismo paso (dos altas seguidas, en dos réplicas o destrabadas de la espera, no pasan).
+# KEYS: tx:<id>, saldos, comprometido, tx:pendientes, nonces, cuentas, tx:en_espera, altas:en_camino.
+# ARGV: id, motivo si la firma no sirve (o vacío), ahora, 1 si es un acta, motivo de un alta repetida.
 # Devuelve {estado de la tx, (id, estado, motivo) de cada una que cambió…}.
 LUA_VALIDAR = """
 local cambios = {}
@@ -74,6 +76,17 @@ end
 local function aceptar(id)
   local clave = 'tx:' .. id
   local origen, monto, nonce = unpack(redis.call('HMGET', clave, 'origen', 'monto', 'nonce'))
+  if string.sub(id, 1, 5) == 'alta-' then
+    local destino, datos = unpack(redis.call('HMGET', clave, 'destino', 'datos'))
+    if redis.call('HEXISTS', KEYS[6], destino) == 1 or redis.call('HEXISTS', KEYS[8], destino) == 1 then
+      rechazar(id, ARGV[5])
+      return false
+    end
+    local corte = string.find(datos or '', ':', 1, true)
+    local tipo = corte and string.sub(datos, 1, corte - 1) or (datos or '')
+    local nombre = corte and string.sub(datos, corte + 1) or ''
+    redis.call('HSET', KEYS[8], destino, cjson.encode({tipo = tipo, nombre = nombre, tx = id}))
+  end
   if origen ~= 'emision' and tonumber(monto) > 0 then
     local saldo = tonumber(redis.call('HGET', KEYS[2], origen) or '0')
     local comprometido = tonumber(redis.call('HGET', KEYS[3], origen) or '0')
@@ -477,8 +490,8 @@ class Nct:
         acta = "1" if contrato.es_acta({"id": id_, "origen": guardada.get("origen")}) else "0"
         estado, *cambios = self._validar(
             keys=[contrato.TX.format(id_), contrato.SALDOS, contrato.COMPROMETIDO, contrato.PENDIENTES,
-                  contrato.NONCES, contrato.CUENTAS, contrato.EN_ESPERA],
-            args=[id_, problema, time.time(), acta])
+                  contrato.NONCES, contrato.CUENTAS, contrato.EN_ESPERA, contrato.ALTAS_EN_CAMINO],
+            args=[id_, problema, time.time(), acta, estado_cadena.ALTA_REPETIDA])
         if estado == "en_espera":
             log.info("Transacción %s: su nonce llegó antes que el anterior, espera su turno", id_)
             return estado
@@ -492,8 +505,6 @@ class Nct:
             log.warning("La transacción %s no se valida: está %s", id_, estado or "sin estado")
             return None
         for i in range(0, len(cambios), 3):
-            if cambios[i + 1] == "pendiente" and cambios[i].startswith("alta-"):
-                self._en_camino(cambios[i])
             self._avisar_estado(*cambios[i:i + 3])
         return estado
 
@@ -518,14 +529,6 @@ class Nct:
 
     def _permiso_en_cache(self, clave):
         return self.redis.hget(contrato.PERMISOS, clave)
-
-    def _en_camino(self, id_):
-        """Un alta validada: el minero ya puede entrar al gateway (puede minar el bloque que la confirma)."""
-        tx = self.redis.hgetall(contrato.TX.format(id_))
-        if tx.get("destino") and tx.get("datos"):
-            tipo, nombre = contrato.datos_alta(tx)
-            self.redis.hset(contrato.ALTAS_EN_CAMINO, tx["destino"],
-                            json.dumps({"tipo": tipo, "nombre": nombre, "tx": id_}))
 
     def _avisar_estado(self, id_, estado, motivo=""):
         aviso = {"id": id_, "estado": estado}

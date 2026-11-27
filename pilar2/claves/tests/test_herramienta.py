@@ -41,6 +41,7 @@ class BackendFalso:
 
     def __init__(self, nonces=None):
         self.nonces, self.recibidas, self.pedidos, self.estados = dict(nonces or {}), [], [], {}
+        self.cuentas = {}  # cuenta → {aprobada, alta_en_camino}
         falso = self
 
         class Manejador(BaseHTTPRequestHandler):
@@ -57,7 +58,8 @@ class BackendFalso:
             def do_GET(self):
                 if self.path.startswith("/api/cuentas/"):
                     cuenta = self.path.rsplit("/", 1)[1]
-                    return self._responder(200, {"cuenta": cuenta, "nonce": falso.nonces.get(cuenta, 0)})
+                    return self._responder(200, {"cuenta": cuenta, "nonce": falso.nonces.get(cuenta, 0),
+                                                 **falso.cuentas.get(cuenta, {})})
                 if self.path == "/api/organizador/altas":
                     quien, motivo = contrato.verificar_pedido(self.headers, "GET", self.path, b"",
                                                               quien=contrato.ORGANIZADOR)
@@ -185,6 +187,18 @@ def test_un_minero_no_lleva_carga_y_un_nombre_malo_no_se_manda(backend, archivos
     with pytest.raises(ValueError):
         herramienta.aprobar(herramienta.Backend(backend.url), PRIVADA["organizador"], CUENTA["zoe"], "usuario", "a b")
     assert backend.recibidas == []
+
+
+@pytest.mark.parametrize("estado, dice", [({"aprobada": True}, "ya tiene alta"),
+                                          ({"alta_en_camino": True}, "ya tiene un alta en camino")])
+def test_aprobar_una_cuenta_aprobada_o_en_camino_no_manda_nada(backend, archivos, estado, dice):
+    """BC-93: la cadena rechaza el alta repetida, pero la carga vale sola: no se manda ninguna de las dos."""
+    backend.cuentas[CUENTA["zoe"]] = estado
+    salidas = []
+    assert herramienta.principal(["aprobar", str(archivos["organizador"]), "--cuenta", CUENTA["zoe"], "--tipo",
+                                  "usuario", "--nombre", "zoe", "--carga", "50", "--url", backend.url],
+                                 salida=salidas.append) == 1
+    assert backend.recibidas == [] and dice in salidas[0]
 
 
 def test_baja_y_permiso_son_actas_del_organizador(backend, archivos):

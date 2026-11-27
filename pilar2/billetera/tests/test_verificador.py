@@ -122,3 +122,13 @@ def test_la_finalidad_sale_de_firmas_verificadas_de_validadores_de_la_cadena(tmp
     validadores = {CUENTA["v1"], CUENTA["v2"], CUENTA["v3"]}
     assert contrato.altura_finalizada(validadores, {CUENTA["v1"]: punta, CUENTA["v2"]: punta - 1}) == punta - 1
     assert estado.Estado  # el mismo cálculo que el backend y el nodo
+
+
+def test_un_alta_repetida_la_rechaza_igual_que_python(tmp_path):
+    """BC-93: la regla nueva está en los dos verificadores."""
+    c = Cadena()
+    c.agregar([contrato.alta(ORG, 1, CUENTA["zoe"], "usuario", "zoe", FECHA)])
+    malo = c.armar([contrato.alta(ORG, 2, CUENTA["zoe"], "usuario", "zoe", FECHA)])
+    assert any(estado.ALTA_REPETIDA in p for p in c.verificar(malo))
+    ultimo = correr(tmp_path, bloques=c.bloques + [malo])["bloques"][-1]
+    assert ultimo["altura"] == 2 and any("la cuenta ya tiene alta" in p for p in ultimo["problemas"]), ultimo

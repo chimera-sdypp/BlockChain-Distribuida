@@ -440,15 +440,15 @@ const Verificador = (() => {
   function problemaDeActa(tx, e) {
     const tipo = tipoDe(tx), destino = tx.destino;
     if ((tipo === "alta" || tipo === "baja") && destino === e.organizador) return "el organizador no se da de alta ni de baja";
+    const existente = e.cuentas[destino];
+    if (tipo === "alta" && existente) return "la cuenta ya tiene alta";  // BC-93
     if (!esDelegada(tx)) return null;
     const prefijo = e.permisos[tx.origen];
     if (!prefijo) return "sin permiso: la clave no tiene un permiso del organizador";
-    const existente = e.cuentas[destino];
     const esSuyo = (c) => c && c.tipo === "minero" && String(c.nombre || "").startsWith(prefijo);
     if (tipo === "alta") {
       const [tipoCuenta, nombre] = datosAlta(tx);
       if (tipoCuenta !== "minero" || !nombre.startsWith(prefijo)) return `sin permiso: sólo puede dar de alta mineros ${prefijo}*`;
-      if (existente && !esSuyo(existente)) return "sin permiso: la cuenta ya existe y no es uno de sus mineros";
     } else if (!esSuyo(existente)) return `sin permiso: sólo puede dar de baja mineros ${prefijo}*`;
     return null;
   }
@@ -1017,9 +1017,19 @@ const tablaOrg = (id, columnas, filas, vacio) => $(id).replaceChildren(filas.len
   ? el("table", {}, el("thead", {}, el("tr", {}, ...columnas.map((c) => el("th", {}, c)))), el("tbody", {}, ...filas))
   : el("p", { clase: "suave" }, vacio));
 
+// BC-93: cuenta → id del alta que mandó esta página. Hasta que el alta entra en un bloque el pedido puede seguir en
+// la lista: se muestra «aprobado, esperando bloque» y sin botones, para no aprobarlo (y cargarlo) dos veces.
+const altasMandadas = new Map();
+function altaEnCamino(cuenta) {
+  const id = altasMandadas.get(cuenta), f = id && firmadas.find((x) => x.id === id);
+  return f && f.estado !== "rechazada" ? f : null;
+}
 function aprobar(p, monto) {
+  if (altaEnCamino(p.cuenta)) throw new Error(`${p.nombre} ya está aprobado: falta que el alta entre en un bloque`);
   return firmarYMandar((siguiente, t) => {
-    const actas = [[Verificador.armarActa("alta", siguiente(), p.cuenta, `${p.tipo}:${p.nombre}`, t), `alta de ${p.nombre} (${p.tipo})`]];
+    const alta = Verificador.armarActa("alta", siguiente(), p.cuenta, `${p.tipo}:${p.nombre}`, t);
+    altasMandadas.set(p.cuenta, alta.id);
+    const actas = [[alta, `alta de ${p.nombre} (${p.tipo})`]];
     if (p.tipo === "usuario" && monto > 0) actas.push([Verificador.armarCarga(siguiente(), p.cuenta, monto, t), `${monto} a ${p.nombre}`]);
     return actas;
   });
@@ -1044,11 +1054,12 @@ async function recargarOrg() {
   const fallida = [altas, cuentas, suspendidos].find((r) => !r.ok);
   if (fallida) { anotar(`El backend no respondió (${fallida.status}): ${errorDe(fallida.cuerpo)}`, "mal"); return; }
   tablaOrg("org-altas", ["nombre", "tipo", "cuenta", "saldo inicial", ""], altas.cuerpo.pendientes.map((p) => {
-    const monto = el("input", { type: "number", min: "0", step: "1", placeholder: "0" });
+    const monto = el("input", { type: "number", min: "0", step: "1", placeholder: "0" }), enCamino = altaEnCamino(p.cuenta);
     return el("tr", {}, el("td", {}, p.nombre || "—"), el("td", {}, p.tipo), el("td", { clase: "mono", title: p.cuenta }, corto(p.cuenta)),
-      el("td", {}, p.tipo === "usuario" ? monto : "—"),
-      el("td", {}, boton("Aprobar", () => aprobar(p, Number(monto.value || 0))),
-        boton("Rechazar", () => accionOrg("/api/organizador/rechazar", { cuenta: p.cuenta }), { confirmar: true, clase: "secundario" })));
+      el("td", {}, p.tipo === "usuario" && !enCamino ? monto : "—"),
+      el("td", {}, enCamino ? el("span", { clase: "suave" }, `aprobado, esperando bloque (${enCamino.id})`) : el("span", {},
+        boton("Aprobar", () => aprobar(p, Number(monto.value || 0))),
+        boton("Rechazar", () => accionOrg("/api/organizador/rechazar", { cuenta: p.cuenta }), { confirmar: true, clase: "secundario" }))));
   }), "No hay pedidos.");
   tablaOrg("org-suspendidos", ["nombre", "cuenta", "motivo", ""], suspendidos.cuerpo.suspendidos.map((s) =>
     el("tr", {}, el("td", {}, s.nombre || "—"), el("td", { clase: "mono", title: s.cuenta }, corto(s.cuenta)),

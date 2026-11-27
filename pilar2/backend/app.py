@@ -309,7 +309,8 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     def cuenta(cuenta: str):
         """Lo que necesita un cliente para firmar: el saldo y el último nonce aceptado (el próximo es +1).
 
-        `emision` da el número de la última carga. Una cuenta que no existe tiene todo en 0.
+        `emision` da el número de la última carga. Una cuenta que no existe tiene todo en 0. `alta_en_camino`: el NCT
+        ya validó su alta y todavía no entró en un bloque (BC-93).
         """
         if cuenta != contrato.EMISION and not contrato.cuenta_valida(cuenta):
             return invalido(["cuenta: clave pública Ed25519 en hex (64 caracteres en minúscula)"])
@@ -319,11 +320,12 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         tuberia.hget(contrato.NONCES, cuenta)
         tuberia.hget(contrato.CUENTAS, cuenta)
         tuberia.hexists(contrato.ALTAS_PENDIENTES, cuenta)
-        saldo_, comprometido, nonce, datos, pedida = tuberia.execute()
+        tuberia.hexists(contrato.ALTAS_EN_CAMINO, cuenta)
+        saldo_, comprometido, nonce, datos, pedida, en_camino = tuberia.execute()
         datos = json.loads(datos) if datos else {}
         return {"cuenta": cuenta, "saldo": int(saldo_ or 0), "comprometido": int(comprometido or 0),
                 "nonce": int(nonce or 0), "aprobada": bool(datos), "tipo": datos.get("tipo"),
-                "nombre": datos.get("nombre"), "alta_pedida": bool(pedida)}
+                "nombre": datos.get("nombre"), "alta_pedida": bool(pedida), "alta_en_camino": bool(en_camino)}
 
     @app.get("/api/saldos")
     def saldos():

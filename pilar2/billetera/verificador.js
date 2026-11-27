@@ -274,15 +274,15 @@ const Verificador = (() => {
   function problemaDeActa(tx, e) {
     const tipo = tipoDe(tx), destino = tx.destino;
     if ((tipo === "alta" || tipo === "baja") && destino === e.organizador) return "el organizador no se da de alta ni de baja";
+    const existente = e.cuentas[destino];
+    if (tipo === "alta" && existente) return "la cuenta ya tiene alta";  // BC-93
     if (!esDelegada(tx)) return null;
     const prefijo = e.permisos[tx.origen];
     if (!prefijo) return "sin permiso: la clave no tiene un permiso del organizador";
-    const existente = e.cuentas[destino];
     const esSuyo = (c) => c && c.tipo === "minero" && String(c.nombre || "").startsWith(prefijo);
     if (tipo === "alta") {
       const [tipoCuenta, nombre] = datosAlta(tx);
       if (tipoCuenta !== "minero" || !nombre.startsWith(prefijo)) return `sin permiso: sólo puede dar de alta mineros ${prefijo}*`;
-      if (existente && !esSuyo(existente)) return "sin permiso: la cuenta ya existe y no es uno de sus mineros";
     } else if (!esSuyo(existente)) return `sin permiso: sólo puede dar de baja mineros ${prefijo}*`;
     return null;
   }

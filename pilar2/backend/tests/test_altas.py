@@ -179,6 +179,18 @@ def test_las_cuentas_son_publicas_y_los_pendientes_y_suspendidos_piden_la_firma(
         assert panel(cliente, "GET", ruta, firmante="alice").status_code == 403
 
 
+def test_un_pedido_con_el_alta_en_camino_no_se_lista_para_no_aprobarlo_dos_veces(entorno):
+    """BC-93: el pedido se borra recién cuando el alta entra en un bloque; mientras está en camino no se muestra."""
+    armar, _, redis = entorno
+    cliente = armar()
+    pedir(cliente, "zoe")
+    pedir(cliente, "yago")
+    redis.hset("altas:en_camino", CUENTA["zoe"], json.dumps({"tipo": "usuario", "nombre": "zoe", "tx": "alta-1"}))
+    assert [p["cuenta"] for p in panel(cliente, "GET", "/api/organizador/altas").json()["pendientes"]] == [CUENTA["yago"]]
+    assert cliente.get(f"/api/cuentas/{CUENTA['zoe']}").json()["alta_en_camino"] is True
+    assert cliente.get(f"/api/cuentas/{CUENTA['yago']}").json()["alta_en_camino"] is False
+
+
 # ── Aprobar y dar de baja: actas firmadas por el organizador, por /api/transacciones ──
 
 def test_un_alta_y_una_carga_del_organizador_se_encolan_como_cualquier_transaccion(entorno):

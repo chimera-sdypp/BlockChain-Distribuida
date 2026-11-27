@@ -9,7 +9,7 @@ La API por la que entran las transferencias y se consulta su estado (pasos 1 y 2
 | `POST /api/transacciones` `{origen, destino, monto, nonce, timestamp, firma}` | 202 `{id}` · 400 `{errores: [...]}` · 409 `{error, id}` (reenvío) · 503 `{error}` |
 | `POST /api/transacciones/lote` `[{…}, ...]` | 202 `{ids}` en el mismo orden · 400 · 409 · 413 · 503 `{error, encoladas}` |
 | `GET /api/transacciones/<id>` | `{id, origen, destino, monto, nonce, timestamp, firma, estado}`, más `motivo` (rechazada) o `bloque` (confirmada) · 404 |
-| `GET /api/cuentas/<cuenta>` | `{cuenta, saldo, comprometido, nonce, aprobada, tipo, nombre, alta_pedida}`: lo que necesita un cliente para firmar (el próximo nonce es `nonce + 1`). `emision` da la última carga |
+| `GET /api/cuentas/<cuenta>` | `{cuenta, saldo, comprometido, nonce, aprobada, tipo, nombre, alta_pedida, alta_en_camino}`: lo que necesita un cliente para firmar (el próximo nonce es `nonce + 1`). `emision` da la última carga |
 | `POST /api/altas` `{tipo, clave_publica, nombre, firma}` | 202 `{cuenta, estado: "pendiente"}` · 400 (firma o formato) · 409 (ya aprobada) · 429 (hay 1000 pendientes) |
 | `GET /api/organizador/altas` · `GET /api/organizador/cuentas` | Los pedidos pendientes y las cuentas aprobadas (con su saldo). Firmados por el organizador: los pendientes no son públicos (BC-88) |
 | `POST /api/organizador/rechazar` `{cuenta}` | Borra el pedido · 404 (sin pedido). Aprobar y dar de baja son actas por `POST /api/transacciones` |

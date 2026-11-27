@@ -325,6 +325,8 @@ Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en
 - Con sólo la «GPU» falsa, el escalador pidió 1 VM y, a los 240 s sin bloque, el prefijo bajó de 6 a 5 por emergencia.
 - `bench-bajo` declaró 52,6 kH/s (techo 5). Con el tope en 8, el prefijo de cada bloque fue 5 (ocho bloques), 6 (cinco) y 7: el tiempo pasó el techo. Con la regla anterior se quedaba en 5.
 
+**27/11, `rangos-ajenos` en el k3s con el arreglo de BC-92: 4 de 4.** Se usó la misma prueba de la devolución, con el prefijo fijo en 7 durante 180 s. El atacante atacó 4 tareas y mandó 76 «sin solución» ajenos: el gateway contestó 36 con 409 (rangos que la tarea tiene, pero no eran suyos) y 40 con 400 (los 1000 a 1009). El TrP no dio ninguna tarea por agotada, salieron 3 bloques y el honesto no quedó suspendido. Antes del arreglo, con el prefijo 7 no salía ningún bloque.
+
 
 ## El operador de la nube (BC-85)
 

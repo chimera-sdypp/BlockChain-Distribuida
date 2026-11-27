@@ -13,6 +13,8 @@ Escenarios:
 - gpu-falsa: sólo la «GPU» falsa, con trabajo apilado: el escalador tiene que pedir VMs y el prefijo bajar por emergencia.
 - bench-bajo: sólo el que declara la centésima parte, con PREFIJO_BASE=8: el ajuste por tiempo tiene que subir
   el prefijo por encima del techo que da ese bench.
+- rangos-ajenos: el honesto y uno que en cada tarea manda «sin solución» de rangos que no son suyos (BC-92), con el
+  prefijo fijo en 7: los bloques tienen que seguir saliendo.
 
 Escribe resultados/trampas.csv (una fila por comprobación) y resultados/trampas.log (lo que pasó).
 Usa el KUBECONFIG del entorno (k3s o GKE) y el namespace `blockchain`.
@@ -233,8 +235,10 @@ hashes = r.lrange('cadena', {altura} + 1, -1)
 print(json.dumps([len(r.hget('bloque:' + h, 'prefijo') or '') for h in hashes]))""")
 
 
-def trp_con(base):
-    kubectl("set", "env", "deploy/trp", f"PREFIJO_BASE={base}", f"ESPACIO_NONCES={max(2 ** 32, 16 ** base * 4)}")
+def trp_con(base, fijo=False):
+    """`fijo`: sin ajuste (AJUSTAR_PREFIJO=0), todas las tareas con PREFIJO_BASE; si no, se saca la variable."""
+    kubectl("set", "env", "deploy/trp", f"PREFIJO_BASE={base}", f"ESPACIO_NONCES={max(2 ** 32, 16 ** base * 4)}",
+            "AJUSTAR_PREFIJO=0" if fijo else "AJUSTAR_PREFIJO-")
     kubectl("rollout", "status", "deploy/trp", "--timeout=180s")
 
 
@@ -275,7 +279,44 @@ def bench_bajo(a):
         trp_con(6)
 
 
-ESCENARIOS = {"juntos": juntos, "retener": retener, "gpu-falsa": gpu_falsa, "bench-bajo": bench_bajo}
+def rangos_ajenos(a):
+    """BC-92, la prueba del profesor: con prefijo 7 fijo, 10 «sin solución» de rangos ajenos por tarea frenaban la
+    cadena (365 tareas descartadas en 150 s, ningún bloque). Ahora no tienen que llegar al TrP."""
+    inicio = time.time()
+    trp_con(7, fijo=True)
+    honesto = Minero("honesto", a.gateway, procesos=4)
+    atacante = Minero("trampa-rangos-ajenos", a.gateway, "rangos-ajenos")
+    trafico = Trafico(a.backend)
+    try:
+        altura = redis("print(json.dumps(r.llen('cadena') - 1))")
+        trafico.start()
+        esperar(a.segundos, "que el atacante intente agotar cada tarea")
+        nuevos = len(prefijos_desde(altura))
+        ataques = re.findall(r"rangos ajenos de la tarea \S+; el gateway contestó (\{.*\})", atacante.log())
+        codigos = {}
+        for linea in ataques:
+            for codigo, cantidad in json.loads(linea).items():
+                codigos[codigo] = codigos.get(codigo, 0) + cantidad
+        comprobar("rangos-ajenos", "ningún «sin solución» ajeno se acepta", "sólo 409 y 400",
+                  f"{len(ataques)} tareas atacadas, respuestas {codigos}",
+                  bool(ataques) and set(codigos) <= {"409", "400"})
+        salida = kubectl("logs", "-l", "app=trp", "--since", f"{int(time.time() - inicio) + 5}s", "--tail=-1")
+        agotadas = len(re.findall(r"rangos volvieron sin solución", salida))
+        comprobar("rangos-ajenos", "el TrP no da tareas por agotadas", "0 (o alguna sin solución de verdad: e^-4)",
+                  f"{agotadas} tarea(s) agotadas", agotadas <= 1)
+        comprobar("rangos-ajenos", f"los bloques siguen saliendo con prefijo 7 ({a.segundos} s)", "2 o más",
+                  f"{nuevos} bloque(s)", nuevos >= 2)
+        comprobar("rangos-ajenos", "el honesto no se suspende", "no suspendido",
+                  "suspendido" if suspension(honesto.cuenta) else "no suspendido", suspension(honesto.cuenta) is None)
+    finally:
+        trafico.parar.set()
+        honesto.parar()
+        atacante.parar()
+        trp_con(6)
+
+
+ESCENARIOS = {"juntos": juntos, "retener": retener, "gpu-falsa": gpu_falsa, "bench-bajo": bench_bajo,
+              "rangos-ajenos": rangos_ajenos}
 
 
 def main():

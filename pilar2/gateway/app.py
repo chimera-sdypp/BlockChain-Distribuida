@@ -42,6 +42,8 @@ SUSPENSIONES = Counter("blockchain_suspensiones", "Mineros suspendidos por conte
                        ["motivo"])  # estadistica o reverificacion
 REVERIFICACIONES = Counter("blockchain_reverificaciones", "Rangos sin solución reverificados con otro minero (BC-75)",
                            ["resultado"])  # pedida, mentira, sin_solucion, descartada
+AJENOS = Counter("blockchain_resultados_ajenos", "«Sin solución» de rangos que no estaban prestados a quien los "
+                 "manda: se rechazan con 409 y no llegan al TrP (BC-92)")
 POCOS_SHARES = Counter("blockchain_pocos_shares", "Préstamos seguidos con muchos menos shares que los esperados (aviso, BC-75)")
 TEXTOS_EN_MEMORIA, TAREAS_EN_MEMORIA = 512, 16
 
@@ -318,7 +320,8 @@ class Gateway:
         if datos is not None:
             return datos
         try:
-            datos = contrato.tarea_guardada(self.redis.hgetall(contrato.TAREA.format(tarea)))
+            campos = self.redis.hgetall(contrato.TAREA.format(tarea))
+            datos = {**contrato.tarea_guardada(campos), "rangos": int(campos["rangos"])}
         except (KeyError, ValueError):
             return None  # el NCT o el TrP todavía no la terminaron de escribir
         with self._lock:
@@ -548,14 +551,28 @@ class Gateway:
         return self.redis.hget(contrato.TAREA.format(tarea), "estado") == "en_curso"
 
     def resultado(self, minero, datos):
-        """POST /results: suma los shares, lo publica en `resultados` y recién después libera el préstamo."""
+        """POST /results: suma los shares, lo publica en `resultados` y recién después libera el préstamo.
+
+        BC-92: un número de rango que la tarea no tiene da 400, y un `sin_solucion` (o una reverificación) de un
+        rango que no está prestado a este minero da 409: no llega al TrP, que si no daría la tarea por agotada.
+        Una solución de un rango ajeno (su préstamo venció) sí pasa: el TrP verifica el hash.
+        """
         if not resultado_valido(datos) or datos["minero"] != minero:
             return 400, {"error": "hace falta {tarea, rango, minero (el de X-Minero)} y {nonce, hash} o "
                                   "{sin_solucion: true}, con shares opcional (lista de nonces)"}
+        tarea = self._tarea(datos["tarea"])
+        if tarea is not None and not contrato.rango_de_la_tarea(datos["rango"], tarea["rangos"]):
+            RECHAZOS.labels("fuera_de_rango").inc()
+            log.warning("%s mandó el rango %s de la tarea %s, que tiene %d", minero, datos["rango"], datos["tarea"],
+                        tarea["rangos"])
+            return 400, {"error": f"la tarea {datos['tarea']} tiene los rangos 0 a {tarea['rangos'] - 1}"}
         shares = self.aceptar_shares(minero, datos["tarea"], datos["rango"], datos.get("shares"))
         miembro = f"{datos['tarea']}:{datos['rango']}"
         prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
         propio = prestamo.get("minero") == minero and "mensaje" in prestamo
+        if not propio and (datos.get("sin_solucion") or datos["rango"] >= contrato.REVERIFICACION):
+            self._ajeno(minero, datos)
+            return 409, {"error": f"el rango {miembro} no está prestado a este minero", "shares": shares}
         if propio and prestamo.get("texto_de"):
             self._reverificado(minero, prestamo, datos)  # BC-75: no va al TrP
             self._terminar(minero, miembro)
@@ -571,6 +588,18 @@ class Gateway:
             return 503, {"error": "RabbitMQ no disponible"}
         self._terminar(minero, miembro)
         return 202, {"shares": shares}
+
+    def _ajeno(self, minero, datos):
+        """BC-92: un resultado que no se publica porque el rango no es de `minero`. No se lo suspende: a un minero
+        honesto le pasa si su préstamo venció (dejó de avisar o se le pasó el plazo) antes de que terminara."""
+        AJENOS.inc()
+        log.warning("%s mandó %s del rango %s:%s, que no tiene prestado: se rechaza", minero,
+                    "«sin solución»" if datos.get("sin_solucion") else "una reverificación", datos["tarea"],
+                    datos["rango"])
+        try:
+            self.redis.hincrby(contrato.HISTORIAL.format(minero), "resultados_ajenos", 1)
+        except redislib.RedisError:
+            log.exception("No se pudo anotar el resultado ajeno de %s en su historial", minero)
 
     # ── BC-75: los que contestan `sin_solucion` sin buscar ──
 
@@ -767,7 +796,8 @@ class Gateway:
                 "hashes_por_segundo": _numero(nodo.get("hashes_por_segundo")), "ultimo_aviso": aviso, "vivo": vivo,
                 "saldo": int(saldo or 0), "alta": _numero(historial.get("alta")),
                 **{campo: _numero(historial.get(campo)) or 0
-                   for campo in ("bloques", "recompensas", "shares", "rangos", "segundos_conectado")},
+                   for campo in ("bloques", "recompensas", "shares", "rangos", "segundos_conectado",
+                                 "resultados_ajenos")},
                 "shares_epoca": shares_epoca.get(cuenta, 0), "epoca": epoca,
             })
         return resultado

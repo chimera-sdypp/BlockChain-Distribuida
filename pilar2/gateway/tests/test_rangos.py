@@ -19,12 +19,12 @@ def rango(tarea, numero, desde=0, hasta=999, prefijo="00"):
     return {"tarea": tarea, "rango": numero, "desde": desde, "hasta": hasta, "prefijo": prefijo}
 
 
-def guardar_tarea(redis, tarea, estado="en_curso", prefijo="00"):
-    """tarea:<id> como la dejan el NCT (los datos del bloque) y el TrP (el prefijo)."""
+def guardar_tarea(redis, tarea, estado="en_curso", prefijo="00", rangos=10):
+    """tarea:<id> como la dejan el NCT (los datos del bloque) y el TrP (el prefijo y cuántos rangos)."""
     redis.hset(f"tarea:{tarea}", mapping={
         "previous_hash": TAREA["previous_hash"], "timestamp": TAREA["timestamp"], "altura": TAREA["altura"],
         "transacciones": json.dumps(TAREA["transacciones"]), "prefijo": prefijo, "estado": estado,
-        "raiz_estado": TAREA["raiz_estado"]})
+        "raiz_estado": TAREA["raiz_estado"], "rangos": rangos})
 
 
 def publicar_rangos(redis, colas, *rangos, estado="en_curso"):
@@ -122,9 +122,67 @@ def test_un_resultado_llega_a_resultados_y_libera_el_prestamo(cliente, redis, co
 
 
 def test_un_rango_sin_solucion_tambien_llega(cliente, redis, colas):
+    publicar_rangos(redis, colas, rango("t1", 0))
+    cliente.get("/tasks/next")
     resultado = {"tarea": "t1", "rango": 0, "minero": CUENTA["minero"], "sin_solucion": True}
     assert cliente.post("/results", resultado).status_code == 202
     assert sacar(colas, "resultados") == resultado
+
+
+# --- Rangos ajenos (BC-92) -------------------------------------------------------------------------
+def sin_solucion(numero, tarea="t1", nombre="minero"):
+    return {"tarea": tarea, "rango": numero, "minero": CUENTA[nombre], "sin_solucion": True}
+
+
+def test_un_sin_solucion_de_un_rango_ajeno_da_409_y_no_llega_al_trp(cliente, otro, redis, colas):
+    publicar_rangos(redis, colas, rango("t1", 0), rango("t1", 1))
+    cliente.get("/tasks/next")  # minero tiene el 0
+    otro.get("/tasks/next")     # minero2 tiene el 1
+    antes = REGISTRY.get_sample_value("blockchain_resultados_ajenos_total") or 0
+
+    # El ataque del profesor: pedir un rango para saber el id de la tarea y devolver «sin solución» de los demás.
+    codigos = [cliente.post("/results", sin_solucion(n)).status_code for n in range(1, 10)]
+
+    assert codigos == [409] * 9
+    assert sacar(colas, "resultados") is None
+    assert REGISTRY.get_sample_value("blockchain_resultados_ajenos_total") == antes + 9
+    assert redis.hget(f"historial:{CUENTA['minero']}", "resultados_ajenos") == "9"
+    assert redis.hget("prestamo:t1:1", "minero") == CUENTA["minero2"]  # el préstamo del otro sigue igual
+    assert redis.exists("prestamo:t1:0")  # y el propio también: lo puede devolver bien
+    assert cliente.post("/results", sin_solucion(0)).status_code == 202
+    assert sacar(colas, "resultados") == sin_solucion(0)
+    assert not redis.exists("suspendidos") or not redis.hexists("suspendidos", CUENTA["minero"])
+
+
+def test_un_sin_solucion_de_un_prestamo_vencido_da_409(cliente, redis, colas):
+    # A un minero honesto le pasa si su préstamo venció: no llega, pero tampoco se lo suspende.
+    publicar_rangos(redis, colas, rango("t1", 0))
+    cliente.get("/tasks/next")
+    redis.delete("prestamo:t1:0")
+    assert cliente.post("/results", sin_solucion(0)).status_code == 409
+    assert sacar(colas, "resultados") is None
+    assert not redis.hexists("suspendidos", CUENTA["minero"])
+
+
+def test_una_solucion_de_un_rango_ajeno_pasa_porque_el_trp_verifica_el_hash(cliente, redis, colas):
+    publicar_rangos(redis, colas, rango("t1", 3))
+    assert cliente.post("/results", resultado_de()).status_code == 202
+    assert sacar(colas, "resultados") == resultado_de()
+
+
+def test_una_reverificacion_ajena_da_409(cliente, redis, colas):
+    guardar_tarea(redis, "t1")
+    numero = contrato.REVERIFICACION + 3
+    assert cliente.post("/results", resultado_de(numero=numero)).status_code == 409
+    assert sacar(colas, "resultados") is None
+
+
+def test_un_rango_que_la_tarea_no_tiene_da_400(cliente, redis, colas):
+    guardar_tarea(redis, "t1", rangos=10)
+    for numero in (10, 1000, 1009, contrato.REVERIFICACION + 10):
+        assert cliente.post("/results", sin_solucion(numero)).status_code == 400, numero
+        assert cliente.post("/results", resultado_de(numero=numero)).status_code == 400, numero
+    assert sacar(colas, "resultados") is None
 
 
 def test_no_se_puede_mandar_un_resultado_a_nombre_de_otro(cliente, colas):

@@ -305,7 +305,7 @@ La primera corrida de ese día se descartó: mostró que el gateway medía mal l
 
 ```bash
 KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
-    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo]
+    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo,rangos-ajenos]
 ```
 
 | Escenario | Quiénes | Qué se comprueba |
@@ -314,6 +314,7 @@ KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
 | `retener` | `retener` y `acaparar`, sin nadie que mine | El plazo les saca el rango (sin medición, a los 120 s): con la tarea abierta, nada más se los puede sacar (BC-74) |
 | `gpu-falsa` | Sólo una «GPU» que avisa y nunca pide rangos, con trabajo apilado | El escalador pide VMs igual (BC-74) y, sin bloque en 240 s, el prefijo baja por emergencia (BC-73) |
 | `bench-bajo` | Sólo uno que declara la centésima parte de su bench, con `PREFIJO_BASE=8` | El ajuste por tiempo sube el prefijo por encima del techo que da ese bench (BC-73) |
+| `rangos-ajenos` | Honesto y uno que en cada tarea manda «sin solución» de los rangos 0 a 9 que no son suyos y de 1000 a 1009, con el prefijo fijo en 7 | Ningún resultado ajeno se acepta (409 y 400), el TrP no da tareas por agotadas y los bloques siguen saliendo (BC-92, la prueba de la devolución) |
 
 Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en [`resultados/trampas.log`](resultados/trampas.log).
 

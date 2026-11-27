@@ -29,7 +29,7 @@ La v2 (BC-53, el contrato del 13/11) trajo las cuentas con clave Ed25519, las tr
 
 - **Formato y firma** (backend, `validar_transaccion_firmada`): campos completos, origen ≠ destino, la firma es del origen y, si viene `id`, es el hash. Si no, 400 con los errores. La misma transacción reenviada da el mismo id: 409 (BC-56).
 - **Nonce** (NCT): vale si es `nonces[origen] + 1`, y al aceptarla el NCT lo sube. Una rechazada no gasta el nonce. Así una transacción firmada no se puede mandar dos veces. Uno menor o igual es `nonce repetido`. Uno mayor llegó antes que el anterior (las dos réplicas del NCT consumen en paralelo, y los lotes de un bulk pueden llegar desordenados): espera en `espera:<cuenta>` hasta que entra el que falta, y si no llega en `ESPERA_NONCE_SEGUNDOS` (60) queda `nonce salteado`.
-- **Cuenta** (NCT): el origen tiene que estar en `cuentas`; si no, `cuenta no aprobada`. El NCT vuelve a verificar la firma (`firma inválida`).
+- **Cuenta** (backend y NCT): el origen tiene que estar en `cuentas`. El backend lo mira antes de guardar nada y, si no está, contesta **403** `{"error": "cuenta no aprobada"}` (en un lote, todo o nada: 403 con `errores` por índice): así una clave cualquiera no deja `tx:<id>` en Redis (BC-94). Un alta en camino todavía no cuenta. Orden de los errores: 413 (lote demasiado grande), 400 (formato o firma), 403, 409 (reenvío). El NCT lo vuelve a mirar al validar (la cuenta pudo darse de baja en el medio) y vuelve a verificar la firma (`firma inválida`).
 - **Saldo** (NCT): al origen le alcanza descontando sus transacciones pendientes; si no, queda `rechazada`.
 - **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` con el motivo: `firma inválida`, `cuenta no aprobada`, `nonce repetido`, `nonce salteado` o `saldo insuficiente`.
 - El destino puede no existir: se lo crea con saldo 0.
@@ -64,7 +64,7 @@ Las decisiones del organizador son transacciones firmadas que entran en los bloq
 - `origen` = `emision`, `monto` = 0, `nonce` = n, el mismo número de las cargas (una sola secuencia del organizador: `nonces[emision]`).
 - La firma es del organizador sobre `<tipo>:<origen>:<destino>:<nonce>:<timestamp>:<datos>` (`mensaje_acta`): el tipo adelante, así la firma de una carga no sirve como alta.
 - **Altas y bajas delegadas:** las firma la clave que tiene el permiso (el escalador, para sus VMs `minero-cpu-*`), con `origen` = esa clave, `id` = `alta-<clave>-<n>` y su propio nonce. Así el escalador no puede aprobar usuarios ni cargar saldo.
-- El backend valida formato y firma (`validar_acta`, por `POST /api/transacciones`); el NCT, el nonce y las reglas que dependen del estado (`estado.problema_de_acta`): el permiso, que el organizador no se dé de alta ni de baja.
+- El backend valida formato y firma (`validar_acta`, por `POST /api/transacciones`) y, en una delegada, que la clave esté en `permisos` (si no, **403** `{"error": "clave sin permiso"}`, sin guardar nada; BC-94); el NCT, el nonce y las reglas que dependen del estado (`estado.problema_de_acta`): el prefijo del permiso, que el organizador no se dé de alta ni de baja.
 - Una cuenta queda aprobada **cuando el bloque se confirma**. Mientras tanto, un alta validada queda en `altas:en_camino`: el gateway ya deja minar a ese minero, así una VM nueva (o el único minero) puede minar el bloque que trae su propia alta.
 - Las suspensiones del gateway (BC-75) siguen fuera de la cadena: son operativas. La baja que confirma el organizador, sí va.
 

@@ -38,6 +38,12 @@ def entorno():
     publicador.detener()
 
 
+def aprobar(redis, *nombres):
+    """Las cuentas en `cuentas`, como si su alta ya estuviera en la cadena: sin eso, el backend da 403 (BC-94)."""
+    redis.hset(contrato.CUENTAS, mapping={CUENTA[n]: json.dumps({"tipo": "usuario", "nombre": n, "alta": 0})
+                                          for n in nombres})
+
+
 def recibir(cola, cantidad, segundos=10):
     consumidor, recibidos = Rabbit(config.cargar("prueba"), [cola]), []
     threading.Thread(target=consumidor.consumir, args=(cola, recibidos.append), daemon=True).start()
@@ -50,6 +56,7 @@ def recibir(cola, cantidad, segundos=10):
 
 def test_post_deja_el_mensaje_en_la_cola_y_la_tx_recibida_en_redis(entorno):
     cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     tx = firmada("alice", "bob", 7)
     respuesta = cliente.post("/api/transacciones", json=tx)
 
@@ -61,7 +68,8 @@ def test_post_deja_el_mensaje_en_la_cola_y_la_tx_recibida_en_redis(entorno):
 
 
 def test_dos_backends_con_la_misma_transaccion_a_la_vez_la_encolan_una_vez(entorno):
-    cliente, cola, _ = entorno
+    cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     tx, codigos, barrera = firmada("alice", "bob", 7), [], threading.Barrier(8)
 
     def mandar():
@@ -77,10 +85,25 @@ def test_dos_backends_con_la_misma_transaccion_a_la_vez_la_encolan_una_vez(entor
     assert len(recibir(cola, 2, segundos=2)) == 1
 
 
+def test_una_clave_sin_alta_no_deja_nada_en_redis_ni_en_la_cola(entorno):
+    """BC-94: la prueba del profesor contra Redis de verdad, suelta y en lote."""
+    cliente, cola, redis = entorno
+    aprobar(redis, "alice")
+    antes = set(redis.scan_iter("tx:*"))
+
+    suelta = cliente.post("/api/transacciones", json=firmada("nueva", "bob", 7))
+    en_lote = cliente.post("/api/transacciones/lote", json=[firmada("alice", "bob", 1), firmada("nueva", "bob", 2)])
+
+    assert (suelta.status_code, suelta.json()) == (403, {"error": "cuenta no aprobada"})
+    assert (en_lote.status_code, en_lote.json()) == (403, {"errores": {"1": ["cuenta no aprobada"]}})
+    assert set(redis.scan_iter("tx:*")) == antes and recibir(cola, 1, segundos=1) == []
+
+
 # ── Ticket 02: consultar una transacción y los saldos ──
 
 def test_get_de_una_transaccion_recien_recibida(entorno):
-    cliente, _, _ = entorno
+    cliente, _, redis = entorno
+    aprobar(redis, "alice")
     tx = firmada("alice", "bob", 7)
     id_ = cliente.post("/api/transacciones", json=tx).json()["id"]
 
@@ -230,6 +253,7 @@ def test_bloque_por_hash_con_su_altura(entorno):
 
 def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
     cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     billetera = Billetera()
     cuerpo = [billetera("alice", "bob", m) for m in range(1, 51)] + [carga(1, "carol", 100)]
 
@@ -246,6 +270,7 @@ def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
 
 def test_lote_con_una_ya_recibida_no_crea_ninguna(entorno):
     cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     billetera = Billetera()
     cuerpo = [billetera("alice", "bob", m) for m in range(1, 4)]
     assert cliente.post("/api/transacciones", json=cuerpo[2]).status_code == 202

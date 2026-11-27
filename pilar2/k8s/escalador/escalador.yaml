@@ -1,9 +1,11 @@
 # Escalador (BC-29): 0 o 1 pod, lo prende y apaga KEDA según lo que ve Prometheus.
 # La cuenta de servicio es la que en GKE se ata por Workload Identity a la de GCP que maneja las VMs (BC-35).
+# No habla con la API de Kubernetes (Workload Identity usa el GKE Metadata Server del nodo): sin token (BC-103).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: escalador
+automountServiceAccountToken: false
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -19,6 +21,9 @@ spec:
       labels: { app: escalador }
     spec:
       serviceAccountName: escalador
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
       # Si KEDA lo apaga en medio de un tofu apply, que lo deje terminar (si no, el lock queda tomado).
       terminationGracePeriodSeconds: 600
       containers:
@@ -28,6 +33,7 @@ spec:
           ports:
             - { name: http, containerPort: 8080 }
           env:
+            - { name: HOME, value: /tmp }
             - { name: REDIS_SENTINELS, value: "redis:26379" }
             - { name: VMS_ACTIVAS, value: "0" }          # 1 cuando exista el módulo de BC-35
             - { name: BACKEND_URL, value: "http://backend:8080" }   # manda las altas delegadas de las VMs (BC-79)
@@ -40,6 +46,9 @@ spec:
             - { name: ESCALAR_SIN_BLOQUE_SEGUNDOS, value: "300" }
             - name: REDIS_CLAVE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          volumeMounts:
+            - { name: logs, mountPath: /app/logs }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 20m, memory: 64Mi }
             limits: { memory: 256Mi }
@@ -54,6 +63,13 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 # Prende el escalador si se apilan rangos o transacciones, y lo deja prendido mientras queden mineros
 # CPU vivos (sus VMs): si no, KEDA lo apagaría antes de que las borre. Con nada de eso, a los

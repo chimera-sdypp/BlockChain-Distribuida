@@ -1,5 +1,32 @@
 # RabbitMQ: 3 nodos en cluster, cada uno con su volumen. Sólo se llega desde adentro del cluster.
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq
+---
+# El plugin rabbitmq_peer_discovery_k8s consulta endpoints del namespace para formar el cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-peer-discovery
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-peer-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-peer-discovery
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: rabbitmq-headless   # da un nombre DNS fijo a cada pod: rabbitmq-0.rabbitmq-headless…
@@ -43,15 +70,29 @@ spec:
       labels:
         app: rabbitmq
     spec:
+      serviceAccountName: rabbitmq
       terminationGracePeriodSeconds: 60
       securityContext:
         fsGroup: 101          # grupo rabbitmq de la imagen alpine
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: rabbitmq }
       initContainers:
         - name: iniciar
           image: rabbitmq:4.1.8-management-alpine
           command: ["sh", "/config/iniciar.sh"]
           securityContext:
-            runAsUser: 100        # usuario rabbitmq: la cookie tiene que ser suya
+            runAsUser: 100        # usuario rabbitmq de la imagen alpine: la cookie tiene que ser suya
+            runAsGroup: 101
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           env:
             - name: RABBIT_COOKIE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_COOKIE } }
@@ -63,9 +104,17 @@ spec:
             - { name: datos, mountPath: /var/lib/rabbitmq }
             - { name: config, mountPath: /config }
             - { name: definiciones, mountPath: /definiciones }
+            - { name: tmp, mountPath: /tmp }
       containers:
         - name: rabbitmq
           image: rabbitmq:4.1.8-management-alpine
+          securityContext:
+            runAsUser: 100
+            runAsGroup: 101
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           env:
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
@@ -85,6 +134,8 @@ spec:
             - { name: datos, mountPath: /var/lib/rabbitmq }
             - { name: config, mountPath: /etc/rabbitmq }
             - { name: definiciones, mountPath: /definiciones }
+            - { name: logs, mountPath: /var/log/rabbitmq }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { memory: 1Gi }
@@ -105,6 +156,10 @@ spec:
           configMap:
             name: rabbitmq-config
         - name: definiciones
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
   volumeClaimTemplates:
     - metadata:

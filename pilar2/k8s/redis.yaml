@@ -1,5 +1,11 @@
 # Redis: redis-0 primario y redis-1/-2 réplicas, con un Sentinel en cada pod que elige otro primario si cae.
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis
+automountServiceAccountToken: false
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: redis-headless      # nombre DNS fijo por pod: redis-0.redis-headless…
@@ -39,10 +45,20 @@ spec:
       labels:
         app: redis
     spec:
+      serviceAccountName: redis
+      automountServiceAccountToken: false
       securityContext:
+        runAsNonRoot: true
         runAsUser: 999        # usuario redis de la imagen
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: redis }
       initContainers:
         - name: configurar
           image: redis:8.0.6-alpine
@@ -62,6 +78,12 @@ spec:
           volumeMounts:
             - { name: scripts, mountPath: /scripts }
             - { name: config, mountPath: /config }
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
       containers:
         - name: redis
           image: redis:8.0.6-alpine
@@ -72,6 +94,7 @@ spec:
           volumeMounts:
             - { name: datos, mountPath: /data }
             - { name: config, mountPath: /config }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { memory: 1Gi }    # ~300k tx:* (bulks de 100.000) ocupan ~500 MB: con 512Mi lo mataba el OOM
@@ -84,6 +107,11 @@ spec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 15
             periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
         - name: sentinel
           image: redis:8.0.6-alpine
           command: ["redis-sentinel", "/config/sentinel.conf"]
@@ -92,6 +120,7 @@ spec:
             - { name: sentinel, containerPort: 26379 }
           volumeMounts:
             - { name: config, mountPath: /config }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 20m, memory: 32Mi }
             limits: { memory: 64Mi }
@@ -99,11 +128,18 @@ spec:
             exec:
               command: ["sh", "-c", "redis-cli -p 26379 ping | grep -q PONG"]
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
       volumes:
         - name: scripts
           configMap:
             name: redis-config
         - name: config
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
   volumeClaimTemplates:
     - metadata:

@@ -21,6 +21,9 @@ spec:
     metadata:
       labels: { app: minero-gpu }
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
       # El runtime de NVIDIA (nvidia-container-toolkit) le pasa la GPU y el driver al contenedor.
       runtimeClassName: nvidia
       containers:
@@ -28,12 +31,16 @@ spec:
           # La CI la publica en GHCR: :main al mergear a main, :dev a dev y :<sha>.
           image: ghcr.io/chimera-sdypp/minero-gpu:main
           env:
+            - { name: CUDA_CACHE_PATH, value: /tmp/nv }
             - { name: GATEWAY_URL, value: "http://GATEWAY_IP:8081" }
             # El alias de cada minero es el nombre del pod: cada réplica es una cuenta y cobra lo suyo.
             - name: MINERO_ID
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: CLAVE_SEMILLA
               valueFrom: { secretKeyRef: { name: minero-gpu, key: CLAVE_SEMILLA } }
+          volumeMounts:
+            - { name: logs, mountPath: /app/logs }
+            - { name: tmp, mountPath: /tmp }
           resources:
             limits: { nvidia.com/gpu: 1, memory: 512Mi }
             requests: { cpu: 100m, memory: 128Mi }
@@ -41,3 +48,10 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

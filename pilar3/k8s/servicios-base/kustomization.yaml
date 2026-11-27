@@ -11,6 +11,7 @@ resources:
   - ../../../pilar2/k8s/namespace.yaml
   - ../../../pilar2/k8s/rabbitmq.yaml
   - ../../../pilar2/k8s/redis.yaml
+  - ../../../pilar2/k8s/network-policies.yaml
 
 configMapGenerator:
   - name: rabbitmq-config

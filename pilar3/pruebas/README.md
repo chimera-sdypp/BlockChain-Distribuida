@@ -369,3 +369,10 @@ Los límites son por IP y por réplica de Traefik, y las pruebas de carga los re
 60 de 80 POST a `/lote` con 429). `rafaga.py` a 100 tx/s durante 15 s (1.495) y una tirada de 1.000: todas 202, ninguna
 429. 30 lotes de 1.000 con 10 usuarios virtuales, como `bulk.js`: todos 202, a 0,8 lotes/s (los bulks de BC-38 en GKE
 iban a 0,08–0,2 pedidos/s, lejos de los 5/s).
+
+**27/11, en GKE:** qué IP le llega a Traefik, con un `traefik/whoami` temporal. Con `externalTrafficPolicy: Cluster`
+llegaba la de un nodo (10.x) para todos: el límite por IP era casi global. Con `Local` y `trustedIPs` de Cloudflare
+(`pilar3/helm/traefik.yaml`), lo que entra directo o por DuckDNS llega con la IP del cliente, y una `X-Real-Ip`
+inventada se pisa. Lo que entra por el Worker llega desde una IP de Cloudflare (dentro de los rangos de confianza): el
+Worker pone la del cliente en `X-Real-Ip` (`CF-Connecting-IP`). Los límites aplicados: 413, GET sin límite y 37 de 80
+POST a `/lote` con 429. El 403 y el vencimiento esperan el despliegue de la app (#104).

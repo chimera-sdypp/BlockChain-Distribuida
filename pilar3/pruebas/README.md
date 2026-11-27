@@ -364,3 +364,8 @@ lote de esa IP: hay que esperar unos segundos antes de un bulk.
 Los límites son por IP y por réplica de Traefik, y las pruebas de carga los respetan (no hay excepciones):
 `rafaga.py` (hasta 100 tx/s y tiradas de 1.000) entra en los 100/s con burst de 1.000 de los POST sueltos, y los bulks
 (lotes de 1.000 con 10 usuarios virtuales) en los 5/s con burst de 20 del lote.
+
+**27/11, en el k3s:** los cinco chequeos de `limites.py` en verde (la rechazada, `saldo insuficiente`, con TTL 3600;
+60 de 80 POST a `/lote` con 429). `rafaga.py` a 100 tx/s durante 15 s (1.495) y una tirada de 1.000: todas 202, ninguna
+429. 30 lotes de 1.000 con 10 usuarios virtuales, como `bulk.js`: todos 202, a 0,8 lotes/s (los bulks de BC-38 en GKE
+iban a 0,08–0,2 pedidos/s, lejos de los 5/s).

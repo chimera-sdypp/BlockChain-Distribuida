@@ -50,8 +50,14 @@ concurrency:
   group: pilar3-prueba
 
 jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    permissions:
+      contents: read
+
   preparar:
     name: ${{ inputs.accion }}
+    needs: [gitleaks]
     runs-on: ubuntu-latest
     environment: produccion
     env:

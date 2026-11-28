@@ -8,12 +8,20 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write   # crear el release y subirle el archivo
+  contents: read
 
 jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    permissions:
+      contents: read
+
   publicar:
     name: Subir la billetera al release
+    needs: [gitleaks]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # crear el release y subirle el archivo
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

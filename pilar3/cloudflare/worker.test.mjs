@@ -71,3 +71,11 @@ test("502 si el origen no responde", async () => {
   assert.equal(respuesta.status, 502);
   assert.match((await respuesta.json()).error, /timeout/);
 });
+
+test("pasa la IP del cliente en X-Real-Ip, y no la que manda el cliente (BC-94)", async () => {
+  const pedido = new Request(`${PUERTA}/api/transacciones`, {
+    method: "POST", body: "{}", headers: { "CF-Connecting-IP": "203.0.113.7", "X-Real-Ip": "1.2.3.4" },
+  });
+  await worker.fetch(pedido);
+  assert.equal(new Headers(enviado.headers).get("X-Real-Ip"), "203.0.113.7");
+});

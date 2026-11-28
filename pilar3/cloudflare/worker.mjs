@@ -15,6 +15,11 @@ export default {
     encabezados.delete("host");
     encabezados.set("X-Forwarded-Host", entrada.host);
     encabezados.set("X-Forwarded-Proto", entrada.protocol.replace(":", ""));
+    // BC-94: el límite de ritmo de Traefik cuenta por X-Real-Ip, y le cree a esta cabecera sólo si el pedido viene de
+    // Cloudflare. Va la IP del cliente que dice Cloudflare (CF-Connecting-IP), nunca la que mande el cliente.
+    const cliente = pedido.headers.get("CF-Connecting-IP");
+    if (cliente) encabezados.set("X-Real-Ip", cliente);
+    else encabezados.delete("X-Real-Ip");
 
     let respuesta;
     try {

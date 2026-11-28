@@ -146,15 +146,23 @@ resource "google_container_node_pool" "nodegroup" {
 }
 
 # ---------------------------------------------------------------- Escalador (BC-29)
-# Su ServiceAccount de Kubernetes (blockchain/escalador) actúa como esta cuenta de GCP.
-# Los permisos sobre las VMs y su state se los da el módulo vms/ (Pipeline 4).
-resource "google_service_account" "escalador" {
-  account_id   = "escalador"
-  display_name = "Escalador de VMs minero-cpu"
+# Su ServiceAccount de Kubernetes (blockchain/escalador) actúa como esta cuenta de GCP. La cuenta y sus
+# permisos sobre las VMs los crea bootstrap/ (BC-111); acá sólo va el binding de Workload Identity,
+# que necesita el pool del cluster.
+data "google_service_account" "escalador" {
+  account_id = "escalador"
+}
+
+# Antes la creaba este módulo: se olvida del state sin borrarla (ahora la maneja bootstrap/).
+removed {
+  from = google_service_account.escalador
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_service_account_iam_member" "escalador_desde_gke" {
-  service_account_id = google_service_account.escalador.name
+  service_account_id = data.google_service_account.escalador.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.proyecto}.svc.id.goog[${var.namespace}/escalador]"
   depends_on         = [google_container_cluster.blockchain]

@@ -1,0 +1,199 @@
+# NetworkPolicies del namespace blockchain (BC-104).
+# En GKE se habilita Calico en pilar3/infra/main.tf; en k3s funciona con kube-router.
+# Política por defecto: denegar todo ingreso en el namespace y abrir sólo lo necesario.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: denegar-ingreso
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Redis (6379) y Sentinel (26379): sólo los pods que leen/escriben estado y los propios Redis/Sentinel entre sí.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-redis
+spec:
+  podSelector:
+    matchLabels: { app: redis }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [redis, backend, gateway, nct, trp, escalador] }
+      ports:
+        - { protocol: TCP, port: 6379 }
+        - { protocol: TCP, port: 26379 }
+---
+# RabbitMQ: AMQP (5672) desde los servicios, clustering (4369/25672) entre réplicas, /metrics (15692) desde Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-rabbitmq
+spec:
+  podSelector:
+    matchLabels: { app: rabbitmq }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [rabbitmq, backend, frontend, gateway, nct, trp] }
+      ports:
+        - { protocol: TCP, port: 5672 }
+    - from:
+        - podSelector:
+            matchLabels: { app: rabbitmq }
+      ports:
+        - { protocol: TCP, port: 4369 }
+        - { protocol: TCP, port: 25672 }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - { protocol: TCP, port: 15692 }
+---
+# Backend (8080): desde Traefik (Ingress /api y /salud/backend), kube-system (Traefik en k3s),
+# monitoring (Prometheus) y los pods del namespace que consultan su API (escalador y nodos verificadores).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-backend
+spec:
+  podSelector:
+    matchLabels: { app: backend }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: traefik }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [escalador, nodo] }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Frontend (8080): desde Traefik (Ingress / y /eventos), kube-system (k3s) y monitoring (Prometheus).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-frontend
+spec:
+  podSelector:
+    matchLabels: { app: frontend }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: traefik }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Gateway (8080): recibe mineros externos por su propio LoadBalancer además de Traefik (/salud/gateway) y Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-gateway
+spec:
+  podSelector:
+    matchLabels: { app: gateway }
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8080 }
+---
+# NCT y TrP (8080): Prometheus (/metrics) y Traefik (/salud/nct, /salud/trp en GKE).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-nct-trp
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [nct, trp] }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: traefik }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Escalador (8080): sólo Prometheus (/metrics).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-escalador
+spec:
+  podSelector:
+    matchLabels: { app: escalador }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Nodos verificadores (8090): Traefik (/nodos/0 y /nodos/1), kube-system (k3s) y Prometheus (/metrics).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-nodo
+spec:
+  podSelector:
+    matchLabels: { app: nodo }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: traefik }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - { protocol: TCP, port: 8090 }
+---
+# cert-manager (Let's Encrypt, HTTP-01): crea un pod solver en este namespace y el desafío le llega por Traefik.
+# Sin esto, denegar-ingreso deja sin emitir ni renovar el certificado de blockchain-tls.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-acme
+spec:
+  podSelector:
+    matchLabels: { acme.cert-manager.io/http01-solver: "true" }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: traefik }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: TCP, port: 8089 }

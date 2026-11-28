@@ -3,6 +3,12 @@
 # todo. Los que más valen son los que corre otra gente fuera de la nube (python -m nodo --fuente https://…); éstos
 # alertan en Grafana. No son validadores: un validador en la nube del operador lo controlaría el operador (BC-86).
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodo
+automountServiceAccountToken: false
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: nodo
@@ -27,7 +33,18 @@ spec:
     metadata:
       labels: { app: nodo }
     spec:
-      securityContext: { fsGroup: 10001 }
+      serviceAccountName: nodo
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 10001
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: nodo }
       containers:
         - name: nodo
           image: nodo
@@ -40,6 +57,7 @@ spec:
             - { name: PUERTO, value: "8090" }
           volumeMounts:
             - { name: datos, mountPath: /datos }
+            - { name: tmp, mountPath: /tmp }
           readinessProbe:
             httpGet: { path: /metrics, port: http }
             periodSeconds: 10
@@ -50,6 +68,15 @@ spec:
           resources:
             requests: { cpu: 20m, memory: 64Mi }
             limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: tmp
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: datos

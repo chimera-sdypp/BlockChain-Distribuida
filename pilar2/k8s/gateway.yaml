@@ -1,6 +1,12 @@
 # Gateway de los mineros (BC-43): la única puerta de los mineros (fuera del cluster) al sistema.
-# 2 réplicas sin estado: los préstamos de los rangos están en Redis. Su propio LoadBalancer en el
-# 8081 (el 80 es del Ingress). La imagen se construye a mano (ver pilar2/gateway/README.md).
+# Sin estado (los préstamos están en Redis), con HPA entre 2 y 6 réplicas (BC-102). Su propio LoadBalancer
+# en el 8081 (el 80 es del Ingress). La imagen se construye a mano (ver pilar2/gateway/README.md).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gateway
+automountServiceAccountToken: false
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,7 +24,7 @@ metadata:
   name: gateway
   labels: { app: gateway }
 spec:
-  replicas: 2
+  # Sin `replicas`: lo maneja el HorizontalPodAutoscaler (minReplicas: 2).
   selector:
     matchLabels: { app: gateway }
   template:
@@ -29,6 +35,16 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: gateway }
       containers:
         - name: gateway
           image: gateway:dev
@@ -46,6 +62,9 @@ spec:
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
             - name: REDIS_CLAVE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          volumeMounts:
+            - { name: logs, mountPath: /app/logs }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { memory: 256Mi }
@@ -63,3 +82,29 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001     # el usuario «app» del Dockerfile
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

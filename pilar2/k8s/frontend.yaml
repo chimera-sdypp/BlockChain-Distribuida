@@ -1,7 +1,13 @@
 # Frontend (BC-28): la página y los avisos en vivo por SSE. Sin estado: cada pod tiene su propia
 # cola atada a `eventos`, así que cualquier navegador recibe todos los avisos, esté en el pod que esté.
-# La imagen se construye e importa a mano en k3s (ver pilar2/frontend/README.md) hasta que haya
+# La imagen se construye a mano en k3s (ver pilar2/frontend/README.md) hasta que haya
 # Artifact Registry (BC-31); ahí se cambia con `images:` en el kustomization.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frontend
+automountServiceAccountToken: false
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -29,6 +35,16 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
+      serviceAccountName: frontend
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: frontend }
       containers:
         - name: frontend
           image: frontend:dev
@@ -41,6 +57,9 @@ spec:
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
             - name: RABBIT_CLAVE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
+          volumeMounts:
+            - { name: logs, mountPath: /app/logs }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { memory: 256Mi }
@@ -60,3 +79,10 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001     # el usuario «app» del Dockerfile; con un nombre, runAsNonRoot no lo puede verificar
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

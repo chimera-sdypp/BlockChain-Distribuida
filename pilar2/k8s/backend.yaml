@@ -1,6 +1,12 @@
-# Backend (BC-20): la API de transacciones. Sin estado, así que 2 réplicas cualesquiera.
+# Backend (BC-20): la API de transacciones. Sin estado, con HPA entre 2 y 6 réplicas (BC-102).
 # La imagen se construye e importa a mano en k3s (ver pilar2/backend/README.md) hasta que haya
 # Artifact Registry (BC-31); ahí se cambia con `images:` en el kustomization.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend
+automountServiceAccountToken: false
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -17,7 +23,7 @@ metadata:
   name: backend
   labels: { app: backend }
 spec:
-  replicas: 2
+  # Sin `replicas`: lo maneja el HorizontalPodAutoscaler (minReplicas: 2).
   selector:
     matchLabels: { app: backend }
   template:
@@ -28,6 +34,16 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
+      serviceAccountName: backend
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: backend }
       containers:
         - name: backend
           image: backend:dev
@@ -44,6 +60,9 @@ spec:
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
             - name: REDIS_CLAVE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          volumeMounts:
+            - { name: logs, mountPath: /app/logs }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { memory: 256Mi }
@@ -63,3 +82,29 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001     # el usuario «app» del Dockerfile; con un nombre, runAsNonRoot no lo puede verificar
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

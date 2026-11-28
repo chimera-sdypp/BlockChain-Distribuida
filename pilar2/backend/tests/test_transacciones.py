@@ -9,14 +9,31 @@ from prometheus_client.parser import text_string_to_metric_families
 
 from backend import app as backend
 from comun import contrato, web
-from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada, cadena_actual
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, Billetera, carga, firmada, cadena_actual
 
 COLA = "transacciones-prueba"
 
 
+APROBADAS = ("alice", "bob", "carol")
+
+
 class RedisFalso:
-    def __init__(self, falla=False):
+    def __init__(self, falla=False, aprobadas=APROBADAS, permisos=()):
+        """Las cuentas de `aprobadas` están en `cuentas` y las claves de `permisos`, en `permisos` (BC-94)."""
         self.hashes, self.falla = {}, falla
+        if aprobadas:
+            self.hashes[contrato.CUENTAS] = {CUENTA[n]: json.dumps({"tipo": "usuario", "nombre": n}) for n in aprobadas}
+        if permisos:
+            self.hashes[contrato.PERMISOS] = {CUENTA[n]: "prefijo" for n in permisos}
+
+    def transacciones(self):
+        """Las claves tx:<id> que hay: lo que el backend escribió."""
+        return {clave for clave in self.hashes if clave.startswith("tx:")}
+
+    def hmget(self, clave, campos):
+        if self.falla:
+            raise redis.ConnectionError("Redis caído")
+        return [self.hashes.get(clave, {}).get(campo) for campo in campos]
 
     def hset(self, clave, mapping):
         if self.falla:
@@ -71,12 +88,13 @@ class TuberiaFalsa:
         self.redis, self.pendientes = redis_falso, []
 
     def hset(self, clave, mapping):
-        self.pendientes.append((clave, mapping))
+        self.pendientes.append(lambda: self.redis.hset(clave, mapping=mapping) or 1)
+
+    def hmget(self, clave, campos):
+        self.pendientes.append(lambda: self.redis.hmget(clave, campos))
 
     def execute(self):
-        for clave, mapping in self.pendientes:
-            self.redis.hset(clave, mapping=mapping)
-        return [1] * len(self.pendientes)
+        return [pendiente() for pendiente in self.pendientes]
 
 
 class PublicadorFalso:
@@ -109,6 +127,19 @@ def test_post_firmado_encola_y_queda_recibida():
     assert guardada["estado"] == "recibida"
     assert (guardada["origen"], guardada["destino"], guardada["monto"], guardada["nonce"], guardada["firma"]) == (
         CUENTA["alice"], CUENTA["bob"], "10", "1", tx["firma"])
+
+
+def test_una_transferencia_de_una_cuenta_sin_alta_da_403_y_no_guarda_nada():
+    """BC-94: la prueba del profesor. Una clave recién generada firma una transferencia: antes daba 202 y dejaba
+    tx:<id> para siempre; ahora el backend la corta antes de escribir en Redis o en la cola."""
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    tx = firmada("nueva", "bob", 10)
+
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=tx)
+
+    assert respuesta.status_code == 403
+    assert respuesta.json() == {"error": "cuenta no aprobada"}
+    assert redis.transacciones() == set() and publicador.publicados == []
 
 
 def test_el_id_lo_calcula_el_backend_aunque_no_venga():
@@ -154,7 +185,7 @@ def test_formato_o_firma_invalidos_dan_400_con_el_motivo_y_no_encola(cuerpo, mot
 
     assert respuesta.status_code == 400
     assert any(motivo in error for error in respuesta.json()["errores"]), respuesta.json()
-    assert publicador.publicados == [] and redis.hashes == {}
+    assert publicador.publicados == [] and redis.transacciones() == set()
 
 
 def test_una_carga_del_organizador_entra_con_su_id():
@@ -194,7 +225,7 @@ def test_si_rabbitmq_falla_da_503_y_no_queda_recibida():
     respuesta = cliente(redis, publicador).post("/api/transacciones", json=firmada("alice", "bob", 10))
 
     assert respuesta.status_code == 503
-    assert redis.hashes == {}
+    assert redis.transacciones() == set()
 
 
 def test_si_redis_falla_da_503_y_no_encola():
@@ -267,7 +298,7 @@ def test_lote_con_una_invalida_se_rechaza_entero_con_los_errores_por_indice():
     errores = respuesta.json()["errores"]
     assert set(errores) == {"1", "3"}
     assert any("firma" in e for e in errores["1"]) and any("distintos" in e for e in errores["3"])
-    assert publicador.publicados == [] and redis.hashes == {}
+    assert publicador.publicados == [] and redis.transacciones() == set()
 
 
 def test_lote_con_una_repetida_da_409_y_no_entra_ninguna():
@@ -280,7 +311,7 @@ def test_lote_con_una_repetida_da_409_y_no_entra_ninguna():
 
     assert respuesta.status_code == 409
     assert respuesta.json() == {"errores": {"1": [backend.REENVIO]}}
-    assert len(publicador.publicados) == 1 and set(redis.hashes) == {f"tx:{cuerpo[1]['id']}"}
+    assert len(publicador.publicados) == 1 and redis.transacciones() == {f"tx:{cuerpo[1]['id']}"}
 
 
 def test_lote_con_la_misma_transaccion_dos_veces_da_409():
@@ -311,7 +342,7 @@ def test_si_la_publicacion_se_corta_a_mitad_del_lote_dice_cuales_quedaron():
     encoladas = respuesta.json()["encoladas"]
     assert encoladas == [m["id"] for _, m in publicador.publicados]
     assert len(encoladas) == 2
-    assert set(redis.hashes) == {f"tx:{id_}" for id_ in encoladas}
+    assert redis.transacciones() == {f"tx:{id_}" for id_ in encoladas}
 
 
 def test_el_lote_cuenta_la_metrica_por_transaccion():
@@ -347,3 +378,66 @@ def test_una_pendiente_sigue_completa_en_tx():
     redis.hashes[f"tx:{tx['id']}"] = {**{k: str(v) for k, v in tx.items() if k != "id"}, "estado": "pendiente"}
 
     assert cliente(redis).get(f"/api/transacciones/{tx['id']}").json() == {**tx, "estado": "pendiente"}
+
+
+# ── BC-94: nada en Redis de quien no tiene alta ──
+
+def test_lote_con_un_origen_sin_alta_da_403_con_su_indice_y_no_guarda_ninguna():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+    cuerpo = lote(1, 2) + lote(5, origen="nueva") + lote(3, origen="carol")
+
+    respuesta = cliente(redis, publicador).post("/api/transacciones/lote", json=cuerpo)
+
+    assert respuesta.status_code == 403
+    assert respuesta.json() == {"errores": {"2": ["cuenta no aprobada"]}}
+    assert redis.transacciones() == set() and publicador.publicados == []
+
+
+def alta_delegada(clave):
+    """Un alta de minero firmada por `clave` con permiso delegado (como las del escalador, BC-79)."""
+    return contrato.alta(PRIVADA[clave], 1, CUENTA["vm-1"], "minero", "minero-cpu-1", FECHA, delegada=True, cadena=cadena_actual())
+
+
+def test_un_acta_delegada_de_una_clave_sin_permiso_da_403_y_no_guarda_nada():
+    redis, publicador = RedisFalso(), PublicadorFalso()
+
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=alta_delegada("escalador"))
+
+    assert respuesta.status_code == 403
+    assert respuesta.json() == {"error": "clave sin permiso"}
+    assert redis.transacciones() == set() and publicador.publicados == []
+
+
+def test_un_acta_delegada_de_una_clave_con_permiso_entra_aunque_no_tenga_cuenta():
+    redis, publicador = RedisFalso(permisos=("escalador",)), PublicadorFalso()
+    acta = alta_delegada("escalador")
+
+    respuesta = cliente(redis, publicador).post("/api/transacciones", json=acta)
+
+    assert respuesta.status_code == 202 and respuesta.json() == {"id": acta["id"]}
+    assert len(publicador.publicados) == 1
+
+
+def test_un_acta_del_organizador_entra_sin_mirar_cuentas_ni_permisos():
+    redis, publicador = RedisFalso(aprobadas=()), PublicadorFalso()
+    acta = contrato.alta(PRIVADA["organizador"], 1, CUENTA["nueva"], "usuario", "nueva", FECHA, cadena=cadena_actual())
+
+    assert cliente(redis, publicador).post("/api/transacciones", json=acta).status_code == 202
+
+
+def test_en_el_lote_la_firma_mala_se_informa_antes_que_la_cuenta_sin_alta():
+    cuerpo = lote(1) + lote(2, origen="nueva")
+    cuerpo[0] = {**cuerpo[0], "monto": 99}
+
+    respuesta = cliente().post("/api/transacciones/lote", json=cuerpo)
+
+    assert respuesta.status_code == 400 and set(respuesta.json()["errores"]) == {"0"}
+
+
+def test_la_metrica_cuenta_las_que_no_tienen_alta_por_transaccion():
+    c = cliente()
+    antes = contadores(c)
+    c.post("/api/transacciones", json=firmada("nueva", "bob", 1))
+    c.post("/api/transacciones/lote", json=lote(1, 2) + lote(3, origen="nueva"))
+
+    assert contadores(c)["no_aprobada"] - antes.get("no_aprobada", 0) == 4

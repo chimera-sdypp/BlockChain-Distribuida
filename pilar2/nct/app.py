@@ -61,8 +61,9 @@ return 1
 #   - Al aceptar una, se destraban las que esperaban el nonce siguiente.
 #   - BC-93: un alta de una cuenta que ya está en `cuentas` o con otra alta en camino se rechaza; si no, queda en
 #     `altas:en_camino` en el mismo paso (dos altas seguidas, en dos réplicas o destrabadas de la espera, no pasan).
+#   - BC-94: la rechazada vence a los ARGV[6] segundos.
 # KEYS: tx:<id>, saldos, comprometido, tx:pendientes, nonces, cuentas, tx:en_espera, altas:en_camino.
-# ARGV: id, motivo si la firma no sirve (o vacío), ahora, 1 si es un acta, motivo de un alta repetida.
+# ARGV: id, motivo si la firma no sirve (o vacío), ahora, 1 si es un acta, motivo de un alta repetida, guarda.
 # Devuelve {estado de la tx, (id, estado, motivo) de cada una que cambió…}.
 LUA_VALIDAR = """
 local cambios = {}
@@ -71,6 +72,7 @@ local function anotar(id, estado, motivo)
 end
 local function rechazar(id, motivo)
   redis.call('HSET', 'tx:' .. id, 'estado', 'rechazada', 'motivo', motivo)
+  redis.call('EXPIRE', 'tx:' .. id, ARGV[6])
   anotar(id, 'rechazada', motivo)
 end
 local function aceptar(id)
@@ -145,7 +147,8 @@ return {propio, unpack(cambios)}
 SALDO_INSUFICIENTE, FIRMA_INVALIDA, NONCE_SALTEADO = "saldo insuficiente", "firma inválida", "nonce salteado"
 
 # Rechaza las transacciones que esperan un nonce anterior desde antes de ARGV[1]: el que faltaba no
-# llegó nunca (o lo rechazaron). KEYS: tx:en_espera. ARGV: límite, motivo. Devuelve los ids rechazados.
+# llegó nunca (o lo rechazaron). La rechazada vence a los ARGV[3] segundos (BC-94).
+# KEYS: tx:en_espera. ARGV: límite, motivo, guarda. Devuelve los ids rechazados.
 LUA_VENCER_ESPERA = """
 local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 1000)
 local rechazadas = {}
@@ -155,6 +158,7 @@ for _, id in ipairs(ids) do
   if origen then redis.call('ZREM', 'espera:' .. origen, id) end
   if redis.call('HGET', 'tx:' .. id, 'estado') == 'recibida' then
     redis.call('HSET', 'tx:' .. id, 'estado', 'rechazada', 'motivo', ARGV[2])
+    redis.call('EXPIRE', 'tx:' .. id, ARGV[3])
     rechazadas[#rechazadas + 1] = id
   end
 end
@@ -272,12 +276,13 @@ return {'confirmada', ARGV[2], altura}
 
 # Una transacción validada («pendiente») que al armar el bloque no vale contra la cadena (v3): queda
 # rechazada, se le devuelve lo comprometido y el nonce de quien firmó vuelve atrás, así puede firmar
-# otra con ese número. Si era un alta, deja de estar en camino.
-# KEYS: tx:<id>, comprometido, nonces, altas:en_camino. ARGV: motivo, id. Devuelve 1 si la rechazó.
+# otra con ese número. Si era un alta, deja de estar en camino. Vence a los ARGV[3] segundos (BC-94).
+# KEYS: tx:<id>, comprometido, nonces, altas:en_camino. ARGV: motivo, id, guarda. Devuelve 1 si la rechazó.
 LUA_RECHAZAR_PENDIENTE = """
 if redis.call('HGET', KEYS[1], 'estado') ~= 'pendiente' then return 0 end
 local origen, destino, monto, nonce = unpack(redis.call('HMGET', KEYS[1], 'origen', 'destino', 'monto', 'nonce'))
 redis.call('HSET', KEYS[1], 'estado', 'rechazada', 'motivo', ARGV[1])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
 if origen ~= 'emision' and tonumber(monto) > 0 then redis.call('HINCRBY', KEYS[2], origen, -tonumber(monto)) end
 local ultimo = tonumber(redis.call('HGET', KEYS[3], origen) or '0')
 if ultimo >= tonumber(nonce) then redis.call('HSET', KEYS[3], origen, tonumber(nonce) - 1) end
@@ -417,7 +422,8 @@ class Nct:
     def __init__(self, redis, publicador, saldos_iniciales=None, organizador="", wait_replicas=1, wait_ms=1000,
                  ventana=VENTANA, tx_por_caja=TX_POR_CAJA, tarea_vence=TAREA_VENCE, espera_nonce=ESPERA_NONCE,
                  fondo_epoca=contrato.FONDO_EPOCA, tarea_guarda=contrato.TAREA_GUARDA,
-                 emergencia=contrato.EMERGENCIA_SEGUNDOS, revisar_cada=60, snapshot_cada=100, prefijo_minimo=1):
+                 rechazada_guarda=contrato.RECHAZADA_GUARDA, emergencia=contrato.EMERGENCIA_SEGUNDOS, revisar_cada=60,
+                 snapshot_cada=100, prefijo_minimo=1):
         self.redis, self.publicador = redis, publicador
         self.saldos_iniciales = SALDOS_INICIALES if saldos_iniciales is None else saldos_iniciales
         self.organizador = organizador
@@ -425,6 +431,7 @@ class Nct:
         self.wait_replicas, self.wait_ms = wait_replicas, wait_ms
         self.ventana, self.tx_por_caja, self.tarea_vence = ventana, tx_por_caja, tarea_vence
         self.espera_nonce, self.fondo_epoca, self.tarea_guarda = espera_nonce, fondo_epoca, tarea_guarda
+        self.rechazada_guarda = rechazada_guarda  # BC-94: cuánto dura una tx rechazada en Redis
         # BC-73: una tarea sin bloque vence a los `emergencia` segundos (0 = sólo a los `tarea_vence`) y se
         # rearma la misma caja; el TrP le baja un carácter por cada `emergencia` desde que se armó la caja.
         self.emergencia = emergencia
@@ -497,7 +504,7 @@ class Nct:
         estado, *cambios = self._validar(
             keys=[contrato.TX.format(id_), contrato.SALDOS, contrato.COMPROMETIDO, contrato.PENDIENTES,
                   contrato.NONCES, contrato.CUENTAS, contrato.EN_ESPERA, contrato.ALTAS_EN_CAMINO],
-            args=[id_, problema, time.time(), acta, estado_cadena.ALTA_REPETIDA])
+            args=[id_, problema, time.time(), acta, estado_cadena.ALTA_REPETIDA, self.rechazada_guarda])
         if estado == "en_espera":
             log.info("Transacción %s: su nonce llegó antes que el anterior, espera su turno", id_)
             return estado
@@ -553,7 +560,7 @@ class Nct:
     def vencer_espera(self, ahora=None):
         """Rechaza las que esperan un nonce anterior desde hace más de `espera_nonce` segundos."""
         limite = (time.time() if ahora is None else ahora) - self.espera_nonce
-        rechazadas = self._vencer_espera(keys=[contrato.EN_ESPERA], args=[limite, NONCE_SALTEADO])
+        rechazadas = self._vencer_espera(keys=[contrato.EN_ESPERA], args=[limite, NONCE_SALTEADO, self.rechazada_guarda])
         for id_ in rechazadas:
             self._avisar_estado(id_, "rechazada", NONCE_SALTEADO)
         return rechazadas
@@ -698,7 +705,7 @@ class Nct:
         validas, rechazadas = estado_cadena.filtrar(estado, transacciones)
         for tx, motivo in rechazadas:
             if self._rechazar_pendiente(keys=[contrato.TX.format(tx["id"]), contrato.COMPROMETIDO, contrato.NONCES,
-                                              contrato.ALTAS_EN_CAMINO], args=[motivo, tx["id"]]):
+                                              contrato.ALTAS_EN_CAMINO], args=[motivo, tx["id"], self.rechazada_guarda]):
                 SACADAS.inc()
                 log.error("La transacción %s no vale contra la cadena y sale de la caja: %s", tx["id"], motivo)
                 self._avisar_estado(tx["id"], "rechazada", "no vale contra la cadena")
@@ -925,6 +932,7 @@ def main():
               espera_nonce=config.entero("ESPERA_NONCE_SEGUNDOS", ESPERA_NONCE),
               fondo_epoca=config.entero("FONDO_EPOCA", contrato.FONDO_EPOCA),
               tarea_guarda=config.entero("TAREA_GUARDA_SEGUNDOS", contrato.TAREA_GUARDA),
+              rechazada_guarda=config.entero("RECHAZADA_GUARDA_SEGUNDOS", contrato.RECHAZADA_GUARDA),
               emergencia=config.entero("EMERGENCIA_SEGUNDOS", contrato.EMERGENCIA_SEGUNDOS),
               revisar_cada=config.entero("REVISAR_ESTADO_SEGUNDOS", 60),
               snapshot_cada=config.entero("SNAPSHOT_CADA", 100),

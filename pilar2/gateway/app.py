@@ -37,7 +37,7 @@ ENTREGADAS = Counter("blockchain_tareas_entregadas", "Rangos entregados a los mi
 VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola: su minero dejó de avisar "
                    "(sin_aviso) o se le pasó el plazo (plazo, BC-74)", ["motivo"])
 SHARES = Counter("blockchain_shares", "Shares que mandaron los mineros", ["resultado"])  # aceptado o descartado
-RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma, no_aprobado o suspendido
+RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma, cuerpo (BC-94), no_aprobado o suspendido
 SUSPENSIONES = Counter("blockchain_suspensiones", "Mineros suspendidos por contestar sin_solucion sin buscar (BC-75)",
                        ["motivo"])  # estadistica o reverificacion
 REVERIFICACIONES = Counter("blockchain_reverificaciones", "Rangos sin solución reverificados con otro minero (BC-75)",
@@ -904,12 +904,45 @@ def responder(codigo, cuerpo):
     return JSONResponse(cuerpo, status_code=codigo)
 
 
-def agregar_rutas(app, gateway):
+# BC-94: el cuerpo más grande que el gateway lee. El más grande de verdad es un /results con SHARES_POR_RANGO (64)
+# nonces, un par de KB; con 4 veces eso no llega, así que manda el piso de 64 KB. El gateway no pasa por Traefik
+# (tiene su LoadBalancer): este tope es el que en el backend pone Traefik.
+CUERPO_MAXIMO = 64 * 1024
+
+
+async def leer_cuerpo(request, maximo):
+    """El cuerpo, o None si pasa de `maximo` bytes: por Content-Length, sin leerlo, o mientras llega (chunked)."""
+    largo = request.headers.get("content-length", "")
+    if largo.isdigit() and int(largo) > maximo:
+        return None
+    partes, total = [], 0
+    async for parte in request.stream():
+        total += len(parte)
+        if total > maximo:
+            return None
+        partes.append(parte)
+    return b"".join(partes)
+
+
+def agregar_rutas(app, gateway, cuerpo_maximo=CUERPO_MAXIMO):
     def ruta(metodo_http, atender):
         """Verifica la firma y la aprobación, lee el JSON y corre el método del gateway fuera del event
-        loop (Redis y pika bloquean). La ruta firmada lleva la query, como la manda el minero."""
+        loop (Redis y pika bloquean). La ruta firmada lleva la query, como la manda el minero.
+
+        BC-94: antes de leer el cuerpo mira la cuenta y la hora de las cabeceras (401) y el tamaño (413). La firma
+        cubre el cuerpo, así que verificarla (y anotar el pedido de alta de un minero nuevo) necesita leerlo, con tope."""
         async def pedido(request: Request):
-            cuerpo = await request.body()
+            motivo = contrato.problema_de_cabeceras(request.headers)
+            if motivo:
+                RECHAZOS.labels("firma").inc()
+                log.warning("Pedido %s %s rechazado sin leer el cuerpo: %s", metodo_http, request.url.path, motivo)
+                return JSONResponse({"error": motivo}, status_code=401)
+            cuerpo = await leer_cuerpo(request, cuerpo_maximo)
+            if cuerpo is None:
+                RECHAZOS.labels("cuerpo").inc()
+                log.warning("Pedido %s %s rechazado: el cuerpo pasa de %d bytes", metodo_http, request.url.path,
+                            cuerpo_maximo)
+                return JSONResponse({"error": f"el cuerpo pasa de {cuerpo_maximo} bytes"}, status_code=413)
             firmada = request.url.path + (f"?{request.url.query}" if request.url.query else "")
             try:
                 minero, error = await run_in_threadpool(gateway.autenticar, request.headers, metodo_http,

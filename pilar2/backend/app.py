@@ -33,7 +33,8 @@ from comun.altas import ALTAS_MAXIMAS, Altas
 
 log = logging.getLogger("backend")
 
-# Por transacción, también en los lotes: aceptada, invalida, repetida (un reenvío) o error (no se pudo encolar).
+# Por transacción, también en los lotes: aceptada, invalida, no_aprobada (origen sin alta o clave sin permiso, BC-94),
+# repetida (un reenvío) o error (no se pudo encolar).
 TX_RECIBIDAS = Counter("blockchain_tx_recibidas", "Transacciones recibidas por el backend", ["resultado"])
 # BC-86: las firmas de los validadores y la finalidad.
 FIRMAS_RECIBIDAS = Counter("blockchain_firmas", "Firmas de validadores recibidas", ["resultado"])  # aceptada, invalida, doble
@@ -77,6 +78,7 @@ return repetidas
 """
 CAMPOS_TX = ("origen", "destino", "monto", "nonce", "timestamp", "firma", "datos")
 REENVIO = "ya existe: es un reenvío"
+NO_APROBADA, SIN_PERMISO = "cuenta no aprobada", "clave sin permiso"
 
 
 class Repetidas(Exception):
@@ -152,6 +154,28 @@ def _transaccion(id_, tx):
 def validar(datos, organizador, cadena):
     """Los errores de una transferencia firmada, de una carga o de un acta del organizador; vacío si sirve."""
     return contrato.validar_de_entrada(datos, organizador, cadena)
+
+
+def sin_alta(redis, txs):
+    """BC-94: {índice: motivo} de las que el NCT rechazaría por quién las firma; vacío si todas pueden entrar.
+
+    Una transferencia necesita su origen en `cuentas` y un acta delegada, su clave en `permisos` (el prefijo lo
+    mira el NCT). Las cargas y actas del organizador («emision») ya las verificó su firma. Se mira antes de
+    guardar nada: así una clave cualquiera no deja tx:<id> en Redis. Una sola ida a Redis, aunque sean mil.
+    """
+    indices = {contrato.CUENTAS: [], contrato.PERMISOS: []}
+    for i, tx in enumerate(txs):
+        if tx["origen"] != contrato.EMISION:
+            indices[contrato.PERMISOS if contrato.es_delegada(tx) else contrato.CUENTAS].append(i)
+    consultas = [(clave, lista) for clave, lista in indices.items() if lista]
+    if not consultas:
+        return {}
+    tuberia = redis.pipeline(transaction=False)
+    for clave, lista in consultas:
+        tuberia.hmget(clave, [txs[i]["origen"] for i in lista])
+    motivos = {contrato.CUENTAS: NO_APROBADA, contrato.PERMISOS: SIN_PERMISO}
+    return {i: motivos[clave] for (clave, lista), valores in zip(consultas, tuberia.execute())
+            for i, valor in zip(lista, valores) if valor is None}
 
 
 def nueva_transaccion(datos, cadena):
@@ -232,8 +256,18 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         return await recibir_una(datos, cadena)
 
     async def recibir_una(datos, cadena):
-        """Encola una transacción ya validada: 202, 409 si es un reenvío o 503."""
+        """Encola una transacción ya validada: 202, 403 si quien la firma no tiene alta (BC-94), 409 si es un
+        reenvío o 503."""
         tx = nueva_transaccion(datos, cadena)
+        try:
+            faltan = await run_in_threadpool(sin_alta, redis, [tx])
+        except redislib.RedisError as error:
+            log.error("Redis no respondió al mirar la cuenta de %s: %r", tx["id"], error)
+            return JSONResponse({"error": "Redis no disponible"}, status_code=503)
+        if faltan:
+            TX_RECIBIDAS.labels("no_aprobada").inc()
+            log.info("Transacción %s de %s rechazada: %s", tx["id"], tx["origen"], faltan[0])
+            return JSONResponse({"error": faltan[0]}, status_code=403)
         try:
             await encolar([tx])
         except Repetidas:
@@ -266,6 +300,15 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             TX_RECIBIDAS.labels("invalida").inc(len(datos))
             return invalido(errores)
         txs = [nueva_transaccion(tx, cadena) for tx in datos]
+        try:
+            faltan = await run_in_threadpool(sin_alta, redis, txs)
+        except redislib.RedisError as error:
+            log.error("Redis no respondió al mirar las cuentas de un lote de %d: %r", len(txs), error)
+            return JSONResponse({"error": "Redis no disponible", "encoladas": []}, status_code=503)
+        if faltan:
+            TX_RECIBIDAS.labels("no_aprobada").inc(len(txs))
+            log.info("Lote de %d rechazado: %d sin alta o sin permiso", len(txs), len(faltan))
+            return JSONResponse({"errores": {str(i): [motivo] for i, motivo in faltan.items()}}, status_code=403)
         vistos, repetidas = set(), []
         for i, tx in enumerate(txs):
             if tx["id"] in vistos:

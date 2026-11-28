@@ -38,9 +38,9 @@ La v2 (BC-53, el contrato del 13/11) trajo las cuentas con clave Ed25519, las tr
 
 - **Formato y firma** (backend, `validar_transaccion_firmada`): campos completos, origen ≠ destino, la firma es del origen y, si viene `id`, es el hash. Si no, 400 con los errores. La misma transacción reenviada da el mismo id: 409 (BC-56).
 - **Nonce** (NCT): vale si es `nonces[origen] + 1`, y al aceptarla el NCT lo sube. Una rechazada no gasta el nonce. Así una transacción firmada no se puede mandar dos veces. Uno menor o igual es `nonce repetido`. Uno mayor llegó antes que el anterior (las dos réplicas del NCT consumen en paralelo, y los lotes de un bulk pueden llegar desordenados): espera en `espera:<cuenta>` hasta que entra el que falta, y si no llega en `ESPERA_NONCE_SEGUNDOS` (60) queda `nonce salteado`.
-- **Cuenta** (NCT): el origen tiene que estar en `cuentas`; si no, `cuenta no aprobada`. El NCT vuelve a verificar la firma (`firma inválida`).
+- **Cuenta** (backend y NCT): el origen tiene que estar en `cuentas`. El backend lo mira antes de guardar nada y, si no está, contesta **403** `{"error": "cuenta no aprobada"}` (en un lote, todo o nada: 403 con `errores` por índice): así una clave cualquiera no deja `tx:<id>` en Redis (BC-94). Un alta en camino todavía no cuenta. Orden de los errores: 413 (lote demasiado grande), 400 (formato o firma), 403, 409 (reenvío). El NCT lo vuelve a mirar al validar (la cuenta pudo darse de baja en el medio) y vuelve a verificar la firma (`firma inválida`).
 - **Saldo** (NCT): al origen le alcanza descontando sus transacciones pendientes; si no, queda `rechazada`.
-- **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` con el motivo: `firma inválida`, `cuenta no aprobada`, `nonce repetido`, `nonce salteado` o `saldo insuficiente`.
+- **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` con el motivo: `firma inválida`, `cuenta no aprobada`, `nonce repetido`, `nonce salteado` o `saldo insuficiente`. Una rechazada vence a la hora (BC-94): después, `GET /api/transacciones/<id>` da 404.
 - El destino puede no existir: se lo crea con saldo 0.
 - El monto es entero para que el texto del bloque salga igual en Python y en C++. El tope es para que los saldos no desborden el entero de 64 bits de Redis (`HINCRBY`).
 - `transaccion(privada, destino, monto, nonce, cadena=<génesis>)` arma y firma una: es lo que hace la herramienta de claves (BC-55).
@@ -91,7 +91,7 @@ Las decisiones del organizador son transacciones firmadas que entran en los bloq
 - La firma es del organizador sobre `<génesis>:<tipo>:<origen>:<destino>:<nonce>:<timestamp>:<datos>` (`mensaje_acta`): el tipo adelante, así la firma de una carga no sirve como alta.
 - **Altas y bajas delegadas:** las firma la clave que tiene el permiso (el escalador, para sus VMs `minero-cpu-*`), con `origen` = esa clave, `id` = `alta-<clave>-<n>` y su propio nonce. Así el escalador no puede aprobar usuarios ni cargar saldo.
 - **Vetadas (v4, BC-95):** una baja del organizador deja la cuenta en `vetadas`. Un alta delegada de una cuenta vetada se rechaza (`la cuenta tiene una baja del organizador: sólo él la puede volver a dar de alta`); un alta del organizador la reactiva y la saca de `vetadas`. Una baja delegada (la VM se borró) no veta. Hasta la v3 el escalador veía que la clave de su VM no estaba en `cuentas` y la volvía a dar de alta: la baja del organizador no duraba.
-- El backend valida formato y firma (`validar_acta`, por `POST /api/transacciones`); el NCT, el nonce y las reglas que dependen del estado (`estado.problema_de_acta`): el permiso, que el organizador no se dé de alta ni de baja.
+- El backend valida formato y firma (`validar_acta`, por `POST /api/transacciones`) y, en una delegada, que la clave esté en `permisos` (si no, **403** `{"error": "clave sin permiso"}`, sin guardar nada; BC-94); el NCT, el nonce y las reglas que dependen del estado (`estado.problema_de_acta`): el prefijo del permiso, que el organizador no se dé de alta ni de baja.
 - Una cuenta queda aprobada **cuando el bloque se confirma**. Mientras tanto, un alta validada queda en `altas:en_camino`: el gateway ya deja minar a ese minero, así una VM nueva (o el único minero) puede minar el bloque que trae su propia alta.
 - Las suspensiones del gateway (BC-75) siguen fuera de la cadena: son operativas. La baja que confirma el organizador, sí va.
 
@@ -161,6 +161,7 @@ Reemplazan a `MINER_TOKEN` (BC-57). Cada pedido al gateway lleva:
 - Si la hora está corrida más de 30 s (`VENTANA_PEDIDO`), se rechaza: un pedido grabado no se puede volver a mandar después.
 - El `minero` del cuerpo tiene que ser el de `X-Minero`. Firma mala: 401; minero no aprobado en `cuentas`: 403, y queda pedido en `altas:pendientes` con el `alias` de su `/hello` (si lo anotó antes otro pedido, el `/hello` le corrige el nombre). Ante un 403 el minero repite sólo el `/hello` hasta que lo aprueben.
 - El panel del organizador usa lo mismo, con `X-Organizador` en vez de `X-Minero` (`quien=ORGANIZADOR`).
+- **Antes de leer el cuerpo (BC-94):** el gateway mira la cuenta y la hora de los encabezados (`problema_de_cabeceras`) y, si no sirven, contesta 401 sin leer nada. Un cuerpo de más de 64 KB (`CUERPO_MAXIMO`; el más grande de verdad, un `/results` con 64 shares, pesa un par de KB) da **413**: por `Content-Length` sin leerlo, o al pasarse mientras llega. La firma cubre el cuerpo, así que verificarla (y anotar el pedido de alta de un minero nuevo) necesita leerlo, siempre con ese tope. El gateway no pasa por Traefik (tiene su LoadBalancer, la IP de los mineros): estos topes son los suyos, y no tiene límite de ritmo porque lo que pasa la firma es de un minero.
 
 ## Altas
 
@@ -256,7 +257,7 @@ Un `sin_solucion` no se puede verificar: es el *block withholding attack* de los
 | `cadena` | lista | Los `block_hash` en orden; la posición es la altura y el último es la punta |
 | `bloque:<hash>` | hash | Los campos del bloque (`transactions` en JSON), su `altura` y su `duracion` (segundos desde que se armó la caja, con los rearmados: BC-60 y BC-73) |
 | `saldos` | hash | **Caché** (v3): cuenta → saldo. Lo mueve el consenso con cada bloque; si difiere de la cadena, gana la cadena |
-| `tx:<id>` | hash | Hasta confirmarse: origen, destino, monto, nonce, timestamp, firma, estado y, si se rechazó, motivo. **Confirmada, sólo `estado` y `bloque`** (BC-70): el contenido ya está en `bloque:<hash>` y el backend lo lee de ahí. La coinbase y la participación nacen así |
+| `tx:<id>` | hash | Hasta confirmarse: origen, destino, monto, nonce, timestamp, firma, estado y, si se rechazó, motivo. **Confirmada, sólo `estado` y `bloque`** (BC-70): el contenido ya está en `bloque:<hash>` y el backend lo lee de ahí. La coinbase y la participación nacen así. **Rechazada, vence en `RECHAZADA_GUARDA`** (1 hora, `RECHAZADA_GUARDA_SEGUNDOS` en el NCT; BC-94): le alcanza a la billetera para mostrar el motivo, y las rechazadas no se acumulan en Redis |
 | `cuentas` | hash | **Caché** (v3): cuenta → JSON `{tipo: usuario \| minero \| validador \| organizador, nombre, alta}` (`alta`: el timestamp del acta). Lo escribe sólo el consenso, al confirmar un alta o una baja |
 | `nonces:confirmados` | hash | **Caché** (v3): cuenta → último nonce que está en la cadena; `emision` → la última carga o acta del organizador |
 | `permisos` | hash | **Caché** (v3): clave → prefijo de nombre de los mineros que puede dar de alta y de baja |

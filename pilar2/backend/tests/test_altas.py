@@ -223,11 +223,20 @@ def test_un_acta_mala_no_entra(entorno, tx, error):
 
 
 def test_un_alta_delegada_entra_con_la_firma_de_su_clave(entorno):
-    """El permiso lo controla el NCT contra la cadena; el backend verifica la firma."""
+    """El backend verifica la firma y que la clave tenga permiso (BC-94); el prefijo lo controla el NCT."""
     armar, _, redis = entorno
+    redis.hset(contrato.PERMISOS, CUENTA["escalador"], "minero-cpu-")
     alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True, cadena=cadena_actual())
     assert armar().post("/api/transacciones", json=alta).json() == {"id": alta["id"]}
     assert redis.hget(f"tx:{alta['id']}", "origen") == CUENTA["escalador"]
+
+
+def test_un_alta_delegada_de_una_clave_sin_permiso_da_403_y_no_queda_en_redis(entorno):
+    armar, cola, redis = entorno
+    alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True, cadena=cadena_actual())
+    respuesta = armar().post("/api/transacciones", json=alta)
+    assert (respuesta.status_code, respuesta.json()) == (403, {"error": "clave sin permiso"})
+    assert not redis.exists(f"tx:{alta['id']}") and recibir(cola, 1, segundos=1) == []
 
 
 def test_una_carga_firmada_por_otra_clave_se_rechaza_tambien_suelta(entorno):

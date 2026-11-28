@@ -104,7 +104,8 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
 ---
-# Gateway (8080): recibe mineros externos por su propio LoadBalancer además de Traefik (/salud/gateway) y Prometheus.
+# Gateway: recibe a los mineros de afuera por su propio LoadBalancer, por HTTPS en el 8443 (GKE, BC-105) o por HTTP en
+# el 8080 (k3s), además de Traefik (/salud/gateway) y Prometheus en el 8080.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -117,6 +118,7 @@ spec:
   ingress:
     - ports:
         - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8443 }
 ---
 # NCT y TrP (8080): Prometheus (/metrics) y Traefik (/salud/nct, /salud/trp en GKE).
 apiVersion: networking.k8s.io/v1

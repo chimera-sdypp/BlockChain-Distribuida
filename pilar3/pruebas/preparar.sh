@@ -37,8 +37,11 @@ url_publica() {
 }
 
 # El gateway, que lista los mineros (GET /mineros; salieron de la API de la app, BC-54): GATEWAY_URL o su LoadBalancer.
+# En GKE publica sólo HTTPS en el 443 con su nombre (BC-105); en k3s, HTTP en el 8081.
+GATEWAY_NOMBRE=${GATEWAY_NOMBRE:-chimera-gateway.duckdns.org}
 url_gateway() {
     if [ -n "${GATEWAY_URL:-}" ]; then echo "${GATEWAY_URL%/}"; return; fi
+    if [ "$(k get svc gateway -o jsonpath='{.spec.ports[0].port}')" = 443 ]; then echo "https://$GATEWAY_NOMBRE"; return; fi
     echo "http://$(k get svc gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):8081"
 }
 

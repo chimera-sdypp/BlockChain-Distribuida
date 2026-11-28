@@ -14,7 +14,7 @@ variable "imagen" {
 }
 
 variable "gateway_url" {
-  description = "URL pública del gateway (su LoadBalancer en GKE, puerto 8081)"
+  description = "URL pública del gateway: https://chimera-gateway.duckdns.org (BC-105)"
   type        = string
 }
 

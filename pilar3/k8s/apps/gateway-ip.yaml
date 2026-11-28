@@ -1,8 +1,13 @@
 # El LoadBalancer del gateway con la IP fija de bootstrap/ (así no cambia al recrear el cluster).
-# IP_GATEWAY lo reemplaza el Pipeline 3 con la IP de la variable GATEWAY_URL.
+# IP_GATEWAY lo reemplaza el Pipeline 3 con la variable GATEWAY_IP.
+# BC-105: en GKE los mineros entran sólo por HTTPS (https://chimera-gateway.duckdns.org, puerto 443 → 8443 del pod,
+# con el certificado del Secret gateway-tls). El 8081 por HTTP del manifiesto de k3s no se publica.
 apiVersion: v1
 kind: Service
 metadata:
   name: gateway
 spec:
   loadBalancerIP: IP_GATEWAY
+  ports:
+    - { port: 8081, $patch: delete }
+    - { name: https, port: 443, targetPort: https }

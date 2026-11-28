@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from comun import contrato
-from comun.tests.claves import PRIVADA
+from comun.tests.claves import PRIVADA, cadena_actual
 from minero_cpu.minero import Gateway, Minero
 
 from .conftest import GATEWAY_URL, ORGANIZADOR, PRIVADAS, URL, acta, api, aprobar, dar_de_baja, esperar, firmada, saldo
@@ -26,7 +26,7 @@ from .conftest import GATEWAY_URL, ORGANIZADOR, PRIVADAS, URL, acta, api, aproba
 def panel(metodo, ruta, datos=None, privada=ORGANIZADOR):
     """Un pedido al panel (lo que no va a la cadena: rechazar y reactivar), firmado con X-Organizador."""
     cuerpo = json.dumps(datos).encode() if datos is not None else b""
-    encabezados = contrato.firmar_pedido(privada, metodo, ruta, cuerpo, quien=contrato.ORGANIZADOR)
+    encabezados = contrato.firmar_pedido(privada, metodo, ruta, cuerpo, quien=contrato.ORGANIZADOR, cadena=cadena_actual())
     pedido = urllib.request.Request(URL + ruta, data=cuerpo or None, method=metodo,
                                     headers={"Content-Type": "application/json", **encabezados})
     try:
@@ -47,7 +47,7 @@ def con_el_organizador():
 def pedir_alta(tipo="usuario"):
     privada, cuenta = contrato.nueva_clave()
     nombre = f"alta-{uuid.uuid4().hex[:6]}"
-    codigo, cuerpo = api("POST", "/api/altas", contrato.pedido_alta(privada, tipo, nombre))
+    codigo, cuerpo = api("POST", "/api/altas", contrato.pedido_alta(privada, tipo, nombre, cadena=cadena_actual()))
     assert codigo == 202, cuerpo
     return privada, cuenta, nombre
 
@@ -62,7 +62,7 @@ def test_un_usuario_aprobado_con_un_acta_y_saldo_puede_transferir(minero):
     assert api("GET", f"/api/cuentas/{cuenta}")[1]["aprobada"] is True
     assert cuenta not in [p["cuenta"] for p in panel("GET", "/api/organizador/altas")[1]["pendientes"]]
     ahora = int(time.time())
-    acta(lambda n: contrato.carga(ORGANIZADOR, n, cuenta, 50, ahora), esperar_bloque=True)
+    acta(lambda n: contrato.carga(ORGANIZADOR, n, cuenta, 50, ahora, cadena=cadena_actual()), esperar_bloque=True)
     assert saldo(cuenta) == 50
     transferencia, _ = esperar(api("POST", "/api/transacciones", firmada(cuenta, "bob", 5))[1]["id"], limite=240)
     assert transferencia["estado"] == "confirmada", transferencia
@@ -72,8 +72,8 @@ def test_un_usuario_aprobado_con_un_acta_y_saldo_puede_transferir(minero):
 def test_un_acta_o_una_carga_firmada_por_otra_clave_no_entra():
     _, cuenta, _ = pedir_alta()
     ahora = int(time.time())
-    for trucha in (contrato.carga(PRIVADA["alice"], 1, cuenta, 1000, ahora),
-                   contrato.alta(PRIVADA["alice"], 1, cuenta, "usuario", "trucha", ahora)):
+    for trucha in (contrato.carga(PRIVADA["alice"], 1, cuenta, 1000, ahora, cadena=cadena_actual()),
+                   contrato.alta(PRIVADA["alice"], 1, cuenta, "usuario", "trucha", ahora, cadena=cadena_actual())):
         codigo, cuerpo = api("POST", "/api/transacciones", trucha)
         assert codigo == 400 and "organizador" in cuerpo["errores"][0]
     assert panel("POST", "/api/organizador/rechazar", {"cuenta": cuenta})[0] == 200

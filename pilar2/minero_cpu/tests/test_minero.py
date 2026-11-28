@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual
 from minero_cpu import busqueda
 from minero_cpu.busqueda import Buscador
 from minero_cpu.minero import ClaveRechazada, Gateway, Minero, cargar_clave
@@ -118,6 +118,8 @@ class GatewayFalso:
         self.rechazados = []      # las rutas que contestó con 403
         self.cortar = False
         self.presentarse = False  # lo que contesta el keep-alive, hasta el próximo /bench
+        self.genesis = cadena_actual()  # v4: lo que contesta GET /cadena y contra lo que verifica las firmas
+        self.lecturas_cadena = 0
         falso = self
 
         class Manejador(BaseHTTPRequestHandler):
@@ -132,7 +134,7 @@ class GatewayFalso:
                 self.wfile.write(datos)
 
             def _firmado(self, metodo, cuerpo):
-                minero, motivo = contrato.verificar_pedido(self.headers, metodo, self.path, cuerpo)
+                minero, motivo = contrato.verificar_pedido(self.headers, metodo, self.path, cuerpo, cadena=falso.genesis)
                 if motivo:
                     self._responder(401, {"error": motivo})
                     return None
@@ -143,6 +145,9 @@ class GatewayFalso:
                 return minero
 
             def do_GET(self):
+                if self.path == "/cadena":
+                    falso.lecturas_cadena += 1
+                    return self._responder(200, {"genesis": falso.genesis})
                 if not self._firmado("GET", b""):
                     return
                 falso.recibido.append((self.path, None))
@@ -293,6 +298,17 @@ def test_una_firma_que_el_gateway_no_acepta_corta_el_minero(armar, monkeypatch):
         minero.presentarse()
 
 
+def test_si_la_cadena_se_reinicia_relee_el_genesis_y_repite_el_pedido(armar):
+    """v4: lo firmado lleva el génesis. Con la cadena nueva la firma vieja da 401: el minero lo relee y sigue."""
+    falso, minero = armar()
+    minero.presentarse()
+    assert falso.lecturas_cadena == 1
+    falso.genesis = "ab" * 16  # la cadena se reinició
+    minero.presentarse()
+    assert falso.lecturas_cadena == 2 and minero.gateway.cadena == "ab" * 16
+    assert len(falso.de("/hello")) == 2
+
+
 def test_sin_aprobar_espera_y_sigue_cuando_lo_aprueban(armar):
     falso, minero = armar(aprobados=())
     threading.Timer(0.5, lambda: falso.aprobados.add(CUENTA["minero"])).start()
@@ -305,6 +321,8 @@ def test_la_clave_se_genera_una_vez_y_se_guarda_con_permisos_600(tmp_path):
     primera = cargar_clave("cpu-1", archivo=archivo)
     assert archivo.stat().st_mode & 0o777 == 0o600
     assert cargar_clave("cpu-1", archivo=archivo) == primera
+    # BC-95: la pública queda al lado (en una VM la publica arrancar.sh; la privada no sale).
+    assert (tmp_path / "claves" / "minero.clave.pub").read_text().strip() == contrato.clave_publica(primera)
 
 
 def test_la_clave_de_la_semilla_depende_del_alias():

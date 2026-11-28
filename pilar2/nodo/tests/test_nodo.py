@@ -6,7 +6,7 @@ import pytest
 
 from comun import contrato
 from comun.tests.cadena import Cadena, remina
-from comun.tests.claves import CUENTA, FECHA, PRIVADA, carga, firmada
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, carga, firmada, cadena_actual
 from nodo.almacen import Almacen
 from nodo.app import Nodo
 
@@ -51,7 +51,7 @@ class FuenteFalsa:
 def cadena():
     c = Cadena()
     c.agregar([firmada("alice", "bob", 30), carga(1, "carol", 7)])
-    c.agregar([contrato.alta(ORG, 2, CUENTA["carol"], "usuario", "carol", FECHA)])
+    c.agregar([contrato.alta(ORG, 2, CUENTA["carol"], "usuario", "carol", FECHA, cadena=cadena_actual())])
     return c
 
 
@@ -85,7 +85,7 @@ def test_un_bloque_con_un_saldo_inventado_se_rechaza_y_no_se_sigue(cadena, tmp_p
     nodo.sincronizar()
     tocado = cadena.estado.copia()
     tocado.sumar(CUENTA["carol"], 10**6)  # el operador hizo HINCRBY saldos y el NCT armó el bloque con eso
-    malo = cadena.armar([contrato.transaccion(PRIVADA["carol"], CUENTA["alice"], 500_000, 1, FECHA)],
+    malo = cadena.armar([contrato.transaccion(PRIVADA["carol"], CUENTA["alice"], 500_000, 1, FECHA, cadena=cadena_actual())],
                         raiz_estado=tocado.raiz())
     fuente.bloques_servidos = cadena.bloques + [malo]
     assert nodo.sincronizar() == 0 and nodo.estado.altura == 2
@@ -101,7 +101,7 @@ def test_una_historia_reescrita_es_un_conflicto(cadena, tmp_path):
     # El operador saca la transferencia del bloque 1 y remina todo lo que sigue.
     otra = Cadena()
     otra.agregar([carga(1, "carol", 7)])
-    otra.agregar([contrato.alta(ORG, 2, CUENTA["carol"], "usuario", "carol", FECHA)])
+    otra.agregar([contrato.alta(ORG, 2, CUENTA["carol"], "usuario", "carol", FECHA, cadena=cadena_actual())])
     fuente.bloques_servidos = otra.bloques
     assert nodo.sincronizar() == 0
     assert nodo.conflicto == {"altura": 2, "mia": cadena.estado.punta, "fuente": otra.estado.punta}
@@ -133,7 +133,7 @@ def test_la_atestacion_va_firmada_por_el_nodo(cadena, tmp_path):
 # ── Validadores (BC-86) ──
 
 def con_validadores(cadena, *nombres):
-    cadena.agregar([contrato.alta(ORG, 3 + i, CUENTA[n], "validador", n, FECHA) for i, n in enumerate(nombres)])
+    cadena.agregar([contrato.alta(ORG, 3 + i, CUENTA[n], "validador", n, FECHA, cadena=cadena_actual()) for i, n in enumerate(nombres)])
 
 
 def test_un_nodo_que_no_es_validador_en_la_cadena_no_firma(cadena, tmp_path):

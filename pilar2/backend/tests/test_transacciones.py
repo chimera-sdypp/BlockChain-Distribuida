@@ -9,7 +9,7 @@ from prometheus_client.parser import text_string_to_metric_families
 
 from backend import app as backend
 from comun import contrato, web
-from comun.tests.claves import CUENTA, FECHA, PRIVADA, Billetera, carga, firmada
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, Billetera, carga, firmada, cadena_actual
 
 COLA = "transacciones-prueba"
 
@@ -47,6 +47,12 @@ class RedisFalso:
 
     def hget(self, clave, campo):
         return self.hashes.get(clave, {}).get(campo)
+
+    def lindex(self, clave, indice):
+        """v4: el génesis de la cadena de prueba, contra el que se verifican las firmas."""
+        if self.falla:
+            raise redis.ConnectionError("Redis caído")
+        return cadena_actual() if (clave, indice) == ("cadena", 0) else None
 
     def delete(self, *claves):
         for clave in claves:
@@ -114,7 +120,7 @@ def test_post_firmado_encola_y_queda_recibida():
     respuesta = cliente(redis, publicador).post("/api/transacciones", json=tx)
 
     assert respuesta.status_code == 202
-    assert respuesta.json() == {"id": contrato.id_transaccion(tx)}
+    assert respuesta.json() == {"id": contrato.id_transaccion(tx, cadena=cadena_actual())}
     [(cola, mensaje)] = publicador.publicados
     assert cola == COLA and mensaje == tx
     guardada = redis.hashes[f"tx:{tx['id']}"]
@@ -168,7 +174,7 @@ def cambiada(**cambios):
     (cambiada(firma="ab" * 64), "firma"),
     (cambiada(monto=11), "firma"),                       # el monto se cambió después de firmar
     (cambiada(destino=CUENTA["carol"]), "firma"),
-    (contrato.transaccion(PRIVADA["bob"], CUENTA["carol"], 10, 1) | {"origen": CUENTA["alice"]}, "firma"),
+    (contrato.transaccion(PRIVADA["bob"], CUENTA["carol"], 10, 1, cadena=cadena_actual()) | {"origen": CUENTA["alice"]}, "firma"),
     (cambiada(id="0" * 32), "id"),
     (firmada("alice", "alice", 10), "distintos"),
     ([firmada("alice", "bob", 10)], "objeto"),
@@ -194,7 +200,7 @@ def test_una_carga_del_organizador_entra_con_su_id():
 
 
 def test_una_carga_firmada_por_otro_o_sin_organizador_da_400():
-    falsa = contrato.carga(PRIVADA["alice"], 1, CUENTA["alice"], 500, 1793836800)
+    falsa = contrato.carga(PRIVADA["alice"], 1, CUENTA["alice"], 500, 1793836800, cadena=cadena_actual())
     assert cliente().post("/api/transacciones", json=falsa).status_code == 400
     respuesta = cliente(organizador="").post("/api/transacciones", json=carga(1, "alice", 500))
     assert respuesta.status_code == 400
@@ -389,7 +395,7 @@ def test_lote_con_un_origen_sin_alta_da_403_con_su_indice_y_no_guarda_ninguna():
 
 def alta_delegada(clave):
     """Un alta de minero firmada por `clave` con permiso delegado (como las del escalador, BC-79)."""
-    return contrato.alta(PRIVADA[clave], 1, CUENTA["vm-1"], "minero", "minero-cpu-1", FECHA, delegada=True)
+    return contrato.alta(PRIVADA[clave], 1, CUENTA["vm-1"], "minero", "minero-cpu-1", FECHA, delegada=True, cadena=cadena_actual())
 
 
 def test_un_acta_delegada_de_una_clave_sin_permiso_da_403_y_no_guarda_nada():
@@ -414,7 +420,7 @@ def test_un_acta_delegada_de_una_clave_con_permiso_entra_aunque_no_tenga_cuenta(
 
 def test_un_acta_del_organizador_entra_sin_mirar_cuentas_ni_permisos():
     redis, publicador = RedisFalso(aprobadas=()), PublicadorFalso()
-    acta = contrato.alta(PRIVADA["organizador"], 1, CUENTA["nueva"], "usuario", "nueva", FECHA)
+    acta = contrato.alta(PRIVADA["organizador"], 1, CUENTA["nueva"], "usuario", "nueva", FECHA, cadena=cadena_actual())
 
     assert cliente(redis, publicador).post("/api/transacciones", json=acta).status_code == 202
 

@@ -4,6 +4,15 @@ Qué datos viajan entre los servicios. El código está en [`comun/contrato.py`]
 
 **Versión 3** (BC-79, BC-80 y BC-82, epic BC-77): **todo en la cadena**. Las altas, bajas y permisos son transacciones firmadas por el organizador (las [actas](#actas)), cada bloque se compromete con el estado (la [raíz de estado](#estado-y-raíz-de-estado)) y el pago de cada época con la lista de shares que lo explica ([shares publicados](#shares-publicados)). `saldos`, `cuentas`, `nonces:confirmados` y `permisos` de Redis son **caché**: la verdad es la cadena, y si difieren gana la cadena. Cambió el formato de la cadena: con la v3 se arranca de un génesis nuevo.
 
+**Versión 4** (BC-95, BC-96, epic BC-90, correcciones de la devolución): **lo firmado vale en una sola cadena** y tres reglas más que verifican los nodos y la billetera:
+
+- **El hash del génesis va adelante de todo lo que se firma** (transferencias, cargas, actas, pedidos al gateway y al panel, pedidos de alta). Al reiniciar la cadena los nonces vuelven a 1: sin esto, lo firmado para la anterior (público en `/api/bloques`) se podía volver a mandar en orden, cargas del organizador incluidas. Los clientes lo leen de `GET /api/cadena` (el backend) o `GET /cadena` (el gateway). Ver [La cadena de lo firmado](#la-cadena-de-lo-firmado-v4).
+- **Piso de prefijo:** el génesis trae `reglas` con `prefijo_minimo`; un bloque con menos no vale. Un nodo que arranca de cero ya no acepta una historia reminada con prefijo de 1.
+- **El pago de una época nunca suma más que el fondo**, aunque no se consiga la lista de shares.
+- **Una baja del organizador dura:** la cuenta queda **vetada** (con hoja propia en la raíz de estado) y un alta delegada no la reactiva; sólo el organizador. Además, ninguna privada pasa por Redis: la del escalador viene de un Secret y cada VM genera la suya (BC-95).
+
+Cambió lo que se firma y la raíz de estado: con la v4 se arranca de un génesis nuevo.
+
 La v2 (BC-53, el contrato del 13/11) trajo las cuentas con clave Ed25519, las transacciones firmadas con nonce por cuenta, la emisión, la coinbase adentro de la raíz y la participación por shares; sigue todo igual.
 
 ## Cuenta
@@ -19,12 +28,12 @@ La v2 (BC-53, el contrato del 13/11) trajo las cuentas con clave Ed25519, las tr
 
 | Campo | Tipo | Quién lo pone |
 |---|---|---|
-| `id` | MD5 en hex de `origen:destino:monto:nonce:timestamp:firma` (`id_transaccion`) | se calcula |
+| `id` | MD5 en hex de `génesis:origen:destino:monto:nonce:timestamp:firma` (`id_transaccion`) | se calcula |
 | `origen`, `destino` | cuenta | cliente |
 | `monto` | entero de 1 a 10^12 | cliente |
 | `nonce` | entero desde 1: el número de transacción de la cuenta origen | cliente |
 | `timestamp` | entero, segundos Unix | cliente (va firmado) |
-| `firma` | Ed25519 del origen sobre `origen:destino:monto:nonce:timestamp`, 128 caracteres en hex | cliente |
+| `firma` | Ed25519 del origen sobre `génesis:origen:destino:monto:nonce:timestamp` (v4: `génesis` es el hash del bloque 0), 128 caracteres en hex | cliente |
 | `datos` | texto; vacío en las transferencias (no va firmado, así que no puede llevar nada). Lo usan las actas, el génesis y los shares de la época | — |
 
 - **Formato y firma** (backend, `validar_transaccion_firmada`): campos completos, origen ≠ destino, la firma es del origen y, si viene `id`, es el hash. Si no, 400 con los errores. La misma transacción reenviada da el mismo id: 409 (BC-56).
@@ -34,7 +43,23 @@ La v2 (BC-53, el contrato del 13/11) trajo las cuentas con clave Ed25519, las tr
 - **Estados** en `tx:<id>`: `recibida` → `pendiente` → `confirmada` (con su bloque), o `rechazada` con el motivo: `firma inválida`, `cuenta no aprobada`, `nonce repetido`, `nonce salteado` o `saldo insuficiente`. Una rechazada vence a la hora (BC-94): después, `GET /api/transacciones/<id>` da 404.
 - El destino puede no existir: se lo crea con saldo 0.
 - El monto es entero para que el texto del bloque salga igual en Python y en C++. El tope es para que los saldos no desborden el entero de 64 bits de Redis (`HINCRBY`).
-- `transaccion(privada, destino, monto, nonce)` arma y firma una: es lo que hace la herramienta de claves (BC-55).
+- `transaccion(privada, destino, monto, nonce, cadena=<génesis>)` arma y firma una: es lo que hace la herramienta de claves (BC-55).
+
+## La cadena de lo firmado (v4)
+
+El id de una cadena es el `block_hash` de su génesis (32 caracteres hex). Va **adelante de todo lo que se firma** (BC-99):
+
+| Qué | Mensaje firmado |
+|---|---|
+| Transferencia y carga | `génesis:origen:destino:monto:nonce:timestamp` (`mensaje_transaccion`) |
+| Acta (alta, baja, permiso) | `génesis:tipo:origen:destino:nonce:timestamp:datos` (`mensaje_acta`) |
+| Pedido al gateway o al panel | `génesis\nMÉTODO\nruta\ntiempo\n` + cuerpo (`mensaje_pedido`) |
+| Pedido de alta | `alta:génesis:tipo:cuenta:nombre` (`mensaje_alta`) |
+
+- El génesis tiene timestamp: cada reinicio da otro hash, aunque los saldos y el organizador sean los mismos. Lo firmado para una cadena no verifica en otra (`firma: no es la del origen`), así que reenviar en orden lo firmado antes del reinicio no sirve.
+- Las firmas de los validadores (`firma:<altura>:<block_hash>`) y las atestaciones de los nodos ya estaban atadas a una cadena por el hash del bloque.
+- **Dónde se lee:** `GET /api/cadena` → `{genesis, organizador, prefijo_minimo, timestamp}` (backend) y `GET /cadena` → `{genesis}` (gateway, sin firma). El minero lo lee al arrancar y, si un pedido da 401, lo relee: si cambió (la cadena se reinició) repite el pedido. La billetera lo muestra y, si cambió, verifica desde cero.
+- Sin génesis (la cadena todavía no se cargó) el backend y el gateway rechazan todo lo firmado.
 
 ## Emisión
 
@@ -48,6 +73,7 @@ Las transacciones con origen `emision` crean plata. Cada una tiene un id fijo, q
 | Participación | `part-<época>-<minero>` | 0 | vacía | el NCT, al cerrar la época | está en el primer bloque de la época siguiente, después de `shares-<época>`, y es el reparto de esa lista (BC-63, BC-82) |
 | Organizador (v3) | `organizador-<cuenta>` | 0 | vacía | el NCT, en el bloque 0 | es la primera del génesis: deja la clave del organizador en la cadena |
 | Shares (v3) | `shares-<época>` | 0 | vacía | el NCT, al cerrar la época | `datos` = `<fondo>:<raíz de la lista de shares>`; monto 0 |
+| Reglas (v4) | `reglas` | 0 | vacía | el NCT, en el bloque 0 | `datos` = `prefijo_minimo:<n>` (de 1 a 32, `PREFIJO_MINIMO` del NCT, 6 por defecto); una sola, después del organizador |
 
 Las del génesis llevan `datos` = `usuario:<nombre>`: además del saldo, le dan el alta a la cuenta.
 
@@ -58,12 +84,13 @@ Las decisiones del organizador son transacciones firmadas que entran en los bloq
 | Acta | `id` | `destino` | `datos` | Efecto al confirmarse el bloque |
 |---|---|---|---|---|
 | Alta | `alta-<n>` | la cuenta | `<tipo>:<nombre>` (usuario, minero o validador) | la cuenta entra en `cuentas` con `{tipo, nombre, alta: timestamp}`; sale de los pedidos |
-| Baja | `baja-<n>` | la cuenta | el motivo (hasta 100 caracteres, sin «\|») | la cuenta sale de `cuentas` (y de `suspendidos`); el saldo queda |
+| Baja | `baja-<n>` | la cuenta | el motivo (hasta 100 caracteres, sin «\|») | la cuenta sale de `cuentas` (y de `suspendidos`); el saldo queda. v4: si la da el organizador, la cuenta queda **vetada** |
 | Permiso | `permiso-<n>` | otra clave | un prefijo de nombre, o vacío para revocarlo | esa clave puede dar de alta y de baja **sólo mineros** cuyo nombre empieza con el prefijo |
 
 - `origen` = `emision`, `monto` = 0, `nonce` = n, el mismo número de las cargas (una sola secuencia del organizador: `nonces[emision]`).
-- La firma es del organizador sobre `<tipo>:<origen>:<destino>:<nonce>:<timestamp>:<datos>` (`mensaje_acta`): el tipo adelante, así la firma de una carga no sirve como alta.
+- La firma es del organizador sobre `<génesis>:<tipo>:<origen>:<destino>:<nonce>:<timestamp>:<datos>` (`mensaje_acta`): el tipo adelante, así la firma de una carga no sirve como alta.
 - **Altas y bajas delegadas:** las firma la clave que tiene el permiso (el escalador, para sus VMs `minero-cpu-*`), con `origen` = esa clave, `id` = `alta-<clave>-<n>` y su propio nonce. Así el escalador no puede aprobar usuarios ni cargar saldo.
+- **Vetadas (v4, BC-95):** una baja del organizador deja la cuenta en `vetadas`. Un alta delegada de una cuenta vetada se rechaza (`la cuenta tiene una baja del organizador: sólo él la puede volver a dar de alta`); un alta del organizador la reactiva y la saca de `vetadas`. Una baja delegada (la VM se borró) no veta. Hasta la v3 el escalador veía que la clave de su VM no estaba en `cuentas` y la volvía a dar de alta: la baja del organizador no duraba.
 - El backend valida formato y firma (`validar_acta`, por `POST /api/transacciones`) y, en una delegada, que la clave esté en `permisos` (si no, **403** `{"error": "clave sin permiso"}`, sin guardar nada; BC-94); el NCT, el nonce y las reglas que dependen del estado (`estado.problema_de_acta`): el prefijo del permiso, que el organizador no se dé de alta ni de baja.
 - Una cuenta queda aprobada **cuando el bloque se confirma**. Mientras tanto, un alta validada queda en `altas:en_camino`: el gateway ya deja minar a ese minero, así una VM nueva (o el único minero) puede minar el bloque que trae su propia alta.
 - Las suspensiones del gateway (BC-75) siguen fuera de la cadena: son operativas. La baja que confirma el organizador, sí va.
@@ -72,8 +99,8 @@ Las decisiones del organizador son transacciones firmadas que entran en los bloq
 
 El estado sale de la cadena (BC-80): [`comun/estado.py`](comun/estado.py) es un solo código que decide qué estado resulta de una cadena, y lo usan el NCT, la auditoría, los nodos verificadores y la herramienta de claves.
 
-- **Estado:** saldo, nonce y tipo de cada cuenta, los permisos y la clave del organizador. Las transacciones se aplican en orden; una que no cumple las reglas invalida el bloque.
-- **Hojas:** una por cuenta con algo, `cuenta:tipo:saldo:nonce` (tipo `-` si no tiene alta; `emision` lleva el nonce del organizador), y una por permiso, `permiso:<clave>:<prefijo>`, ordenadas.
+- **Estado:** saldo, nonce y tipo de cada cuenta, los permisos, las cuentas vetadas (v4), la clave del organizador, el hash del génesis y el piso de prefijo. Las transacciones se aplican en orden; una que no cumple las reglas invalida el bloque.
+- **Hojas:** una por cuenta con algo, `cuenta:tipo:saldo:nonce` (tipo `-` si no tiene alta, `vetada` si no tiene alta y el organizador le dio de baja; `emision` lleva el nonce del organizador), y una por permiso, `permiso:<clave>:<prefijo>`, ordenadas.
 - **Árbol de Merkle:** hoja = MD5(`h:` + texto), nodo = MD5(`n:` + izquierda + derecha); un nodo sin hermano sube igual. Sin hojas, 32 ceros.
 - **La raíz de estado del bloque N es la del estado al cerrar el bloque N − 1:** la coinbase es de cada minero, y la del «después» cambiaría por minero. Así es la misma para todos.
 - `GET /api/prueba/<cuenta>` da la hoja y la rama de una cuenta sobre el estado de la punta (la raíz que va a llevar el bloque siguiente): una billetera la compara con la que calculó ella.
@@ -97,8 +124,9 @@ block_hash      = MD5(texto + nonce)                    (nonce en decimal, enter
 
 - `texto_para(tarea, minero)` arma ese texto; la tarea necesita `previous_hash`, `timestamp`, `altura`, `prefijo`, `transacciones` y `raiz_estado`. Con dos campos separados el texto pasaría a 110 caracteres y, con el midstate del minero CUDA, cada nonce costaría dos bloques de MD5 (la mitad del hashrate): por eso las dos raíces van juntas en una. Como la coinbase está en la raíz, **cada minero mina un texto distinto**: el nonce de uno no le sirve a otro, así que una solución no se puede robar.
 - Los mineros siguen recibiendo el texto en `bloque` y le concatenan el nonce; no cambian. Mide siempre 77 caracteres (el minero CUDA acepta hasta 120).
-- Un bloque es válido si `block_hash` empieza con el prefijo, `previous_hash` es la punta de la cadena y la primera transacción es la coinbase de quien mandó el nonce.
-- **Génesis:** `previous_hash` en 32 ceros, una transacción `genesis-<cuenta>` por cada saldo inicial, sin coinbase, nonce 0 y sin prefijo (no se mina). En la red no trae saldos: todo entra por cargas (BC-58); los saldos iniciales quedan para los tests.
+- Un bloque es válido si `block_hash` empieza con el prefijo, el prefijo tiene al menos el piso de la cadena (v4), `previous_hash` es la punta de la cadena y la primera transacción es la coinbase de quien mandó el nonce.
+- **Génesis:** `previous_hash` en 32 ceros, `organizador-<cuenta>`, `reglas` (v4: el piso de prefijo), una transacción `genesis-<cuenta>` por cada saldo inicial, sin coinbase, nonce 0 y sin prefijo (no se mina). Su hash es el id de la cadena.
+- **Piso de prefijo (v4, BC-97):** el que verifica exige `max(prefijo_minimo del génesis, el suyo)` (`Reglas.prefijo_minimo`, `PREFIJO_MINIMO` de un nodo). El TrP nunca elige menos, ni sin mineros ni en la bajada de emergencia: si no hay potencia para el piso, la tarea espera. 6 caracteres son 16^6 ≈ 16,8 millones de MD5: ~7 ms en la RTX 4060 y ~2 s en un minero CPU de 8 MH/s. El piso no impide que el operador remine con prefijo ≥ piso (cuesta más, no es imposible): eso lo frenan los nodos que ya tienen la cadena y los validadores (BC-86). En la red no trae saldos: todo entra por cargas (BC-58); los saldos iniciales quedan para los tests.
 
 ## Recompensa
 
@@ -116,7 +144,7 @@ El pago de cada época se puede recalcular desde afuera (BC-82). Hasta la v2, el
 - **Lista:** `minero:shares:racha` de cada minero con shares en la época, ordenados (`lista_shares`). Su raíz es el MD5 de la lista unida por «|» (`raiz_shares`).
 - **En la cadena:** el primer bloque de la época siguiente trae `shares-<época>` con `datos` = `<fondo>:<raíz>`, antes de los `part-<época>-<minero>`. Si la época no tuvo shares, no hay ni lista ni pagos.
 - **Publicada:** `GET /api/epocas/<n>` da el fondo, la lista, el detalle (con el monto de cada uno) y la raíz. Queda en `epoca:<n>`.
-- **Quien verifica** (`estado.aplicar_bloque` con `Reglas.shares`): que la lista publicada dé la raíz de la cadena, que el fondo sea `FONDO_EPOCA`, que cada racha salga de las listas de las épocas anteriores y que los pagos sean exactamente `repartir(fondo, shares, rachas)`. Sin la lista, queda un aviso.
+- **Quien verifica** (`estado.aplicar_bloque` con `Reglas.shares`): que la lista publicada dé la raíz de la cadena, que el fondo sea `FONDO_EPOCA`, que cada racha salga de las listas de las épocas anteriores y que los pagos sean exactamente `repartir(fondo, shares, rachas)`. **Siempre (v4, BC-98):** que los pagos sumen como mucho el fondo, sean positivos, de mineros válidos y sin repetir. Sin la lista queda un aviso, pero sólo por el reparto entre los mineros: el total igual se controla.
 - **El minero** suma los shares que le aceptó el gateway en cada época (`/results` y `/keepalive` contestan cuántos) y, cuando le llega un rango de una época posterior, pregunta `GET /epocas/<n>` al gateway: si en la lista publicada le contaron menos, lo deja en el log.
 
 ## Pedidos firmados de los mineros
@@ -127,7 +155,7 @@ Reemplazan a `MINER_TOKEN` (BC-57). Cada pedido al gateway lleva:
 |---|---|
 | `X-Minero` | la cuenta del minero |
 | `X-Tiempo` | segundos Unix |
-| `X-Firma` | Ed25519 sobre `MÉTODO\nruta\ntiempo\n` seguido del cuerpo tal cual va (bytes). La ruta lleva la query, como en el pedido |
+| `X-Firma` | Ed25519 sobre `génesis\nMÉTODO\nruta\ntiempo\n` seguido del cuerpo tal cual va (bytes). La ruta lleva la query, como en el pedido; `génesis`, el hash del bloque 0 (v4) |
 
 - `firmar_pedido` arma los encabezados y `verificar_pedido` los controla.
 - Si la hora está corrida más de 30 s (`VENTANA_PEDIDO`), se rechaza: un pedido grabado no se puede volver a mandar después.
@@ -139,8 +167,8 @@ Reemplazan a `MINER_TOKEN` (BC-57). Cada pedido al gateway lleva:
 
 La red es privada (BC-58): sólo opera quien aprueba el organizador, como los validadores de confianza de XRP Ledger o las identidades que admite una red permisionada de Hyperledger Fabric. Desde la v3 cada decisión queda firmada en la cadena, como los permisos en la cadena de Hyperledger Besu: la lectura es pública y cualquiera la verifica.
 
-- **Pedido** (`POST /api/altas`, público): `{tipo: usuario | minero, clave_publica, nombre, firma}`, con la firma de `clave_publica` sobre `alta:<tipo>:<clave_publica>:<nombre>` (`pedido_alta`, `validar_pedido_alta`). Demuestra que quien pide tiene la privada. Queda en `altas:pendientes`, con un tope de 1000 pedidos (`ALTAS_MAXIMAS`). Un minero firmado y sin aprobar queda pedido solo, al conectarse al gateway.
-- **Aprobar y dar de baja** (v3): un `alta-<n>` o `baja-<n>` firmado por el organizador, que se manda por `POST /api/transacciones` como una carga (`python -m claves aprobar | baja`). A un usuario se le puede cargar saldo en el mismo paso (`--carga`). **Alta repetida (BC-93):** el alta de una cuenta que ya está en la cadena, o con otra alta validada en camino, se rechaza (`la cuenta ya tiene alta`): en las reglas de la cadena (`problema_de_acta`, también en el verificador de la billetera) y, en el NCT, en el mismo Lua que la valida, así dos altas seguidas no pasan aunque las validen dos réplicas. La carga que la acompaña vale sola, así que la cuidan los clientes: `/api/organizador/altas` no lista los pedidos con el alta en camino, la billetera muestra «aprobado, esperando bloque» y `claves aprobar` no manda nada si la cuenta ya está aprobada o en camino. Después de una baja se puede volver a dar de alta (el escalador reusa la clave de cada VM). Dado de baja, el gateway deja de atender a ese minero y el NCT rechaza las transferencias de ese usuario (`cuenta no aprobada`); el saldo queda donde está. Una transferencia que ya estaba validada y todavía no entró en un bloque sale de la caja: los nodos rechazarían el bloque.
+- **Pedido** (`POST /api/altas`, público): `{tipo: usuario | minero, clave_publica, nombre, firma}`, con la firma de `clave_publica` sobre `alta:<génesis>:<tipo>:<clave_publica>:<nombre>` (`pedido_alta`, `validar_pedido_alta`). Demuestra que quien pide tiene la privada. Queda en `altas:pendientes`, con un tope de 1000 pedidos (`ALTAS_MAXIMAS`). Un minero firmado y sin aprobar queda pedido solo, al conectarse al gateway.
+- **Aprobar y dar de baja** (v3): un `alta-<n>` o `baja-<n>` firmado por el organizador, que se manda por `POST /api/transacciones` como una carga (`python -m claves aprobar | baja`). A un usuario se le puede cargar saldo en el mismo paso (`--carga`). **Alta repetida (BC-93):** el alta de una cuenta que ya está en la cadena, o con otra alta validada en camino, se rechaza (`la cuenta ya tiene alta`): en las reglas de la cadena (`problema_de_acta`, también en el verificador de la billetera) y, en el NCT, en el mismo Lua que la valida, así dos altas seguidas no pasan aunque las validen dos réplicas. La carga que la acompaña vale sola, así que la cuidan los clientes: `/api/organizador/altas` no lista los pedidos con el alta en camino, la billetera muestra «aprobado, esperando bloque» y `claves aprobar` no manda nada si la cuenta ya está aprobada o en camino. Después de una baja el organizador puede volver a dar de alta; el escalador, sólo después de su propia baja (una del organizador veta la cuenta, v4). Dado de baja, el gateway deja de atender a ese minero y el NCT rechaza las transferencias de ese usuario (`cuenta no aprobada`); el saldo queda donde está. Una transferencia que ya estaba validada y todavía no entró en un bloque sale de la caja: los nodos rechazarían el bloque.
 - **Lectura pública:** `GET /api/cuentas`, las cuentas que están en la cadena, con su saldo (la cadena ya es pública).
 - **Lecturas y pedidos firmados** (`/api/organizador/*`, con `X-Organizador`): los pedidos de alta pendientes (`GET /api/organizador/altas`) y los mineros suspendidos con su evidencia (`GET /api/organizador/suspendidos`) son datos de operación del organizador, no de la cadena: sólo los lee él (BC-88). También lo que no va a la cadena: rechazar un pedido y reactivar un suspendido.
 - **Dónde opera el organizador:** en el **modo organizador** de la billetera descargable (BC-87), que firma las actas, las cargas y esos pedidos en el navegador, desde el archivo verificado por su SHA-256 (el backend acepta CORS en esas cuatro rutas del panel), o con `python -m claves`. La sección del organizador sólo aparece cuando el backend acepta la firma de la clave cargada. No hay panel en la nube: la página la serviría quien opera la nube, que podría llevarse la privada (se sacó en BC-88).
@@ -180,7 +208,7 @@ Los avisos de `eventos` los recibe cada suscriptor con su propia cola exclusiva 
 
 ## API del gateway
 
-Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-mineros)); `minero` es su cuenta y tiene que coincidir con `X-Minero`.
+Todos firmados por el minero ([Pedidos firmados](#pedidos-firmados-de-los-mineros)); `minero` es su cuenta y tiene que coincidir con `X-Minero`. Salvo `GET /cadena` (v4), sin firma: `{genesis}`, lo que el minero pone adelante de lo que firma.
 
 - Cada rango entregado es un **préstamo** a nombre del minero, que vence a los `TASK_LEASE_SECONDS` (30). Cada keep-alive del dueño lo renueva; si vence, el gateway vuelve a publicar el rango en `rangos`.
 - Si la tarea del rango ya se cerró (`estado` de `tarea:<id>` distinto de `en_curso`), el keep-alive contesta `cortar: true` y el gateway borra el préstamo: el minero deja el rango sin mandar resultado. Los rangos de tareas cerradas que queden en la cola se descartan al entregarlos.
@@ -233,6 +261,7 @@ Un `sin_solucion` no se puede verificar: es el *block withholding attack* de los
 | `cuentas` | hash | **Caché** (v3): cuenta → JSON `{tipo: usuario \| minero \| validador \| organizador, nombre, alta}` (`alta`: el timestamp del acta). Lo escribe sólo el consenso, al confirmar un alta o una baja |
 | `nonces:confirmados` | hash | **Caché** (v3): cuenta → último nonce que está en la cadena; `emision` → la última carga o acta del organizador |
 | `permisos` | hash | **Caché** (v3): clave → prefijo de nombre de los mineros que puede dar de alta y de baja |
+| `vetadas` | hash | **Caché** (v4): cuenta → 1 si tiene una baja del organizador. Un alta delegada no la reactiva |
 | `altas:en_camino` | hash | cuenta → JSON `{tipo, nombre, tx}`: altas que validó el NCT y todavía no entraron en un bloque. El gateway deja minar a esos mineros |
 | `estado:snapshot` | string | JSON del estado a una altura múltiplo de 100 (`comun/estado.py`): el NCT arranca desde ahí si da la raíz de la cadena |
 | `estado:revision` | string, con vencimiento | Lock: una sola réplica del NCT compara el caché con la cadena al arrancar |
@@ -260,8 +289,6 @@ Un `sin_solucion` no se puede verificar: es el *block withholding attack* de los
 | `prestamo_de:<cuenta>` | string | El préstamo vivo de cada minero (`<tarea>:<rango>`): uno a la vez (BC-74) |
 | `suspendidos` | hash | cuenta → JSON `{nombre, motivo, evidencia, cuando}`: los mineros suspendidos por contestar `sin_solucion` sin buscar (BC-75). Salen al reactivarlos o al confirmar la baja |
 | `medicion:<cuenta>` | lista | Los últimos 20 préstamos terminados de cada minero, en JSON: trabajo (shares × 16^(p−1)), segundos, shares, shares esperados según su bench y si llegó al tope (BC-74) |
-| `escalador:claves` | hash | nombre de cada VM minero-cpu → su clave privada: el escalador se la genera, le da un alta delegada y se la pasa por metadata (BC-57, BC-79) |
-| `escalador:clave` | string | La privada del escalador (si no viene en `ESCALADOR_CLAVE`): firma las altas y bajas delegadas de sus VMs, con el permiso del organizador |
 | `escalador:vms` | string | Las VMs pedidas cuando el escalador corre con `VMS_ACTIVAS=0` (simuladas); con VMs de verdad, la cantidad está en el state de OpenTofu |
 
 ## Ajuste de dificultad (BC-60 y BC-73)
@@ -273,8 +300,9 @@ El TrP elige el largo del prefijo en cada tarea. Desde BC-73 manda el **tiempo r
 | La cadena no tiene bloques minados (o se reinició) | El techo por potencia: el mayor p con 16^p ≤ suma de los bench vivos × `SEGUNDOS_POR_BLOQUE` (60 s), entre 1 y `PREFIJO_BASE` | `inicial` |
 | La potencia viva cambió 4 veces o más desde el último recálculo | El techo con la potencia nueva | `potencia` |
 | Si no | El del último bloque minado, reajustado cada `VENTANA_AJUSTE` (5) bloques por tiempo | `tiempo` |
-| La caja lleva `EMERGENCIA_SEGUNDOS` (240) sin bloque | Un carácter menos por cada 240 s, hasta 1 | `emergencia` |
+| La caja lleva `EMERGENCIA_SEGUNDOS` (240) sin bloque | Un carácter menos por cada 240 s, hasta el piso | `emergencia` |
 | `AJUSTAR_PREFIJO=0` | `PREFIJO_BASE` (pruebas de prefijo fijo) | `fijo` |
+| Cualquiera de los de arriba daba menos que el piso del génesis (v4) | El piso (`prefijo_minimo`): sin potencia para él, la tarea espera a que lleguen mineros | `piso` |
 
 - **Ajuste por tiempo:** se promedia la `duracion` de los últimos 5 bloques y Δp = redondeo(log16(esperado / real)), acotado a ±`AJUSTE_MAXIMO` (1). Como log16(4) = 0,5, sube si los bloques salen 4 veces más rápido (15 s o menos) y baja si tardan 4 veces más (240 s o más). Hasta BC-73 el techo por potencia lo limitaba en cada tarea (`min(tiempo, techo)`): un bench que decía de menos lo frenaba para siempre.
 - **Eventos de potencia:** el cambio cuenta si |log16(P / referencia)| ≥ 0,5. Bajar se recalcula en el acto: para «irse», un minero tiene que dejar de avisar, o sea, de minar. Subir pide al menos un bloque minado desde el último recálculo, así un minero que parpadea no hace ir y venir el prefijo (salvo que antes no hubiera ninguna potencia). La referencia queda en `prefijo:referencia`.
@@ -288,13 +316,13 @@ El TrP elige el largo del prefijo en cada tarea. Desde BC-73 manda el **tiempo r
 
 ## Vector de prueba
 
-[`comun/vector_prueba.json`](comun/vector_prueba.json) (v3, generado con `python -m comun.tests.generar_vector`): un génesis con el organizador, una tarea con 2 transferencias firmadas (alice → bob y bob → carol) y el alta de carol, la raíz de estado del génesis (sus hojas y la prueba de alice), la coinbase del minero, las dos raíces, el texto de ese minero y el nonce que da el prefijo `0000`, y el estado después del bloque. Trae también el texto que le tocaría a alice con la misma tarea, que es otro. Lo prueban `comun/tests/test_contrato.py` y `comun/tests/test_estado.py`, y la billetera del navegador (BC-84).
+[`comun/vector_prueba.json`](comun/vector_prueba.json) (v4, generado con `python -m comun.tests.generar_vector`): un génesis con el organizador y piso 4, su hash (`cadena`), los mensajes firmados de una transferencia y de un alta (con el génesis adelante), una tarea con 2 transferencias firmadas (alice → bob y bob → carol) y el alta de carol, la raíz de estado del génesis (sus hojas y la prueba de alice), la coinbase del minero, las dos raíces, el texto de ese minero y el nonce que da el prefijo `0000`, y el estado después del bloque. Trae también el texto que le tocaría a alice con la misma tarea, que es otro. Lo prueban `comun/tests/test_contrato.py` y `comun/tests/test_estado.py`, y la billetera del navegador (BC-84).
 
 Las claves son las de [`comun/tests/claves.py`](comun/tests/claves.py): la privada de cada una es `sha256("chimera-prueba-<nombre>")`, públicas a propósito. Las firmas dan lo mismo con `openssl pkeyutl -sign -rawin`. En CUDA, con el MD5 del Hit 4:
 
 ```bash
 T=$(python3 -c "import json; v = json.load(open('pilar2/comun/vector_prueba.json')); print(v['texto'] + str(v['nonce']))")
-pilar1/hit4/md5 "$T"    # 0000c33250af265699b3c0721aad3d1b (lo mismo da md5sum y Python)
+pilar1/hit4/md5 "$T"    # lo mismo que md5sum y Python: el block_hash del vector, con prefijo 0000
 ```
 
 ## Modelo de confianza: el operador de la nube (BC-85)
@@ -302,6 +330,10 @@ pilar1/hit4/md5 "$T"    # 0000c33250af265699b3c0721aad3d1b (lo mismo da md5sum y
 | El operador intenta | Lo que lo frena | Quién lo nota |
 |---|---|---|
 | Inventar saldo o aprobar una cuenta escribiendo en Redis | El estado sale de la cadena: el NCT arma cada bloque contra ella y corrige el caché cada 60 s | El NCT (log y `blockchain_estado_divergencias_total`) |
+| Dar de alta mineros con la clave del escalador (v4, BC-95) | No está en Redis: viene de un Secret; las privadas de las VMs no salen de las VMs | — (quien lee el Secret o el pod sí puede: ver el informe) |
+| Reiniciar la cadena y volver a mandar lo firmado antes (v4) | El hash del génesis va en lo firmado: no verifica en la cadena nueva | El backend y los nodos (firma inválida) |
+| Rehacer la historia desde el génesis con prefijo 1 (v4) | El piso de prefijo del génesis | Un nodo nuevo y la billetera (`el piso de la cadena es N`) |
+| Pagar de más una época sin publicar la lista (v4) | Los pagos no suman más que el fondo | Los nodos y la billetera, aunque `/api/epocas` no responda |
 | Editar un bloque guardado | El hash no sale del texto | Cualquier nodo que lo baje |
 | Reescribir la historia (sacar una transferencia y reminar) | Los nodos guardan su copia | Los nodos (`conflicto`) y los validadores, que no firman |
 | Agregar un bloque inválido | Los nodos verifican cada bloque entero | Los nodos (`rechazado`); no se finaliza |

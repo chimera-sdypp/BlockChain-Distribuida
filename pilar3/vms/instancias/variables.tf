@@ -16,10 +16,3 @@ variable "cantidad" {
     error_message = "cantidad tiene que estar entre 0 y 10."
   }
 }
-
-variable "claves" {
-  description = "Nombre de cada VM → su clave privada Ed25519 en hex (la genera y aprueba el escalador, BC-57)"
-  type        = map(string)
-  default     = {}
-  sensitive   = true
-}

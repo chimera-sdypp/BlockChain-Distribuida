@@ -76,7 +76,7 @@ class Rafaga:
             nonce = self.nonces[origen]
             self.cuenta["mandadas"] += 1
             self.por_segundo[int(time.time())][0] += 1
-        tx = contrato.transaccion(self.privadas[i % 3], destino, 1 + i % 5, nonce)
+        tx = contrato.transaccion(self.privadas[i % 3], destino, 1 + i % 5, nonce, cadena=self.backend.cadena())
         for intento in range(4):  # con el primario de Redis muerto el backend contesta 503 unos segundos
             try:
                 codigo, respuesta = self.backend.mandar(tx)

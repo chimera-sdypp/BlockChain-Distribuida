@@ -2,7 +2,8 @@
 
 Corre fuera del cluster (VMs o cualquier máquina): sólo necesita la URL del gateway y su clave.
 Cada pedido va firmado con la clave Ed25519 del minero (contrato v2, BC-57): su cuenta es la clave
-pública, y el organizador la tiene que aprobar antes de que el gateway lo atienda.
+pública, y el organizador la tiene que aprobar antes de que el gateway lo atienda. Desde el contrato v4 (BC-99) la
+firma lleva el hash del génesis, que el minero lee de `GET /cadena` (y vuelve a leer si la cadena se reinicia).
 """
 
 import hashlib
@@ -52,7 +53,8 @@ def cargar_clave(alias, privada="", semilla="", archivo="minero.clave"):
     - `privada`: la clave en hex (CLAVE_PRIVADA; así se la pasa el escalador a sus VMs);
     - `semilla`: se deriva con el alias, sha256("<semilla>:<alias>") (CLAVE_SEMILLA; la usan las
       réplicas del minero GPU en k8s, que tienen un nombre fijo);
-    - `archivo`: la lee, o la genera la primera vez y la guarda con permisos 600 (CLAVE_ARCHIVO).
+    - `archivo`: la lee, o la genera la primera vez y la guarda con permisos 600 (CLAVE_ARCHIVO). Al lado deja la
+      pública en `<archivo>.pub`: en una VM, la lee arrancar.sh para publicarla (BC-95: la privada no sale de la VM).
     """
     if privada:
         contrato.clave_publica(privada)  # que sea una clave: si no, que falle acá y no en cada pedido
@@ -61,13 +63,16 @@ def cargar_clave(alias, privada="", semilla="", archivo="minero.clave"):
         return hashlib.sha256(f"{semilla}:{alias}".encode()).hexdigest()
     ruta = Path(archivo)
     if ruta.exists():
-        return ruta.read_text().strip()
-    privada, publica = contrato.nueva_clave()
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as salida:
-        salida.write(privada + "\n")
-    log.info("Clave nueva en %s: la cuenta del minero es %s", ruta, publica)
+        privada = ruta.read_text().strip()
+    else:
+        privada, publica = contrato.nueva_clave()
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as salida:
+            salida.write(privada + "\n")
+        log.info("Clave nueva en %s: la cuenta del minero es %s", ruta, publica)
+    publica = contrato.clave_publica(privada)
+    Path(f"{ruta}.pub").write_text(publica + "\n")
     return privada
 
 
@@ -77,21 +82,47 @@ class Gateway:
     def __init__(self, url, privada, timeout=10):
         self.url, self.privada, self.timeout = url.rstrip("/"), privada, timeout
         self.cuenta = contrato.clave_publica(privada)
+        self.cadena = None  # v4: el hash del génesis, que va adelante de lo que se firma (se lee de GET /cadena)
 
-    def pedir(self, metodo, ruta, cuerpo=None):
-        """Devuelve (código, JSON o None). Los errores de red los levanta como URLError."""
-        datos = json.dumps(cuerpo).encode() if cuerpo is not None else b""
-        encabezados = {"Content-Type": "application/json",
-                       **contrato.firmar_pedido(self.privada, metodo, ruta, datos)}
-        pedido = urllib.request.Request(self.url + ruta, data=datos or None, method=metodo, headers=encabezados)
+    def leer_cadena(self):
+        """El génesis de la cadena del gateway, sin firma. Los errores de red los levanta como URLError."""
+        pedido = urllib.request.Request(self.url + "/cadena", method="GET")
         try:
             with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
-                texto = respuesta.read()
-                return respuesta.status, json.loads(texto) if texto else None
+                genesis = json.loads(respuesta.read()).get("genesis")
         except urllib.error.HTTPError as error:
-            if error.code == 401:
-                raise ClaveRechazada(f"el gateway rechazó la firma: {_motivo(error)}. ¿El reloj está en hora?") from None
-            return error.code, None
+            raise urllib.error.URLError(f"el gateway no dio el génesis ({error.code}): {_motivo(error)}") from None
+        if not contrato.cadena_valida(genesis):
+            raise urllib.error.URLError(f"el gateway dio un génesis que no es un hash: {genesis!r}")
+        if genesis != self.cadena:
+            log.info("La cadena del gateway es %s", genesis)
+        self.cadena = genesis
+        return genesis
+
+    def pedir(self, metodo, ruta, cuerpo=None):
+        """Devuelve (código, JSON o None). Los errores de red los levanta como URLError.
+
+        Si el gateway rechaza la firma (401), relee el génesis: si cambió (la cadena se reinició), repite el pedido
+        firmado para la nueva. Si era el mismo, el problema es la clave o el reloj: ClaveRechazada.
+        """
+        if self.cadena is None:
+            self.leer_cadena()
+        for intento in range(2):
+            datos = json.dumps(cuerpo).encode() if cuerpo is not None else b""
+            encabezados = {"Content-Type": "application/json",
+                           **contrato.firmar_pedido(self.privada, metodo, ruta, datos, cadena=self.cadena)}
+            pedido = urllib.request.Request(self.url + ruta, data=datos or None, method=metodo, headers=encabezados)
+            try:
+                with urllib.request.urlopen(pedido, timeout=self.timeout) as respuesta:
+                    texto = respuesta.read()
+                    return respuesta.status, json.loads(texto) if texto else None
+            except urllib.error.HTTPError as error:
+                if error.code != 401:
+                    return error.code, None
+                motivo, anterior = _motivo(error), self.cadena
+                if intento == 0 and self.leer_cadena() != anterior:
+                    continue
+                raise ClaveRechazada(f"el gateway rechazó la firma: {motivo}. ¿El reloj está en hora?") from None
 
 
 def _motivo(error):

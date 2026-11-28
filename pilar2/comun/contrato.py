@@ -1,10 +1,12 @@
 """Contrato entre los servicios: cuentas, transacciones firmadas, bloque, recompensas y nombres de colas y claves.
 
-La especificación completa está en pilar2/CONTRATO.md: es la versión 3. La v2 trajo las cuentas con clave
+La especificación completa está en pilar2/CONTRATO.md: es la versión 4. La v2 trajo las cuentas con clave
 Ed25519, las transacciones firmadas con nonce por cuenta, la emisión, la coinbase en la raíz y la participación
 por shares. La v3 (BC-79, BC-80 y BC-82) pone todo en la cadena: las altas, bajas y permisos son transacciones
 firmadas, cada bloque se compromete con el estado (la raíz de estado) y con los shares de la época que paga.
-`saldos`, `cuentas`, `nonces:confirmados` y `permisos` de Redis son caché: la verdad es la cadena.
+`saldos`, `cuentas`, `nonces:confirmados`, `permisos` y `vetadas` de Redis son caché: la verdad es la cadena.
+La v4 (BC-95, BC-96) ata cada firma a una cadena (el hash del génesis va adelante de todo lo firmado), pone un piso
+de prefijo en el génesis y hace que una baja del organizador no la deshaga un alta delegada.
 """
 
 import hashlib
@@ -86,6 +88,7 @@ TIPOS_CUENTA = ("usuario", "minero", "organizador", "validador")
 # Versión 3: el estado que sale de la cadena (lo reconstruye comun/estado.py; Redis es caché)
 NONCES_CONFIRMADOS = "nonces:confirmados"  # cuenta → último nonce que está en la cadena; «emision» → la última acta o carga
 PERMISOS = "permisos"                # clave → prefijo de nombre de los mineros que puede dar de alta y de baja (BC-79)
+VETADAS = "vetadas"                  # v4: cuenta → 1 si tiene una baja del organizador (un alta delegada no la reactiva)
 ALTAS_EN_CAMINO = "altas:en_camino"  # cuenta → JSON {tipo, nombre, tx}: altas validadas que todavía no entraron en un
                                      # bloque. El gateway deja minar a un minero en camino: puede minar su propia alta
 ESTADO_SNAPSHOT = "estado:snapshot"  # JSON del estado a una altura (comun/estado.py), para no recorrer todo al arrancar
@@ -100,6 +103,11 @@ NONCE_MAXIMO = 2**63 - 1
 
 # Tarea modelo (bench): el prefijo no aparece nunca, así el minero recorre el rango entero.
 BENCH = {"bloque": "bench;", "desde": 0, "hasta": 2**24 - 1, "prefijo": "f" * 32}
+
+
+# v4 (BC-97): el piso de prefijo que va en el génesis. Con 6 caracteres un bloque son 16^6 ≈ 16,8 millones de MD5:
+# ~7 ms en la RTX 4060 y ~2 s en un minero CPU de 8 MH/s. Por debajo, rehacer la historia entera es gratis.
+PREFIJO_MINIMO = 6
 
 
 def md5(texto):
@@ -174,37 +182,53 @@ def verificar_firma(cuenta, mensaje, firma):
     return True
 
 
+# ── La cadena de lo firmado (v4, BC-99) ──
+# Todo lo que se firma lleva adelante el hash del génesis de la cadena para la que se firmó. Al reiniciar la cadena
+# los nonces vuelven a 1, y sin esto lo firmado para la anterior (público en /api/bloques) se podía volver a mandar.
+
+HASH = re.compile(r"^[0-9a-f]{32}$")
+SIN_CADENA = "no se sabe el génesis de la cadena (¿todavía no se cargó?)"
+
+
+def cadena_valida(valor):
+    """El id de una cadena: el hash MD5 de su génesis, en hex."""
+    return isinstance(valor, str) and bool(HASH.match(valor))
+
+
 # ── Transacción firmada (v2) ──
 
-def mensaje_transaccion(tx):
-    """Lo que firma el origen. El nonce es el número de transacción de la cuenta origen (1, 2, 3…)."""
-    return f"{tx['origen']}:{tx['destino']}:{tx['monto']}:{tx['nonce']}:{tx['timestamp']}"
+def mensaje_transaccion(tx, cadena):
+    """Lo que firma el origen (v4: con el génesis adelante). El nonce es el número de transacción de la cuenta origen
+    (1, 2, 3…)."""
+    return f"{cadena}:{tx['origen']}:{tx['destino']}:{tx['monto']}:{tx['nonce']}:{tx['timestamp']}"
 
 
-def id_transaccion(tx):
+def id_transaccion(tx, cadena):
     """El hash de lo firmado más la firma: la misma transacción reenviada da el mismo id."""
-    return md5(f"{mensaje_transaccion(tx)}:{tx['firma']}")
+    return md5(f"{mensaje_transaccion(tx, cadena)}:{tx['firma']}")
 
 
-def transaccion(privada_hex, destino, monto, nonce, timestamp=None):
-    """Arma y firma una transferencia (lo que hace el cliente, en el navegador o en un script)."""
+def transaccion(privada_hex, destino, monto, nonce, timestamp=None, *, cadena):
+    """Arma y firma una transferencia para la cadena `cadena` (lo que hace el cliente, en el navegador o en un script)."""
     tx = {"origen": clave_publica(privada_hex), "destino": destino, "monto": monto, "nonce": nonce,
           "timestamp": int(time.time()) if timestamp is None else timestamp}
-    tx["firma"] = firmar(privada_hex, mensaje_transaccion(tx))
-    return {"id": id_transaccion(tx), **tx}
+    tx["firma"] = firmar(privada_hex, mensaje_transaccion(tx, cadena))
+    return {"id": id_transaccion(tx, cadena), **tx}
 
 
 def _entero(valor, minimo, maximo):
     return isinstance(valor, int) and not isinstance(valor, bool) and minimo <= valor <= maximo
 
 
-def validar_transaccion_firmada(datos):
+def validar_transaccion_firmada(datos, cadena):
     """Validación de formato y firma de una transferencia (la hace el backend). Lista de errores; vacía si es válida.
 
-    El saldo y el nonce contra la cuenta los valida el NCT.
+    El saldo y el nonce contra la cuenta los valida el NCT. `cadena`: el hash del génesis (v4).
     """
     if not isinstance(datos, dict):
         return ["el cuerpo tiene que ser un objeto JSON"]
+    if not cadena_valida(cadena):
+        return [SIN_CADENA]
     errores = [f"{campo}: clave pública Ed25519 en hex (64 caracteres en minúscula)"
                for campo in ("origen", "destino") if not cuenta_valida(datos.get(campo))]
     if not _entero(datos.get("monto"), 1, MONTO_MAXIMO):
@@ -221,9 +245,9 @@ def validar_transaccion_firmada(datos):
         return errores
     if datos["origen"] == datos["destino"]:
         return ["origen y destino tienen que ser distintos"]
-    if not verificar_firma(datos["origen"], mensaje_transaccion(datos), datos["firma"]):
-        return ["firma: no es la del origen sobre origen:destino:monto:nonce:timestamp"]
-    if "id" in datos and datos["id"] != id_transaccion(datos):
+    if not verificar_firma(datos["origen"], mensaje_transaccion(datos, cadena), datos["firma"]):
+        return ["firma: no es la del origen sobre génesis:origen:destino:monto:nonce:timestamp"]
+    if "id" in datos and datos["id"] != id_transaccion(datos, cadena):
         return ["id: no es el hash de la transacción"]
     return []
 
@@ -238,17 +262,19 @@ def _emision(id_, destino, monto, nonce, timestamp, firma="", datos=""):
     return tx
 
 
-def carga(privada_organizador, numero, destino, monto, timestamp):
+def carga(privada_organizador, numero, destino, monto, timestamp, *, cadena):
     """Carga de saldo (modelo exchange): `carga-<n>`, firmada por el organizador. `n` es el nonce de «emision»."""
     tx = _emision(f"carga-{numero}", destino, monto, numero, timestamp)
-    tx["firma"] = firmar(privada_organizador, mensaje_transaccion(tx))
+    tx["firma"] = firmar(privada_organizador, mensaje_transaccion(tx, cadena))
     return tx
 
 
-def validar_carga(tx, organizador):
+def validar_carga(tx, organizador, cadena):
     """Lista de errores de una carga; vacía si es válida. Que `n` siga a la última (`nonces`) lo controla el NCT."""
     if not isinstance(tx, dict) or tx.get("origen") != EMISION:
         return ["origen: tiene que ser «emision»"]
+    if not cadena_valida(cadena):
+        return [SIN_CADENA]
     errores = []
     if not cuenta_valida(tx.get("destino")):
         errores.append("destino: clave pública Ed25519 en hex (64 caracteres en minúscula)")
@@ -260,7 +286,7 @@ def validar_carga(tx, organizador):
         errores.append("timestamp: entero, segundos Unix")
     if tx.get("datos", "") != "":
         errores.append("datos: una carga no lleva datos")
-    if not errores and not verificar_firma(organizador, mensaje_transaccion(tx), tx.get("firma")):
+    if not errores and not verificar_firma(organizador, mensaje_transaccion(tx, cadena), tx.get("firma")):
         errores.append("firma: no es la del organizador")
     return errores
 
@@ -287,13 +313,14 @@ def es_coinbase(tx):
 # organizador; las actas (alta, baja, permiso) son las decisiones del organizador (BC-79).
 _TIPOS_EMISION = (("genesis-", "genesis"), ("organizador-", "organizador"), ("cb-", "coinbase"), ("carga-", "carga"),
                   ("part-", "participacion"), ("shares-", "shares"), ("alta-", "alta"), ("baja-", "baja"),
-                  ("permiso-", "permiso"))
+                  ("permiso-", "permiso"), ("reglas", "reglas"))
 ACTAS = ("alta", "baja", "permiso")
 MOTIVO_MAXIMO = 100
 
 
 def tipo_de(tx):
-    """transferencia, genesis, organizador, coinbase, carga, participacion, shares, alta, baja, permiso o desconocida.
+    """transferencia, genesis, organizador, reglas, coinbase, carga, participacion, shares, alta, baja, permiso o
+    desconocida.
 
     Una alta o baja con origen en una cuenta es **delegada**: la firma la clave a la que el organizador le dio un
     permiso (el escalador, para las VMs), y sólo vale para mineros con ese prefijo de nombre.
@@ -318,33 +345,35 @@ def id_acta(tipo, origen, numero):
     return f"{tipo}-{numero}" if origen == EMISION else f"{tipo}-{origen}-{numero}"
 
 
-def mensaje_acta(tx):
-    """Lo que firma el organizador (o la clave con permiso): el tipo adelante, así una firma de carga no sirve de alta."""
-    return f"{tipo_de(tx)}:{tx['origen']}:{tx['destino']}:{tx['nonce']}:{tx['timestamp']}:{tx.get('datos', '')}"
+def mensaje_acta(tx, cadena):
+    """Lo que firma el organizador (o la clave con permiso): el génesis y el tipo adelante, así una firma de carga no
+    sirve de alta ni una de otra cadena sirve en ésta."""
+    return f"{cadena}:{tipo_de(tx)}:{tx['origen']}:{tx['destino']}:{tx['nonce']}:{tx['timestamp']}:{tx.get('datos', '')}"
 
 
-def acta(privada_hex, tipo, numero, destino, datos, timestamp, delegada=False):
+def acta(privada_hex, tipo, numero, destino, datos, timestamp, delegada=False, *, cadena):
     """Una decisión firmada que va en la cadena: alta, baja o permiso (BC-79)."""
     origen = clave_publica(privada_hex) if delegada else EMISION
     tx = {"id": id_acta(tipo, origen, numero), "origen": origen, "destino": destino, "monto": 0, "nonce": numero,
           "timestamp": timestamp, "datos": datos}
-    tx["firma"] = firmar(privada_hex, mensaje_acta(tx))
+    tx["firma"] = firmar(privada_hex, mensaje_acta(tx, cadena))
     return tx
 
 
-def alta(privada_hex, numero, cuenta, tipo, nombre, timestamp, delegada=False):
+def alta(privada_hex, numero, cuenta, tipo, nombre, timestamp, delegada=False, *, cadena):
     """`alta-<n>`: la cuenta queda aprobada como `tipo` cuando el bloque se confirma."""
-    return acta(privada_hex, "alta", numero, cuenta, f"{tipo}:{nombre}", timestamp, delegada)
+    return acta(privada_hex, "alta", numero, cuenta, f"{tipo}:{nombre}", timestamp, delegada, cadena=cadena)
 
 
-def baja(privada_hex, numero, cuenta, motivo, timestamp, delegada=False):
-    """`baja-<n>`: la cuenta deja de operar cuando el bloque se confirma (el saldo queda donde está)."""
-    return acta(privada_hex, "baja", numero, cuenta, motivo, timestamp, delegada)
+def baja(privada_hex, numero, cuenta, motivo, timestamp, delegada=False, *, cadena):
+    """`baja-<n>`: la cuenta deja de operar cuando el bloque se confirma (el saldo queda donde está). Si la da el
+    organizador, la cuenta queda vetada: un alta delegada ya no la reactiva (v4, BC-95)."""
+    return acta(privada_hex, "baja", numero, cuenta, motivo, timestamp, delegada, cadena=cadena)
 
 
-def permiso(privada_hex, numero, clave, prefijo, timestamp):
+def permiso(privada_hex, numero, clave, prefijo, timestamp, *, cadena):
     """`permiso-<n>`: `clave` puede dar de alta y de baja mineros cuyo nombre empieza con `prefijo`. Vacío: lo revoca."""
-    return acta(privada_hex, "permiso", numero, clave, prefijo, timestamp)
+    return acta(privada_hex, "permiso", numero, clave, prefijo, timestamp, cadena=cadena)
 
 
 def datos_alta(tx):
@@ -353,11 +382,13 @@ def datos_alta(tx):
     return tipo, nombre
 
 
-def validar_acta(tx, organizador):
+def validar_acta(tx, organizador, cadena):
     """Formato y firma de un acta; vacío si sirve. Lo que depende del estado (el permiso, a quién se da de baja) lo
     controlan el NCT y comun/estado.py."""
     if not isinstance(tx, dict):
         return ["el cuerpo tiene que ser un objeto JSON"]
+    if not cadena_valida(cadena):
+        return [SIN_CADENA]
     tipo, origen = tipo_de(tx), tx.get("origen")
     if tipo not in ACTAS:
         return ["id: alta-<n>, baja-<n> o permiso-<n>"]
@@ -389,20 +420,20 @@ def validar_acta(tx, organizador):
     firmante = organizador if origen == EMISION else origen
     if not firmante:
         return ["no hay ORGANIZADOR_CLAVE: nadie puede firmar actas"]
-    if not verificar_firma(firmante, mensaje_acta(tx), tx.get("firma")):
+    if not verificar_firma(firmante, mensaje_acta(tx, cadena), tx.get("firma")):
         return ["firma: no es la del organizador" if origen == EMISION else "firma: no es la del origen"]
     return []
 
 
-def validar_de_entrada(datos, organizador):
+def validar_de_entrada(datos, organizador, cadena):
     """Lo que valida el backend al recibir: una transferencia, una carga o un acta. Lista de errores; vacía si sirve."""
     if isinstance(datos, dict) and (datos.get("origen") == EMISION or es_acta(datos)):
         if es_acta(datos):
-            return validar_acta(datos, organizador)
+            return validar_acta(datos, organizador, cadena)
         if not organizador:
             return ["origen: «emision» es para las cargas y las actas, y no hay ORGANIZADOR_CLAVE"]
-        return validar_carga(datos, organizador)
-    return validar_transaccion_firmada(datos)
+        return validar_carga(datos, organizador, cadena)
+    return validar_transaccion_firmada(datos, cadena)
 
 
 # ── Shares de la época, publicados y en la cadena (BC-82) ──
@@ -485,15 +516,40 @@ def tarea_guardada(campos):
             "transacciones": json.loads(campos["transacciones"]), "raiz_estado": campos["raiz_estado"]}
 
 
-def bloque_genesis(saldos, timestamp, organizador="", nombres=None):
+def reglas_genesis(prefijo_minimo, timestamp):
+    """`reglas` (v4, BC-97): lo que la cadena fija para siempre y leen los que verifican. Por ahora, el piso de
+    prefijo: un bloque con menos caracteres no vale, aunque el hash los cumpla."""
+    return _emision("reglas", "", 0, 0, timestamp, datos=f"prefijo_minimo:{prefijo_minimo}")
+
+
+def leer_reglas(tx):
+    """{prefijo_minimo} de una transacción `reglas`; None si está mal formada."""
+    clave, _, valor = str(tx.get("datos", "")).partition(":")
+    if clave != "prefijo_minimo" or not valor.isdigit() or not 1 <= int(valor) <= 32 or valor != str(int(valor)):
+        return None
+    return {"prefijo_minimo": int(valor)}
+
+
+def prefijo_minimo_de(genesis):
+    """El piso de prefijo de una cadena, del bloque 0 (con `transactions` ya decodificado). 1 si no tiene reglas."""
+    for tx in genesis.get("transactions") or []:
+        if tipo_de(tx) == "reglas":
+            reglas = leer_reglas(tx)
+            return reglas["prefijo_minimo"] if reglas else 1
+    return 1
+
+
+def bloque_genesis(saldos, timestamp, organizador="", nombres=None, prefijo_minimo=1):
     """Bloque 0: sin minar (nonce 0, sin prefijo ni coinbase).
 
     v3: primero `organizador-<cuenta>` (la clave del organizador queda en la cadena: los que verifican la leen de
-    acá) y después un `genesis-<cuenta>` por cada saldo inicial, que además le da el alta como usuario con su nombre
-    (`datos` = usuario:<nombre>). Su raíz de estado es la del árbol vacío.
+    acá), v4: después `reglas` (el piso de prefijo), y al final un `genesis-<cuenta>` por cada saldo inicial, que
+    además le da el alta como usuario con su nombre (`datos` = usuario:<nombre>). Su raíz de estado es la del árbol
+    vacío. Su hash es el id de la cadena: va adelante de todo lo que se firma (v4).
     """
     nombres = nombres or {}
     transacciones = [_emision(f"organizador-{organizador}", organizador, 0, 0, timestamp)] if organizador else []
+    transacciones.append(reglas_genesis(prefijo_minimo, timestamp))
     transacciones += [_emision(f"genesis-{cuenta}", cuenta, monto, 0, timestamp, datos=f"usuario:{nombres.get(cuenta, '')}")
                       for cuenta, monto in sorted(saldos.items())]
     texto = _texto(CEROS, timestamp, transacciones, RAIZ_VACIA)
@@ -566,9 +622,10 @@ def es_primer_bloque_de_epoca(altura):
 VENTANA_PEDIDO = 30  # segundos: un pedido con la hora más corrida que esto se rechaza (no se puede repetir uno viejo)
 
 
-def mensaje_pedido(metodo, ruta, tiempo, cuerpo=b""):
-    """Lo que firma el minero: método, ruta (con la query, como va en el pedido), tiempo y el cuerpo tal cual."""
-    return f"{metodo.upper()}\n{ruta}\n{tiempo}\n".encode() + _bytes(cuerpo)
+def mensaje_pedido(metodo, ruta, tiempo, cuerpo=b"", cadena=""):
+    """Lo que firma el minero: el génesis (v4), método, ruta (con la query, como va en el pedido), tiempo y el cuerpo
+    tal cual."""
+    return f"{cadena}\n{metodo.upper()}\n{ruta}\n{tiempo}\n".encode() + _bytes(cuerpo)
 
 
 # El encabezado con la cuenta que firma: los mineros al gateway (BC-57) y el organizador al panel (BC-58).
@@ -576,11 +633,11 @@ MINERO, ORGANIZADOR = "X-Minero", "X-Organizador"
 _QUIEN = {MINERO: "del minero", ORGANIZADOR: "del organizador"}
 
 
-def firmar_pedido(privada_hex, metodo, ruta, cuerpo=b"", tiempo=None, quien=MINERO):
-    """Los encabezados `quien` (X-Minero o X-Organizador), X-Tiempo y X-Firma de un pedido."""
+def firmar_pedido(privada_hex, metodo, ruta, cuerpo=b"", tiempo=None, quien=MINERO, *, cadena):
+    """Los encabezados `quien` (X-Minero o X-Organizador), X-Tiempo y X-Firma de un pedido para la cadena `cadena`."""
     tiempo = int(time.time()) if tiempo is None else tiempo
     return {quien: clave_publica(privada_hex), "X-Tiempo": str(tiempo),
-            "X-Firma": firmar(privada_hex, mensaje_pedido(metodo, ruta, tiempo, cuerpo))}
+            "X-Firma": firmar(privada_hex, mensaje_pedido(metodo, ruta, tiempo, cuerpo, cadena))}
 
 
 def problema_de_cabeceras(encabezados, ahora=None, quien=MINERO):
@@ -605,13 +662,16 @@ def _cabecera(encabezados, nombre):
     return encabezados.get(nombre) or encabezados.get(nombre.lower())
 
 
-def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MINERO):
-    """(cuenta, None) si el pedido está bien firmado y en hora; (None, motivo) si no (ver problema_de_cabeceras)."""
+def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MINERO, *, cadena):
+    """(cuenta, None) si el pedido está bien firmado para la cadena `cadena` y en hora; (None, motivo) si no (ver
+    problema_de_cabeceras)."""
+    if not cadena_valida(cadena):
+        return None, SIN_CADENA
     motivo = problema_de_cabeceras(encabezados, ahora, quien)
     if motivo:
         return None, motivo
     cuenta, tiempo, firma = (_cabecera(encabezados, n) for n in (quien, "X-Tiempo", "X-Firma"))
-    if not verificar_firma(cuenta, mensaje_pedido(metodo, ruta, tiempo, cuerpo), firma):
+    if not verificar_firma(cuenta, mensaje_pedido(metodo, ruta, tiempo, cuerpo, cadena), firma):
         return None, f"X-Firma: no es la {_QUIEN.get(quien, quien)} sobre el pedido"
     return cuenta, None
 
@@ -621,22 +681,24 @@ def verificar_pedido(encabezados, metodo, ruta, cuerpo=b"", ahora=None, quien=MI
 TIPOS_ALTA = ("usuario", "minero", "validador")  # el organizador no pide el alta: está en el génesis
 
 
-def mensaje_alta(tipo, cuenta, nombre):
-    """Lo que firma quien pide el alta: demuestra que tiene la privada de la cuenta que pide."""
-    return f"alta:{tipo}:{cuenta}:{nombre}"
+def mensaje_alta(tipo, cuenta, nombre, cadena):
+    """Lo que firma quien pide el alta: demuestra que tiene la privada de la cuenta que pide (v4: en esta cadena)."""
+    return f"alta:{cadena}:{tipo}:{cuenta}:{nombre}"
 
 
-def pedido_alta(privada_hex, tipo, nombre):
+def pedido_alta(privada_hex, tipo, nombre, *, cadena):
     """El cuerpo de POST /api/altas: {tipo, clave_publica, nombre, firma} (lo que arma la página «Pedir alta»)."""
     cuenta = clave_publica(privada_hex)
     return {"tipo": tipo, "clave_publica": cuenta, "nombre": nombre,
-            "firma": firmar(privada_hex, mensaje_alta(tipo, cuenta, nombre))}
+            "firma": firmar(privada_hex, mensaje_alta(tipo, cuenta, nombre, cadena))}
 
 
-def validar_pedido_alta(datos):
+def validar_pedido_alta(datos, cadena):
     """Los errores de un pedido de alta; vacío si sirve."""
     if not isinstance(datos, dict):
         return ["el cuerpo tiene que ser un objeto JSON"]
+    if not cadena_valida(cadena):
+        return [SIN_CADENA]
     errores = []
     if datos.get("tipo") not in TIPOS_ALTA:
         errores.append(f"tipo: {' | '.join(TIPOS_ALTA)}")
@@ -646,9 +708,9 @@ def validar_pedido_alta(datos):
         errores.append("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
     if errores:
         return errores
-    if not verificar_firma(datos["clave_publica"], mensaje_alta(datos["tipo"], datos["clave_publica"], datos["nombre"]),
-                           datos.get("firma")):
-        return ["firma: no es la de clave_publica sobre alta:tipo:clave_publica:nombre"]
+    if not verificar_firma(datos["clave_publica"],
+                           mensaje_alta(datos["tipo"], datos["clave_publica"], datos["nombre"], cadena), datos.get("firma")):
+        return ["firma: no es la de clave_publica sobre alta:génesis:tipo:clave_publica:nombre"]
     return []
 
 

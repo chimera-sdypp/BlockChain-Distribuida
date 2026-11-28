@@ -147,6 +147,19 @@ jobs:
             --from-literal=RABBIT_COOKIE="$RABBIT_COOKIE" --from-literal=REDIS_CLAVE="$REDIS_CLAVE" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      # BC-95: la clave del escalador (firma las altas delegadas de las VMs) no se genera ni vive en Redis: es un
+      # secreto del ambiente. Rotarla = otro secreto y un permiso del organizador para la clave nueva.
+      - name: Secret escalador-clave
+        env:
+          ESCALADOR_CLAVE: ${{ secrets.ESCALADOR_CLAVE }}
+        run: |
+          if [[ ! $ESCALADOR_CLAVE =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Falta el secreto ESCALADOR_CLAVE del ambiente produccion (64 hex: python -m claves nueva)"
+            exit 1
+          fi
+          kubectl -n blockchain create secret generic escalador-clave --from-literal=ESCALADOR_CLAVE="$ESCALADOR_CLAVE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: RabbitMQ y Redis
         run: |
           kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/servicios-base | kubectl apply -f -

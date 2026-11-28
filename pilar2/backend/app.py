@@ -12,6 +12,9 @@ Contrato v3 (BC-79, BC-80, BC-82): las altas, bajas y permisos llegan como trans
 `cuentas` sin firma). Los pendientes y los suspendidos se leen firmados por el organizador (BC-88). Se suman
 las lecturas para verificar desde afuera: los bloques en orden ascendente, la prueba de Merkle de una cuenta contra
 la raíz de estado (`/api/prueba/<cuenta>`) y la lista de shares de cada época (`/api/epocas/<n>`).
+
+Contrato v4 (BC-99): todo lo firmado lleva el hash del génesis de esta cadena; los clientes lo leen de `/api/cadena`.
+Lo firmado para otra cadena (una anterior al reinicio) no pasa la validación.
 """
 
 import json
@@ -148,9 +151,9 @@ def _transaccion(id_, tx):
     return resultado
 
 
-def validar(datos, organizador):
+def validar(datos, organizador, cadena):
     """Los errores de una transferencia firmada, de una carga o de un acta del organizador; vacío si sirve."""
-    return contrato.validar_de_entrada(datos, organizador)
+    return contrato.validar_de_entrada(datos, organizador, cadena)
 
 
 def sin_alta(redis, txs):
@@ -175,9 +178,9 @@ def sin_alta(redis, txs):
             for i, valor in zip(lista, valores) if valor is None}
 
 
-def nueva_transaccion(datos):
+def nueva_transaccion(datos, cadena):
     """La transacción como va a la cola y a tx:<id>: el id sale del contenido (o es carga-<n>, alta-<n>…)."""
-    id_ = datos["id"] if contrato.es_emision(datos) or contrato.es_acta(datos) else contrato.id_transaccion(datos)
+    id_ = datos["id"] if contrato.es_emision(datos) or contrato.es_acta(datos) else contrato.id_transaccion(datos, cadena)
     return {"id": id_, **{campo: datos.get(campo, "") for campo in CAMPOS_TX}}
 
 
@@ -186,6 +189,10 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     crear = redis.register_script(LUA_CREAR)
     anotar_firma = redis.register_script(LUA_FIRMA)
     altas = Altas(redis, maximas=altas_maximas)
+
+    def genesis():
+        """El hash del bloque 0 (v4): va en todo lo que se firma. None si la cadena todavía no tiene génesis."""
+        return redis.lindex(contrato.CADENA, 0)
 
     def registrar_y_encolar(txs):
         """Primero Redis y después la cola: así el NCT nunca ve una tx que todavía no está en Redis.
@@ -240,17 +247,18 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     @app.post("/api/transacciones", status_code=202)
     async def recibir(request: Request):
         datos = await leer_json(request)
-        errores = ["el cuerpo no es JSON válido"] if datos is None else validar(datos, organizador)
+        cadena = await run_in_threadpool(genesis)
+        errores = ["el cuerpo no es JSON válido"] if datos is None else validar(datos, organizador, cadena)
         if errores:
             TX_RECIBIDAS.labels("invalida").inc()
             log.info("Transacción rechazada por el formato o la firma: %s", "; ".join(errores))
             return invalido(errores)
-        return await recibir_una(datos)
+        return await recibir_una(datos, cadena)
 
-    async def recibir_una(datos):
+    async def recibir_una(datos, cadena):
         """Encola una transacción ya validada: 202, 403 si quien la firma no tiene alta (BC-94), 409 si es un
         reenvío o 503."""
-        tx = nueva_transaccion(datos)
+        tx = nueva_transaccion(datos, cadena)
         try:
             faltan = await run_in_threadpool(sin_alta, redis, [tx])
         except redislib.RedisError as error:
@@ -285,11 +293,13 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
             return JSONResponse({"errores": [f"el lote tiene {len(datos)} transacciones; el máximo es {lote_maximo}"]},
                                 status_code=413)
         # Verificar mil firmas lleva unos 100 ms: fuera del event loop, para no frenar los otros pedidos.
-        errores = await run_in_threadpool(lambda: {str(i): e for i, e in enumerate(validar(tx, organizador) for tx in datos) if e})
+        cadena = await run_in_threadpool(genesis)
+        errores = await run_in_threadpool(
+            lambda: {str(i): e for i, e in enumerate(validar(tx, organizador, cadena) for tx in datos) if e})
         if errores:
             TX_RECIBIDAS.labels("invalida").inc(len(datos))
             return invalido(errores)
-        txs = [nueva_transaccion(tx) for tx in datos]
+        txs = [nueva_transaccion(tx, cadena) for tx in datos]
         try:
             faltan = await run_in_threadpool(sin_alta, redis, txs)
         except redislib.RedisError as error:
@@ -464,6 +474,19 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
         los mineros suspendidos no: son datos de operación del organizador y se leen firmados (BC-88)."""
         return {"cuentas": altas.aprobadas()}
 
+    @app.get("/api/cadena")
+    def cadena_():
+        """v4: lo que un cliente necesita para firmar y verificar: el hash del génesis (va adelante de todo lo firmado),
+        el organizador y el piso de prefijo que fijó el génesis."""
+        hash_ = genesis()
+        guardado = redis.hgetall(contrato.BLOQUE.format(hash_)) if hash_ else None
+        if not guardado:
+            return JSONResponse({"error": "la cadena todavía no tiene génesis"}, status_code=503)
+        bloque = _bloque(guardado)
+        organizador_ = next((tx["destino"] for tx in bloque["transactions"] if contrato.tipo_de(tx) == "organizador"), "")
+        return {"genesis": hash_, "organizador": organizador_, "prefijo_minimo": contrato.prefijo_minimo_de(bloque),
+                "timestamp": bloque["timestamp"]}
+
     @app.get("/api/bloques/{hash_}")
     def bloque(hash_: str):
         guardado = redis.hgetall(contrato.BLOQUE.format(hash_))
@@ -545,8 +568,9 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
     async def pedir_alta(request: Request):
         """Público: {tipo, clave_publica, nombre, firma}. La firma demuestra que tiene la privada."""
         datos = await leer_json(request)
+        cadena = await run_in_threadpool(genesis)
         errores = ["el cuerpo no es JSON válido"] if datos is None else \
-            await run_in_threadpool(contrato.validar_pedido_alta, datos)
+            await run_in_threadpool(contrato.validar_pedido_alta, datos, cadena)
         if errores:
             log.info("Pedido de alta rechazado: %s", "; ".join(errores))
             return invalido(errores)
@@ -572,8 +596,9 @@ def agregar_rutas(app, redis, publicador, cola=contrato.COLAS[0], lote_maximo=LO
                 return JSONResponse({"error": "este backend no tiene ORGANIZADOR_CLAVE: el panel está apagado"},
                                     status_code=403)
             firmada = request.url.path + (f"?{request.url.query}" if request.url.query else "")
-            quien, motivo = await run_in_threadpool(contrato.verificar_pedido, request.headers, request.method,
-                                                    firmada, cuerpo, None, contrato.ORGANIZADOR)
+            cadena = await run_in_threadpool(genesis)
+            quien, motivo = await run_in_threadpool(lambda: contrato.verificar_pedido(
+                request.headers, request.method, firmada, cuerpo, None, contrato.ORGANIZADOR, cadena=cadena))
             if not motivo and quien != organizador:
                 motivo = f"{contrato.ORGANIZADOR}: no es la cuenta del organizador"
             if motivo:

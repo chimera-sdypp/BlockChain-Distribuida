@@ -5,7 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from comun import contrato, web
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual
 from gateway import app as gateway
 
 MAXIMO = 1000
@@ -32,7 +32,7 @@ def armar(redis, colas):
 
 
 def firmado(cuerpo, nombre="minero", tiempo=None, ruta="/keepalive"):
-    return contrato.firmar_pedido(PRIVADA[nombre], "POST", ruta, cuerpo, tiempo=tiempo)
+    return contrato.firmar_pedido(PRIVADA[nombre], "POST", ruta, cuerpo, tiempo=tiempo, cadena=cadena_actual())
 
 
 def test_un_content_length_mayor_que_el_maximo_da_413(redis, colas):

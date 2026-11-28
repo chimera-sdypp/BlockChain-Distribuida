@@ -1,0 +1,6 @@
+escenario,comprobacion,esperado,observado,ok
+reminada,un nodo nuevo baja la historia reminada con prefijo 1,rechaza el bloque 1 (piso 6),rechazado en 1: el prefijo tiene 1 caracteres y el piso de la cadena es 6,sí
+pago-epoca,"la época 0 paga 10^6 más que el fondo, sin la lista publicada",un nodo nuevo rechaza el bloque 10,"rechazado en 10: los pagos de la época 0 suman 1000100, más que el fondo (100)",sí
+otra-cadena,"una transferencia de carol firmada para otra cadena, con el nonce siguiente",400: la firma no verifica,400 {'errores': ['firma: no es la del origen sobre génesis:origen:destino:monto:nonce:timestamp']},sí
+otra-cadena,"una carga del organizador firmada para otra cadena, con el nonce siguiente",400: la firma no verifica,400 {'errores': ['firma: no es la del organizador']},sí
+otra-cadena,la misma transferencia firmada para esta cadena,202,202,sí

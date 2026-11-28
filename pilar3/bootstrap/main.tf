@@ -137,3 +137,80 @@ resource "google_service_account_iam_member" "ci_administra_escalador" {
   role               = "roles/iam.serviceAccountAdmin"
   member             = google_service_account.ci.member
 }
+
+# ---------------------------------------------------------------- Permisos del escalador (BC-111)
+# Sólo sus VMs: crear, leer y borrar las instancias minero-cpu-* (y sus discos, que se llaman igual)
+# desde la plantilla minero-cpu-*, en la subred de los nodos. Un nodo de GKE (gke-blockchain-…) no entra.
+resource "google_project_iam_custom_role" "escalador_vms" {
+  role_id     = "escaladorVms"
+  title       = "Escalador: VMs minero-cpu"
+  description = "Crear, leer y borrar las VMs minero-cpu-* desde su plantilla (BC-111). Va con condición por nombre."
+  permissions = [
+    "compute.instances.create",
+    "compute.instances.delete",
+    "compute.instances.get",
+    "compute.instances.getGuestAttributes",
+    "compute.instances.setLabels",
+    "compute.instances.setMetadata",
+    "compute.instances.setServiceAccount",
+    "compute.instances.setTags",
+    "compute.disks.create",
+    "compute.disks.delete",
+    "compute.instanceTemplates.get",
+    "compute.instanceTemplates.useReadOnly",
+    "compute.subnetworks.use",
+    "compute.subnetworks.useExternalIp",
+  ]
+}
+
+resource "google_project_iam_member" "escalador_vms" {
+  project = var.proyecto
+  role    = google_project_iam_custom_role.escalador_vms.id
+  member  = google_service_account.escalador.member
+  condition {
+    title       = "solo-minero-cpu"
+    description = "Instancias, discos y plantillas minero-cpu-*, y la subred blockchain-nodos"
+    expression  = <<-CEL
+      resource.name.extract("/instances/{nombre}").startsWith("minero-cpu-") ||
+      resource.name.extract("/disks/{nombre}").startsWith("minero-cpu-") ||
+      resource.name.extract("/instanceTemplates/{nombre}").startsWith("minero-cpu-") ||
+      resource.name.extract("/subnetworks/{nombre}") == "blockchain-nodos"
+    CEL
+  }
+}
+
+# Listar no se puede acotar por nombre (la condición ve el proyecto, no cada VM): va aparte, sin condición.
+# Con esto sólo ve nombres; para leer o tocar una VM hace falta el rol de arriba.
+resource "google_project_iam_custom_role" "escalador_listar" {
+  role_id     = "escaladorListar"
+  title       = "Escalador: listar"
+  description = "Listar instancias y plantillas y seguir las operaciones de zona (BC-111)."
+  permissions = [
+    "compute.instances.list",
+    "compute.instanceTemplates.list",
+    "compute.zoneOperations.get",
+    "compute.zones.get",
+  ]
+}
+
+resource "google_project_iam_member" "escalador_listar" {
+  project = var.proyecto
+  role    = google_project_iam_custom_role.escalador_listar.id
+  member  = google_service_account.escalador.member
+}
+
+# Su state (vms-instancias/) y nada más: ni el de infra, ni el de vms, ni el de bootstrap. La condición
+# también deja pasar el bucket mismo, porque tofu init y el lock listan los objetos del prefijo.
+resource "google_storage_bucket_iam_member" "escalador_tfstate" {
+  bucket = data.google_storage_bucket.tfstate.name
+  role   = "roles/storage.objectAdmin"
+  member = google_service_account.escalador.member
+  condition {
+    title       = "solo-vms-instancias"
+    description = "El state del módulo vms/instancias"
+    expression  = <<-CEL
+      resource.name == "projects/_/buckets/${data.google_storage_bucket.tfstate.name}" ||
+      resource.name.startsWith("projects/_/buckets/${data.google_storage_bucket.tfstate.name}/objects/vms-instancias/")
+    CEL
+  }
+}

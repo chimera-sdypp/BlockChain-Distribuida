@@ -8,7 +8,7 @@
 
 | Carpeta | Qué es | Pipeline |
 |---|---|---|
-| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31) y las IP fijas del gateway y de Traefik (`ingreso`) | A mano, una vez |
+| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31), las IP fijas del gateway y de Traefik (`ingreso`) y las cuentas de servicio con sus permisos ([Permisos](#permisos)) | A mano, con Owner |
 | `infra/` | VPC y GKE zonal con dos nodegroups, `infra` (con taint) y `apps` (BC-32) | 1 · `pilar3-cluster.yml` |
 | `helm/`, `k8s/servicios-base/` | Traefik, cert-manager, KEDA, RabbitMQ ×3, Redis ×3 y la observabilidad en el nodegroup de infra (BC-33, BC-37) | 2 · `pilar3-servicios-base.yml` |
 | `k8s/apps/` | frontend, backend, nct, trp, gateway y escalador en el nodegroup de apps, y `/salud/<servicio>` (BC-34) | 3 · `pilar3-apps.yml` |
@@ -41,6 +41,48 @@ done
 
 El proveedor OIDC sólo acepta tokens de `chimera-sdypp/BlockChain-Distribuida`. El pipeline recibe un token de GCP que vence en 1 h.
 
+## Permisos
+
+Las cuentas de servicio y sus roles en el proyecto viven en `bootstrap/`, que aplica a mano quien tiene Owner. Los pipelines no pueden crear cuentas ni darse roles (BC-109).
+
+| Cuenta | Qué puede hacer | Sobre qué | Por qué |
+|---|---|---|---|
+| `escalador` | Crear, leer y borrar instancias y discos; leer y usar la plantilla; usar la subred; leer los guest attributes (rol custom `escaladorVms`) | Sólo lo que se llama `minero-cpu-*` y la subred `blockchain-nodos` (condición IAM por nombre) | Levantar y bajar sus VMs y leer la clave pública de cada una (BC-95) |
+| `escalador` | Listar instancias y plantillas y seguir las operaciones de zona (rol custom `escaladorListar`) | El proyecto, sin condición | Las listas no se pueden acotar por nombre; listar no deja tocar nada |
+| `escalador` | `objectAdmin` | Sólo `vms-instancias/` en el bucket de states, más listar el bucket | Su state; no puede leer ni pisar el de `infra`, `vms` ni `bootstrap` |
+| `escalador` | `serviceAccountUser` | Sólo la cuenta `minero-cpu` | Ponérsela a las VMs que crea |
+| `minero-cpu` | `artifactregistry.reader`, `logging.logWriter` | El proyecto | Bajar la imagen y escribir logs |
+| `ci-github` | `serviceAccountAdmin` | Sólo la cuenta `escalador` | `infra/` le pone el binding de Workload Identity |
+
+### Comprobar los permisos del escalador
+
+La imagen del escalador no trae `gcloud`: se usa un pod temporal con su mismo ServiceAccount, que por Workload Identity entra como la cuenta `escalador`:
+
+```bash
+kubectl -n blockchain run prueba-escalador --rm -it --restart=Never --image=google/cloud-sdk:slim \
+  --overrides='{"spec":{"serviceAccountName":"escalador","nodeSelector":{"nodegroup":"apps"}}}' -- bash
+
+# adentro:
+PROYECTO=$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id)
+gcloud auth list                                                         # escalador@…
+NODO=$(gcloud compute instances list --filter='name~^gke-' --format='value(name)' --limit=1)
+gcloud compute instances delete "$NODO" --zone us-central1-a --quiet    # 403
+gcloud storage cat gs://$PROYECTO-tfstate/infra/default.tfstate          # 403
+echo x | gcloud storage cp - gs://$PROYECTO-tfstate/infra/prueba         # 403
+gcloud storage ls gs://$PROYECTO-tfstate/vms-instancias/                 # anda
+```
+
+Y el escalado tiene que seguir andando: con carga sube a N VMs y en reposo vuelve a 0.
+
+### Migración de BC-111 (una vez)
+
+Las cuentas `escalador` y `minero-cpu` existían en los states de `infra` y `vms`. El orden evita que el escalador quede sin permisos en el medio:
+
+1. **Owner, desde `pilar3/bootstrap/`:** `tofu plan -var proyecto=$PROYECTO` tiene que mostrar 4 imports (las dos cuentas, los dos roles de `minero-cpu` y el `serviceAccountUser`) y sólo creaciones: los dos roles custom, sus bindings, el binding con condición sobre el bucket y el `serviceAccountAdmin` de `ci-github` sobre `escalador`. Nada se destruye. Después, `tofu apply`. Desde acá el escalador tiene los permisos viejos y los nuevos.
+2. **Merge a `main`:** el Pipeline 1 y el 4 olvidan las cuentas (`removed`, sin borrarlas) y el 4 borra los permisos amplios (`instanceAdmin.v1` en el proyecto y `objectAdmin` en todo el bucket).
+3. **Borrar `bootstrap/migracion.tf`** en un PR aparte: en un proyecto nuevo los imports fallarían. El plan de `bootstrap` tiene que dar «sin cambios».
+4. Las pruebas de arriba.
+
 ## Pipeline 1 · Cluster
 
 - **En un PR:** gitleaks, `tofu fmt`, `validate` y `plan`. El plan queda comentado en el PR.
@@ -48,7 +90,7 @@ El proveedor OIDC sólo acepta tokens de `chimera-sdypp/BlockChain-Distribuida`.
 - **Nodegroups:** `infra` tiene 1 nodo y taint `nodegroup=infra:NoSchedule`; `apps`, 1 nodo (los requests de cada uno suman ~0,5 vCPU). Las máquinas son `e2-standard-2` **spot** con disco estándar de 30 GB: si GCP se lleva un nodo, GKE crea otro y los pods vuelven.
 - **Cuentas de servicio:**
   - La de los nodos (`gke-nodos`) baja las imágenes de Artifact Registry, así que no hacen falta pull secrets.
-  - La del escalador entra a GCP desde el ServiceAccount `blockchain/escalador` por Workload Identity. Los permisos sobre las VMs se los da `vms/` (BC-35).
+  - La del escalador entra a GCP desde el ServiceAccount `blockchain/escalador` por Workload Identity. La cuenta y sus permisos los crea `bootstrap/` (ver [Permisos](#permisos)); acá sólo va el binding de Workload Identity, que necesita el pool del cluster.
 - **Costo estimado:** ≈ USD 0,10/h (≈ USD 2,5/día): 2 nodos spot, los 2 LoadBalancer (Traefik y gateway, lo que más pesa) y los discos. El cluster zonal no paga la administración. **Cobra desde que existe:** al terminar, `tofu destroy`.
 
 Para conectarse: `tofu output -raw conectarse`.

@@ -2,3 +2,10 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: blockchain
+---
+# Ningún pod que caiga en la SA default recibe token de la API de K8s (BC-103).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+automountServiceAccountToken: false

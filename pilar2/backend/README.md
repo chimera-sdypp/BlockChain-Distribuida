@@ -9,17 +9,18 @@ La API por la que entran las transferencias y se consulta su estado (pasos 1 y 2
 | `POST /api/transacciones` `{origen, destino, monto, nonce, timestamp, firma}` | 202 `{id}` · 400 `{errores: [...]}` · 409 `{error, id}` (reenvío) · 503 `{error}` |
 | `POST /api/transacciones/lote` `[{…}, ...]` | 202 `{ids}` en el mismo orden · 400 · 409 · 413 · 503 `{error, encoladas}` |
 | `GET /api/transacciones/<id>` | `{id, origen, destino, monto, nonce, timestamp, firma, estado}`, más `motivo` (rechazada) o `bloque` (confirmada) · 404 |
-| `GET /api/cuentas/<cuenta>` | `{cuenta, saldo, comprometido, nonce, aprobada, tipo, nombre, alta_pedida}`: lo que necesita un cliente para firmar (el próximo nonce es `nonce + 1`). `emision` da la última carga |
+| `GET /api/cuentas/<cuenta>` | `{cuenta, saldo, comprometido, nonce, aprobada, tipo, nombre, alta_pedida, alta_en_camino}`: lo que necesita un cliente para firmar (el próximo nonce es `nonce + 1`). `emision` da la última carga |
 | `POST /api/altas` `{tipo, clave_publica, nombre, firma}` | 202 `{cuenta, estado: "pendiente"}` · 400 (firma o formato) · 409 (ya aprobada) · 429 (hay 1000 pendientes) |
 | `GET /api/organizador/altas` · `GET /api/organizador/cuentas` | Los pedidos pendientes y las cuentas aprobadas (con su saldo). Firmados por el organizador: los pendientes no son públicos (BC-88) |
 | `POST /api/organizador/rechazar` `{cuenta}` | Borra el pedido · 404 (sin pedido). Aprobar y dar de baja son actas por `POST /api/transacciones` |
 | `GET /api/organizador/suspendidos` · `POST /api/organizador/reactivar` `{cuenta}` | Los mineros suspendidos por el gateway con su motivo y evidencia, y reactivar uno (BC-75) · 404 |
 | `GET /api/bloques?limite=20&desde=<altura>` | Los bloques del más nuevo al más viejo, con `altura`, `transactions` como lista y `minero` y `recompensa` sacados de la coinbase |
 | `GET /api/bloques/<hash>` | El bloque con su `altura` · 404 |
+| `GET /api/cadena` | `{genesis, organizador, prefijo_minimo, timestamp}`: el hash del génesis va adelante de todo lo que se firma (v4, BC-99) · 503 sin génesis |
 | `GET /api/saldos` · `GET /api/saldos/<usuario>` | Saldos confirmados; un usuario que no existe tiene 0 |
 | `GET /health` · `GET /metrics` | Los de `comun/`, más `blockchain_tx_recibidas_total{resultado}` (`aceptada`, `invalida`, `error`, por transacción) |
 
-- **Formato y firma** (BC-56): valida con `validar_transaccion_firmada` del [contrato](../CONTRATO.md) y calcula el `id` con el contenido. La misma transacción reenviada da 409 (un Lua crea `tx:<id>` sólo si no existía). Las cargas de saldo (origen `emision`) tienen que estar firmadas por `ORGANIZADOR_CLAVE`. La cuenta, el nonce y el saldo los valida el NCT.
+- **Formato y firma** (BC-56): valida con `validar_transaccion_firmada` del [contrato](../CONTRATO.md), contra el génesis de `cadena` (v4: lo firmado para otra cadena da 400), y calcula el `id` con el contenido. La misma transacción reenviada da 409 (un Lua crea `tx:<id>` sólo si no existía). Las cargas de saldo (origen `emision`) tienen que estar firmadas por `ORGANIZADOR_CLAVE`. La cuenta, el nonce y el saldo los valida el NCT.
 - **Orden:** primero guarda `tx:<id>` «recibida» y después publica (con confirmación del broker). Al revés, el NCT podría pasarla a «pendiente» y el backend pisarla con «recibida».
 - **Fallas:** si la cola no confirma, borra los `tx:<id>` que no se publicaron y contesta 503. En un lote, `encoladas` dice cuáles sí entraron: ésas no se pueden sacar y el NCT las va a procesar, así que hay que reintentar sólo las demás.
 - **Rutas del organizador** (BC-58, BC-88): cada pedido a `/api/organizador/*` va firmado con la clave del organizador, como los de los mineros pero con `X-Organizador` (ver [Altas](../CONTRATO.md#altas)). Sin firma, firmado por otra clave o con la hora corrida más de 30 s: 403. Las usa el modo organizador de la [billetera](../billetera/) (con CORS en las cuatro que necesita) y `python -m claves`. Cada pedido, rechazo y reactivación deja una línea en el log.

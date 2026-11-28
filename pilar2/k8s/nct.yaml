@@ -1,7 +1,14 @@
 # NCT (BC-23): valida transacciones, arma cajas y tareas, y verifica y guarda los bloques.
-# 2 réplicas que se coordinan sólo por Redis (Lua y SET NX). No recibe tráfico HTTP: sin Service;
-# /metrics lo lee Prometheus por las anotaciones del pod.
+# 2 réplicas que se coordinan sólo por Redis (Lua y SET NX). Queda fijo en 2 réplicas sin HPA (BC-102):
+# arma una sola caja a la vez con lock en Redis (BC-89), así que agregar réplicas no sube el rendimiento,
+# sólo da alta disponibilidad. No recibe tráfico HTTP: sin Service; /metrics lo lee Prometheus por PodMonitor.
 # La imagen se construye a mano (ver pilar2/nct/README.md) hasta que haya Artifact Registry (BC-31).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nct
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +26,16 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
+      serviceAccountName: nct
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: nct }
       containers:
         - name: nct
           image: nct:dev
@@ -34,8 +51,11 @@ spec:
             # BC-73: la tarea sin bloque vence a los 240 s y el TrP la rearma con un carácter menos (0 = no).
             - { name: EMERGENCIA_SEGUNDOS, value: "240" }
             - { name: WAIT_REPLICAS, value: "1" }       # Redis tiene 2 réplicas: esperar a una
+            # v4 (BC-97): el piso de prefijo que va en el génesis (sólo cuenta al crear la cadena). El TrP no baja de ahí.
+            - { name: PREFIJO_MINIMO, value: "6" }
             # Las cuentas de prueba alice, bob y carol (comun/tests/claves.py: sus privadas salen de
-            # sha256("chimera-prueba-<nombre>")). En la red de verdad el génesis va vacío y el saldo entra por cargas.
+            # sha256("chimera-prueba-<nombre>")). Sólo para k3s y los tests: en GKE el génesis va vacío
+            # (pilar3/k8s/apps/nct-saldos.yaml, BC-91) y el saldo entra por cargas del organizador.
             - name: SALDOS_INICIALES
               value: '{"0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": {"saldo": 1000, "nombre": "alice"}, "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": {"saldo": 1000, "nombre": "bob"}, "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f": {"saldo": 1000, "nombre": "carol"}}'
             # El organizador, que firma las cargas de saldo. En k3s el de prueba; en GKE otro
@@ -47,6 +67,9 @@ spec:
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_CLAVE } }
             - name: REDIS_CLAVE
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: REDIS_CLAVE } }
+          volumeMounts:
+            - { name: logs, mountPath: /app/logs }
+            - { name: tmp, mountPath: /tmp }
           resources:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { memory: 256Mi }
@@ -64,3 +87,10 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001     # el usuario «app» del Dockerfile
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

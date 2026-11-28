@@ -19,7 +19,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from firmar import CUENTA, PRIVADA, contrato
+from firmar import CUENTA, ORIGENES, PRIVADA, contrato
 from prefijos import api, gateway_url, kubectl, medir, vivos
 
 COLUMNAS = ["bloque", "altura", "fase", "prefijo", "segundos", "rearmados", "minero",
@@ -48,8 +48,9 @@ def mandar_y_medir(base, maximo, ventana):
     antes = previo["block_hash"] if previo else None
     desde = datetime.now(timezone.utc).replace(microsecond=0)
     time.sleep(1)
-    nonce = api(base, f"/api/cuentas/{CUENTA['alice']}")["nonce"] + 1
-    api(base, "/api/transacciones", contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], 1, nonce))
+    nonce = api(base, f"/api/cuentas/{CUENTA[ORIGENES[0]]}")["nonce"] + 1
+    api(base, "/api/transacciones", contrato.transaccion(PRIVADA[ORIGENES[0]], CUENTA[ORIGENES[1]], 1, nonce,
+                                                         cadena=api(base, "/api/cadena")["genesis"]))
     limite = time.time() + ventana + maximo + 15
     while time.time() < limite:
         time.sleep(1)

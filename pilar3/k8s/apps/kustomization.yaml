@@ -16,6 +16,7 @@ resources:
   - ../../../pilar2/k8s/ingress.yaml
   - ../../../pilar2/k8s/escalador/escalador.yaml
   - ../../../pilar2/k8s/nodo/nodo.yaml
+  - ../../../pilar2/k8s/limites/limites.yaml
   - salud.yaml
   - a-https.yaml
 
@@ -43,6 +44,7 @@ patches:
   - path: gateway-ip.yaml
   - path: nct-saldos.yaml
   - path: ingreso-https.yaml
+  - path: limites-https.yaml
 
 # La cuenta de GCP del escalador (Workload Identity), sacada de gcp.env.
 replacements:

@@ -96,8 +96,16 @@ class Altas:
         return sorted(lista, key=lambda s: (-s.get("cuando", 0), s["cuenta"]))
 
     def pendientes(self):
-        """[{cuenta, tipo, nombre, pedida}], el pedido más viejo primero."""
-        pedidos = [{"cuenta": c, **json.loads(d)} for c, d in self.redis.hgetall(contrato.ALTAS_PENDIENTES).items()]
+        """[{cuenta, tipo, nombre, pedida}], el pedido más viejo primero.
+
+        BC-93: sin los que ya tienen un alta validada que todavía no entró en un bloque (el pedido se borra recién al
+        confirmarla): si no, el organizador los ve todavía pendientes y los aprueba otra vez."""
+        pedidos = self.redis.hgetall(contrato.ALTAS_PENDIENTES)
+        if not pedidos:
+            return []
+        en_camino = set(self.redis.hkeys(contrato.ALTAS_EN_CAMINO))
+        activas = dict(zip(pedidos, self.redis.hmget(contrato.CUENTAS, list(pedidos))))
+        pedidos = [{"cuenta": c, **json.loads(d)} for c, d in pedidos.items() if c not in en_camino and not activas[c]]
         return sorted(pedidos, key=lambda p: (p.get("pedida", 0), p["cuenta"]))
 
     def aprobadas(self):

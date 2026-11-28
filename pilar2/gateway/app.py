@@ -37,11 +37,13 @@ ENTREGADAS = Counter("blockchain_tareas_entregadas", "Rangos entregados a los mi
 VENCIDOS = Counter("blockchain_prestamos_vencidos", "Rangos que volvieron a la cola: su minero dejó de avisar "
                    "(sin_aviso) o se le pasó el plazo (plazo, BC-74)", ["motivo"])
 SHARES = Counter("blockchain_shares", "Shares que mandaron los mineros", ["resultado"])  # aceptado o descartado
-RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma, no_aprobado o suspendido
+RECHAZOS = Counter("blockchain_pedidos_rechazados", "Pedidos de mineros rechazados", ["motivo"])  # firma, cuerpo (BC-94), no_aprobado o suspendido
 SUSPENSIONES = Counter("blockchain_suspensiones", "Mineros suspendidos por contestar sin_solucion sin buscar (BC-75)",
                        ["motivo"])  # estadistica o reverificacion
 REVERIFICACIONES = Counter("blockchain_reverificaciones", "Rangos sin solución reverificados con otro minero (BC-75)",
                            ["resultado"])  # pedida, mentira, sin_solucion, descartada
+AJENOS = Counter("blockchain_resultados_ajenos", "«Sin solución» de rangos que no estaban prestados a quien los "
+                 "manda: se rechazan con 409 y no llegan al TrP (BC-92)")
 POCOS_SHARES = Counter("blockchain_pocos_shares", "Préstamos seguidos con muchos menos shares que los esperados (aviso, BC-75)")
 TEXTOS_EN_MEMORIA, TAREAS_EN_MEMORIA = 512, 16
 
@@ -203,9 +205,13 @@ class Gateway:
 
     # ── Quién pide: la firma y la aprobación (BC-57) ──
 
+    def genesis(self):
+        """El hash del bloque 0 (v4, BC-99): los pedidos van firmados sobre él, así lo firmado para otra cadena no sirve."""
+        return self.redis.lindex(contrato.CADENA, 0)
+
     def autenticar(self, encabezados, metodo, ruta, cuerpo, ahora=None):
         """(minero, None) si el pedido está firmado y en hora por un minero aprobado; si no, (None, (código, motivo))."""
-        minero, motivo = contrato.verificar_pedido(encabezados, metodo, ruta, cuerpo, ahora=ahora)
+        minero, motivo = contrato.verificar_pedido(encabezados, metodo, ruta, cuerpo, ahora=ahora, cadena=self.genesis())
         if motivo:
             RECHAZOS.labels("firma").inc()
             log.warning("Pedido %s %s rechazado: %s", metodo, ruta, motivo)
@@ -318,7 +324,8 @@ class Gateway:
         if datos is not None:
             return datos
         try:
-            datos = contrato.tarea_guardada(self.redis.hgetall(contrato.TAREA.format(tarea)))
+            campos = self.redis.hgetall(contrato.TAREA.format(tarea))
+            datos = {**contrato.tarea_guardada(campos), "rangos": int(campos["rangos"])}
         except (KeyError, ValueError):
             return None  # el NCT o el TrP todavía no la terminaron de escribir
         with self._lock:
@@ -548,14 +555,28 @@ class Gateway:
         return self.redis.hget(contrato.TAREA.format(tarea), "estado") == "en_curso"
 
     def resultado(self, minero, datos):
-        """POST /results: suma los shares, lo publica en `resultados` y recién después libera el préstamo."""
+        """POST /results: suma los shares, lo publica en `resultados` y recién después libera el préstamo.
+
+        BC-92: un número de rango que la tarea no tiene da 400, y un `sin_solucion` (o una reverificación) de un
+        rango que no está prestado a este minero da 409: no llega al TrP, que si no daría la tarea por agotada.
+        Una solución de un rango ajeno (su préstamo venció) sí pasa: el TrP verifica el hash.
+        """
         if not resultado_valido(datos) or datos["minero"] != minero:
             return 400, {"error": "hace falta {tarea, rango, minero (el de X-Minero)} y {nonce, hash} o "
                                   "{sin_solucion: true}, con shares opcional (lista de nonces)"}
+        tarea = self._tarea(datos["tarea"])
+        if tarea is not None and not contrato.rango_de_la_tarea(datos["rango"], tarea["rangos"]):
+            RECHAZOS.labels("fuera_de_rango").inc()
+            log.warning("%s mandó el rango %s de la tarea %s, que tiene %d", minero, datos["rango"], datos["tarea"],
+                        tarea["rangos"])
+            return 400, {"error": f"la tarea {datos['tarea']} tiene los rangos 0 a {tarea['rangos'] - 1}"}
         shares = self.aceptar_shares(minero, datos["tarea"], datos["rango"], datos.get("shares"))
         miembro = f"{datos['tarea']}:{datos['rango']}"
         prestamo = self.redis.hgetall(PRESTAMO.format(miembro))
         propio = prestamo.get("minero") == minero and "mensaje" in prestamo
+        if not propio and (datos.get("sin_solucion") or datos["rango"] >= contrato.REVERIFICACION):
+            self._ajeno(minero, datos)
+            return 409, {"error": f"el rango {miembro} no está prestado a este minero", "shares": shares}
         if propio and prestamo.get("texto_de"):
             self._reverificado(minero, prestamo, datos)  # BC-75: no va al TrP
             self._terminar(minero, miembro)
@@ -571,6 +592,18 @@ class Gateway:
             return 503, {"error": "RabbitMQ no disponible"}
         self._terminar(minero, miembro)
         return 202, {"shares": shares}
+
+    def _ajeno(self, minero, datos):
+        """BC-92: un resultado que no se publica porque el rango no es de `minero`. No se lo suspende: a un minero
+        honesto le pasa si su préstamo venció (dejó de avisar o se le pasó el plazo) antes de que terminara."""
+        AJENOS.inc()
+        log.warning("%s mandó %s del rango %s:%s, que no tiene prestado: se rechaza", minero,
+                    "«sin solución»" if datos.get("sin_solucion") else "una reverificación", datos["tarea"],
+                    datos["rango"])
+        try:
+            self.redis.hincrby(contrato.HISTORIAL.format(minero), "resultados_ajenos", 1)
+        except redislib.RedisError:
+            log.exception("No se pudo anotar el resultado ajeno de %s en su historial", minero)
 
     # ── BC-75: los que contestan `sin_solucion` sin buscar ──
 
@@ -767,7 +800,8 @@ class Gateway:
                 "hashes_por_segundo": _numero(nodo.get("hashes_por_segundo")), "ultimo_aviso": aviso, "vivo": vivo,
                 "saldo": int(saldo or 0), "alta": _numero(historial.get("alta")),
                 **{campo: _numero(historial.get(campo)) or 0
-                   for campo in ("bloques", "recompensas", "shares", "rangos", "segundos_conectado")},
+                   for campo in ("bloques", "recompensas", "shares", "rangos", "segundos_conectado",
+                                 "resultados_ajenos")},
                 "shares_epoca": shares_epoca.get(cuenta, 0), "epoca": epoca,
             })
         return resultado
@@ -870,12 +904,45 @@ def responder(codigo, cuerpo):
     return JSONResponse(cuerpo, status_code=codigo)
 
 
-def agregar_rutas(app, gateway):
+# BC-94: el cuerpo más grande que el gateway lee. El más grande de verdad es un /results con SHARES_POR_RANGO (64)
+# nonces, un par de KB; con 4 veces eso no llega, así que manda el piso de 64 KB. El gateway no pasa por Traefik
+# (tiene su LoadBalancer): este tope es el que en el backend pone Traefik.
+CUERPO_MAXIMO = 64 * 1024
+
+
+async def leer_cuerpo(request, maximo):
+    """El cuerpo, o None si pasa de `maximo` bytes: por Content-Length, sin leerlo, o mientras llega (chunked)."""
+    largo = request.headers.get("content-length", "")
+    if largo.isdigit() and int(largo) > maximo:
+        return None
+    partes, total = [], 0
+    async for parte in request.stream():
+        total += len(parte)
+        if total > maximo:
+            return None
+        partes.append(parte)
+    return b"".join(partes)
+
+
+def agregar_rutas(app, gateway, cuerpo_maximo=CUERPO_MAXIMO):
     def ruta(metodo_http, atender):
         """Verifica la firma y la aprobación, lee el JSON y corre el método del gateway fuera del event
-        loop (Redis y pika bloquean). La ruta firmada lleva la query, como la manda el minero."""
+        loop (Redis y pika bloquean). La ruta firmada lleva la query, como la manda el minero.
+
+        BC-94: antes de leer el cuerpo mira la cuenta y la hora de las cabeceras (401) y el tamaño (413). La firma
+        cubre el cuerpo, así que verificarla (y anotar el pedido de alta de un minero nuevo) necesita leerlo, con tope."""
         async def pedido(request: Request):
-            cuerpo = await request.body()
+            motivo = contrato.problema_de_cabeceras(request.headers)
+            if motivo:
+                RECHAZOS.labels("firma").inc()
+                log.warning("Pedido %s %s rechazado sin leer el cuerpo: %s", metodo_http, request.url.path, motivo)
+                return JSONResponse({"error": motivo}, status_code=401)
+            cuerpo = await leer_cuerpo(request, cuerpo_maximo)
+            if cuerpo is None:
+                RECHAZOS.labels("cuerpo").inc()
+                log.warning("Pedido %s %s rechazado: el cuerpo pasa de %d bytes", metodo_http, request.url.path,
+                            cuerpo_maximo)
+                return JSONResponse({"error": f"el cuerpo pasa de {cuerpo_maximo} bytes"}, status_code=413)
             firmada = request.url.path + (f"?{request.url.query}" if request.url.query else "")
             try:
                 minero, error = await run_in_threadpool(gateway.autenticar, request.headers, metodo_http,
@@ -898,6 +965,19 @@ def agregar_rutas(app, gateway):
     app.post("/keepalive")(ruta("POST", gateway.keepalive))
     app.get("/tasks/next")(ruta("GET", gateway.siguiente))
     app.get("/epocas/{n}")(ruta("GET", gateway.epoca))
+
+    @app.get("/cadena")
+    async def cadena():
+        """v4: el hash del génesis, sin firma. El minero lo pone adelante de lo que firma; si la cadena se reinicia,
+        sus pedidos dan 401 y lo vuelve a leer."""
+        try:
+            genesis = await run_in_threadpool(gateway.genesis)
+        except redislib.RedisError as falla:
+            log.error("Redis no respondió al leer el génesis: %r", falla)
+            return JSONResponse({"error": "Redis no disponible"}, status_code=503)
+        if not genesis:
+            return JSONResponse({"error": "la cadena todavía no tiene génesis"}, status_code=503)
+        return {"genesis": genesis}
 
     @app.get("/mineros")
     async def mineros():

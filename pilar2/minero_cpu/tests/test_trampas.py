@@ -77,3 +77,14 @@ def test_acaparar_pide_diez(armar):
     falso.cortar = True
     minero.un_rango()
     assert len(falso.de("/tasks/next")) == 10
+
+
+def test_rangos_ajenos_manda_los_de_otros_y_despues_mina_el_suyo(armar):
+    # El gateway falso entrega el rango 3 y, al volver a pedir, el siguiente: el de verdad le devuelve el mismo.
+    falso, minero = armar("rangos-ajenos", rangos=[rango(3, 0, 200_000, PREFIJO), rango(3, 0, 200_000, PREFIJO)])
+    assert minero.un_rango() is True
+    resultados = falso.de("/results")
+    ajenos = [r["rango"] for r in resultados if r.get("sin_solucion")]
+    assert ajenos == [0, 1, 2, 4, 5, 6, 7, 8, 9, *range(1000, 1010)]
+    assert resultados[-1]["rango"] == 3 and resultados[-1]["nonce"] == VECTOR["nonce"]  # el suyo, minado de verdad
+    assert minero.tareas_atacadas == {"t1"}

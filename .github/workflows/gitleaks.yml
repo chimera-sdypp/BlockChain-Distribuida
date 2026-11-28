@@ -1,4 +1,5 @@
-# gitleaks para los pipelines del Pilar 3: si encuentra un secreto en el historial, el pipeline falla.
+# gitleaks para todos los pipelines: si encuentra un secreto en el historial, el pipeline falla.
+# Lo llaman todos los workflows del repo como primer job (BC-112).
 name: gitleaks
 
 on:
@@ -6,6 +7,13 @@ on:
 
 permissions:
   contents: read
+
+env:
+  VERSION: "8.30.1"
+  # SHA-256 de gitleaks_8.30.1_linux_x64.tar.gz, del checksums.txt del release oficial
+  # (https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1). Va fijo acá y no se baja del release:
+  # si alguien cambia el tar, también podría cambiar el checksums.txt. Al subir de versión, cambiar los dos.
+  SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
 jobs:
   gitleaks:
@@ -15,7 +23,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Buscar secretos en todo el historial
+      # El binario y no gitleaks-action: la action pide licencia en repos de una organización.
+      - name: Bajar gitleaks y verificar el hash
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz gitleaks
-          ./gitleaks git --redact -v .
+          tar_gz="gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tar_gz" "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/$tar_gz"
+          echo "$SHA256  $RUNNER_TEMP/$tar_gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tar_gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Buscar secretos en todo el historial
+        run: '"$RUNNER_TEMP/gitleaks" git --redact -v .'

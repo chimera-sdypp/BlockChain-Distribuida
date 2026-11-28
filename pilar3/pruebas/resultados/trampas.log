@@ -36,3 +36,11 @@
 01:54:42 Fase 1: PREFIJO_BASE=5, hasta minar 3 bloques
 01:55:58 Fase 2: PREFIJO_BASE=8 (y ESPACIO_NONCES 16^8 × 4): el tope ya no limita
 01:58:21 [OK] bench-bajo: el ajuste por tiempo pasa el techo del bench declarado → bench declarado 5.26e+04 H/s (techo 5); prefijo de cada bloque, en orden: [7, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7]
+09:40:01 ── Escenario rangos-ajenos ──
+09:40:14 Minero honesto (honesto) arrancó: cb943d543782
+09:40:15 Minero trampa-rangos-ajenos (rangos-ajenos) arrancó: ade5849ccddb
+09:40:16 Espero 180 s: que el atacante intente agotar cada tarea
+09:43:17 [OK] rangos-ajenos: ningún «sin solución» ajeno se acepta → 4 tareas atacadas, respuestas {'400': 40, '409': 36}
+09:43:18 [OK] rangos-ajenos: el TrP no da tareas por agotadas → 0 tarea(s) agotadas
+09:43:18 [OK] rangos-ajenos: los bloques siguen saliendo con prefijo 7 (180 s) → 3 bloque(s)
+09:43:20 [OK] rangos-ajenos: el honesto no se suspende → no suspendido

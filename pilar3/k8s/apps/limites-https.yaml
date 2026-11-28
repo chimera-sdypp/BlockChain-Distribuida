@@ -1,0 +1,9 @@
+# BC-94: en GKE la IngressRoute de los límites (pilar2/k8s/limites) toma sólo HTTPS, con el certificado del Ingress.
+# Un POST por HTTP sigue por el Ingress, que lo redirige a HTTPS (a-https.yaml), y ahí pasa por los límites.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: api-escritura
+spec:
+  tls:
+    secretName: blockchain-tls

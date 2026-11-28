@@ -80,6 +80,16 @@ class Backend:
 
     def __init__(self, url, timeout=10):
         self.url, self.timeout = url.rstrip("/"), timeout
+        self._cadena = None
+
+    def cadena(self):
+        """El hash del génesis (v4, BC-99): va adelante de todo lo que se firma, así no sirve en otra cadena."""
+        if self._cadena is None:
+            codigo, datos = self.pedir("GET", "/api/cadena")
+            if codigo != 200 or not contrato.cadena_valida((datos or {}).get("genesis")):
+                raise SystemExit(f"El backend no dio el génesis de la cadena: {codigo} {datos}")
+            self._cadena = datos["genesis"]
+        return self._cadena
 
     def pedir(self, metodo, ruta, cuerpo=None, encabezados=None):
         datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
@@ -115,7 +125,8 @@ class Backend:
         """Un pedido al panel (`/api/organizador/*`), firmado como el organizador (X-Organizador). Sin cuerpo, una
         lectura (los pendientes o los suspendidos, BC-88)."""
         crudo = json.dumps(cuerpo).encode() if cuerpo is not None else b""
-        encabezados = contrato.firmar_pedido(privada, metodo, ruta, crudo, quien=contrato.ORGANIZADOR)
+        encabezados = contrato.firmar_pedido(privada, metodo, ruta, crudo, quien=contrato.ORGANIZADOR,
+                                             cadena=self.cadena())
         pedido = urllib.request.Request(self.url + ruta, data=crudo or None, method=metodo,
                                         headers={"Content-Type": "application/json", "User-Agent": AGENTE, **encabezados})
         try:
@@ -157,12 +168,12 @@ def mandar_y_seguir(backend, txs, salida=print, esperar=True):
     return resultado
 
 
-def actas_de_aprobacion(privada_organizador, nonce, cuenta, tipo, nombre, carga=None, ahora=None):
+def actas_de_aprobacion(privada_organizador, nonce, cuenta, tipo, nombre, carga=None, ahora=None, *, cadena):
     """El alta (y, si viene, la carga para esa cuenta) con los nonces de «emision» que siguen a `nonce`."""
     timestamp = int(time.time() if ahora is None else ahora)
-    txs = [contrato.alta(privada_organizador, nonce + 1, cuenta, tipo, nombre, timestamp)]
+    txs = [contrato.alta(privada_organizador, nonce + 1, cuenta, tipo, nombre, timestamp, cadena=cadena)]
     if carga:
-        txs.append(contrato.carga(privada_organizador, nonce + 2, cuenta, carga, timestamp))
+        txs.append(contrato.carga(privada_organizador, nonce + 2, cuenta, carga, timestamp, cadena=cadena))
     return txs
 
 
@@ -177,7 +188,14 @@ def aprobar(backend, privada_organizador, cuenta, tipo, nombre, carga=None, sali
         raise ValueError("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
     if carga and tipo != "usuario":
         raise ValueError("la carga es sólo para usuarios (los mineros cobran minando)")
-    txs = actas_de_aprobacion(privada_organizador, backend.nonce(contrato.EMISION), cuenta, tipo, nombre, carga)
+    estado = backend.cuenta(cuenta)
+    if estado.get("aprobada") or estado.get("alta_en_camino"):
+        # BC-93: la cadena rechaza el alta repetida, pero la carga es válida sola y se cargaría dos veces.
+        salida(f"La cuenta {cuenta} ya {'tiene alta' if estado.get('aprobada') else 'tiene un alta en camino'}: "
+               "no se manda nada")
+        return 1
+    txs = actas_de_aprobacion(privada_organizador, backend.nonce(contrato.EMISION), cuenta, tipo, nombre, carga,
+                              cadena=backend.cadena())
     return mandar_y_seguir(backend, txs, salida, esperar)
 
 
@@ -262,7 +280,7 @@ def rafaga(backend, privadas, cantidad, monto_maximo=5, esperar=600, salida=prin
     for i in range(cantidad):
         privada, origen, destino = privadas[i % len(privadas)], cuentas[i % len(cuentas)], cuentas[(i + 1) % len(cuentas)]
         nonces[origen] += 1
-        tx = contrato.transaccion(privada, destino, 1 + i % monto_maximo, nonces[origen])
+        tx = contrato.transaccion(privada, destino, 1 + i % monto_maximo, nonces[origen], cadena=backend.cadena())
         codigo, respuesta = backend.mandar(tx)
         if codigo != 202:
             nonces[origen] -= 1
@@ -324,6 +342,8 @@ def principal(argumentos=None, salida=print):
         p.add_argument("--monto", type=int, required=True)
         p.add_argument("--nonce", type=int, help="si no está, lo pide al backend (--url): el último + 1")
         p.add_argument("--url", help="el backend (https://<dominio>)")
+        p.add_argument("--cadena", help="el hash del génesis (si no está, lo pide al backend --url): lo firmado sólo "
+                                        "vale en esa cadena")
         p.add_argument("--enviar", action="store_true", help="la manda al backend (si no, sólo la muestra)")
     p = sub.add_parser("pendientes", help="organizador: los pedidos de alta que esperan (firmado: no son públicos)")
     p.add_argument("archivo", help="la clave del organizador")
@@ -369,8 +389,9 @@ def principal(argumentos=None, salida=print):
     elif a.comando == "alta":
         if not contrato.nombre_valido(a.nombre):
             parser.error("nombre: de 1 a 32 letras, números, «_», «.» o «-»")
-        codigo, respuesta = _url(parser, a).pedir("POST", "/api/altas",
-                                                  contrato.pedido_alta(leer_privada(a.archivo), a.tipo, a.nombre))
+        backend = _url(parser, a)
+        codigo, respuesta = backend.pedir("POST", "/api/altas", contrato.pedido_alta(
+            leer_privada(a.archivo), a.tipo, a.nombre, cadena=backend.cadena()))
         salida(f"{codigo} {json.dumps(respuesta)}")
         return 0 if codigo in (202, 409) else 1
     elif a.comando == "saldo":
@@ -386,12 +407,17 @@ def principal(argumentos=None, salida=print):
         backend = Backend(a.url) if a.url else None
         if a.nonce is None and backend is None:
             parser.error("hace falta --nonce o --url (para pedirle el último al backend)")
+        if a.cadena is None and backend is None:
+            parser.error("hace falta --cadena o --url (para pedirle el génesis al backend)")
+        if a.cadena is not None and not contrato.cadena_valida(a.cadena):
+            parser.error("--cadena es el hash del génesis: 32 caracteres hex en minúscula")
+        cadena = a.cadena or backend.cadena()
         origen = contrato.EMISION if a.comando == "cargar" else contrato.clave_publica(privada)
         nonce = a.nonce if a.nonce is not None else backend.nonce(origen) + 1
         if a.comando == "cargar":
-            tx = contrato.carga(privada, nonce, _cuenta(parser, a.destino), a.monto, int(time.time()))
+            tx = contrato.carga(privada, nonce, _cuenta(parser, a.destino), a.monto, int(time.time()), cadena=cadena)
         else:
-            tx = contrato.transaccion(privada, _cuenta(parser, a.destino), a.monto, nonce)
+            tx = contrato.transaccion(privada, _cuenta(parser, a.destino), a.monto, nonce, cadena=cadena)
         if a.comando == "transferir":
             if backend is None:
                 parser.error("transferir necesita --url")
@@ -416,13 +442,13 @@ def principal(argumentos=None, salida=print):
                        a.carga, salida)
     elif a.comando in ("baja", "permiso"):
         backend, privada = _url(parser, a), leer_privada(a.archivo)
-        nonce, ahora = backend.nonce(contrato.EMISION) + 1, int(time.time())
+        nonce, ahora, cadena = backend.nonce(contrato.EMISION) + 1, int(time.time()), backend.cadena()
         if a.comando == "baja":
-            tx = contrato.baja(privada, nonce, _cuenta(parser, a.cuenta), a.motivo, ahora)
+            tx = contrato.baja(privada, nonce, _cuenta(parser, a.cuenta), a.motivo, ahora, cadena=cadena)
         else:
             if a.prefijo and not contrato.nombre_valido(a.prefijo):
                 parser.error("el prefijo: de 1 a 32 letras, números, «_», «.» o «-»")
-            tx = contrato.permiso(privada, nonce, _cuenta(parser, a.clave), a.prefijo, ahora)
+            tx = contrato.permiso(privada, nonce, _cuenta(parser, a.clave), a.prefijo, ahora, cadena=cadena)
         return mandar_y_seguir(backend, [tx], salida)
     elif a.comando in ("rechazar", "reactivar"):
         codigo, respuesta = _url(parser, a).firmado(leer_privada(a.archivo), "POST", f"/api/organizador/{a.comando}",

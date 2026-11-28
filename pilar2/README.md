@@ -48,6 +48,7 @@ kubectl -n blockchain create secret generic blockchain-secretos --from-literal=R
   --from-literal=REDIS_CLAVE="$(openssl rand -hex 16)"
 k8s/imagenes.sh                      # construye las imágenes y las importa en k3s (containerd)
 kubectl apply -k k8s                 # RabbitMQ, Redis, backend, frontend, nct, trp, gateway e Ingress
+kubectl apply -k k8s/limites         # BC-94: tope de cuerpo y de ritmo para los POST de /api (Traefik)
 # Monitoreo (ver «Observabilidad»): la contraseña de Grafana va en un Secret, nunca en el repo
 kubectl create namespace monitoring
 kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin \

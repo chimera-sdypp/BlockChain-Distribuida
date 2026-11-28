@@ -16,7 +16,7 @@ contra el saldo confirmado menos lo comprometido, así que con los saldos por de
 las transacciones de más se rechazarían. Ver README.md.
 
 Contrato v2: las transacciones van firmadas por su origen y con el nonce de la cuenta. Las firma este
-script antes de correr k6 (con las cuentas de prueba del génesis, ../firmar.py) y k6 sólo manda los
+script antes de correr k6 (con las cuentas de ../cuentas.py: en GKE, las del Secret cuentas-prueba) y k6 sólo manda los
 lotes. Los destinos son 100 cuentas nuevas por corrida: así se reconocen sus transacciones en la cadena.
 Necesita k6 en el PATH y el Python de pilar2 (pilar2/.venv/bin/python), por `cryptography`.
 """
@@ -39,7 +39,7 @@ from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
 sys.path.insert(0, str(AQUI.parent))
-from firmar import PRIVADA, contrato, cuenta  # noqa: E402
+from firmar import ORIGENES, PRIVADA, contrato, cuenta  # noqa: E402
 
 DESTINOS = 100  # destinos distintos por corrida
 CAMPOS = ["corrida", "inicio", "tamano", "repeticion", "vus", "lote", "lotes",
@@ -104,11 +104,12 @@ def firmar_lotes(api, origenes, cantidad, lote, archivo):
     orígenes, de monto 1, cada una con el nonce siguiente de su origen. Devuelve los destinos."""
     nonces = {o: api.get(f"/api/cuentas/{cuenta(o)}")["nonce"] for o in origenes}
     destinos = [contrato.nueva_clave()[1] for _ in range(DESTINOS)]
+    cadena = api.get("/api/cadena")["genesis"]  # v4: lo firmado lleva el hash del génesis
     txs = []
     for k in range(cantidad):
         origen = origenes[k % len(origenes)]
         nonces[origen] += 1
-        txs.append(contrato.transaccion(PRIVADA[origen], destinos[k % DESTINOS], 1, nonces[origen]))
+        txs.append(contrato.transaccion(PRIVADA[origen], destinos[k % DESTINOS], 1, nonces[origen], cadena=cadena))
     lotes = [txs[i:i + lote] for i in range(0, cantidad, lote)]
     Path(archivo).write_text(json.dumps(lotes), encoding="utf-8")
     return set(destinos)
@@ -173,8 +174,8 @@ def main():
     argumentos.add_argument("--repeticiones", type=int, default=3)
     argumentos.add_argument("--vus", type=int, default=10, help="usuarios virtuales de k6")
     argumentos.add_argument("--lote", type=int, default=1000, help="transacciones por pedido (máximo 1000)")
-    argumentos.add_argument("--origenes", type=lambda t: [o for o in t.split(",") if o], default=["alice", "bob", "carol"],
-                            help="cuentas de prueba del génesis que firman (ver ../firmar.py)")
+    argumentos.add_argument("--origenes", type=lambda t: [o for o in t.split(",") if o], default=None,
+                            help="las cuentas que firman, separadas por comas (por defecto, todas las de ../cuentas.py)")
     argumentos.add_argument("--timeout", type=int, default=0,
                             help="segundos máximos esperando la confirmación (0: según el tamaño, ver --segundos-por-bloque)")
     argumentos.add_argument("--segundos-por-bloque", type=float, default=15.0,
@@ -187,6 +188,7 @@ def main():
                             help="correr aunque los orígenes no tengan saldo para el bulk más grande")
     argumentos.add_argument("--csv", type=Path, default=AQUI / "resultados.csv")
     opciones = argumentos.parse_args()
+    opciones.origenes = opciones.origenes or list(ORIGENES)
 
     k6 = shutil.which("k6") or sys.exit("No está k6 en el PATH (https://k6.io/docs/get-started/installation/)")
     if not 1 <= opciones.lote <= 1000:
@@ -198,7 +200,7 @@ def main():
         sys.exit(f"No responde {opciones.url}/api/saldos: {error}")
     if faltan and not opciones.permitir_rechazos:
         sys.exit(f"Cada origen necesita al menos {necesario} de saldo y no alcanza: {faltan}. "
-                 "Ver README.md (SALDOS_INICIALES) o usar --permitir-rechazos.")
+                 "Que el organizador les cargue saldo (../cuentas.py fondear) o usar --permitir-rechazos.")
 
     nuevo = not opciones.csv.exists()
     with opciones.csv.open("a", newline="") as archivo, tempfile.TemporaryDirectory() as temporal:

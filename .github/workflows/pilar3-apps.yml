@@ -23,6 +23,7 @@ on:
       - "pilar2/k8s/*.yaml"
       - "pilar2/k8s/escalador/**"
       - "pilar2/k8s/nodo/**"
+      - "pilar2/k8s/limites/**"
       - "pilar3/k8s/apps/**"
       - "pilar3/k8s/nodegroup-apps.yaml"
       - "pilar3/vms/instancias/**"
@@ -42,6 +43,7 @@ on:
       - "pilar2/k8s/*.yaml"
       - "pilar2/k8s/escalador/**"
       - "pilar2/k8s/nodo/**"
+      - "pilar2/k8s/limites/**"
       - "pilar3/k8s/apps/**"
       - "pilar3/k8s/nodegroup-apps.yaml"
       - "pilar3/vms/instancias/**"
@@ -160,6 +162,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/apps > /dev/null
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Génesis vacío y sin cuentas de prueba (BC-91)
+        run: |
+          pip install -q cryptography==50.0.2
+          kubectl kustomize --load-restrictor LoadRestrictionsNone pilar3/k8s/apps | python pilar3/k8s/sin_cuentas_de_prueba.py
       - name: Falta la nube
         if: vars.GCP_PROYECTO == ''
         run: echo "::notice::Sin GCP_PROYECTO (falta la nube, BC-31) no se sube ni se despliega."

@@ -1,4 +1,4 @@
-"""El estado que sale de la cadena (BC-80): saldos, nonces, cuentas y permisos, y su raíz de Merkle.
+"""El estado que sale de la cadena (BC-80): saldos, nonces, cuentas, permisos y vetadas, y su raíz de Merkle.
 
 Un solo código decide qué estado resulta de una cadena: lo usan el NCT (al arrancar y antes de armar cada bloque),
 la auditoría, los nodos verificadores, los validadores y la herramienta de claves. Redis es caché: si difiere,
@@ -9,13 +9,15 @@ gana la cadena.
         problemas, avisos = aplicar_bloque(estado, bloque, reglas)
         if problemas: ...                        # en modo estricto, el estado no cambia
 
-Reglas de un bloque minado (altura ≥ 1), además del hash, el prefijo y que encadene:
+Reglas de un bloque minado (altura ≥ 1), además del hash, el prefijo (v4: con al menos el piso del génesis) y que
+encadene:
 - su `raiz_estado` es la raíz del estado al cerrar el bloque anterior;
 - la primera transacción es la coinbase del ganador;
 - en el primer bloque de una época van `shares-<e>` (la raíz de la lista de shares de la época anterior) y los
-  `part-<e>-<minero>` que salen de esa lista (BC-82), y en ningún otro;
+  `part-<e>-<minero>` que salen de esa lista (BC-82), y en ningún otro; v4: nunca suman más que el fondo;
 - el resto, en orden: transferencias (firma, cuenta aprobada, nonce siguiente y saldo), cargas (firma del
-  organizador y nonce de «emision») y actas (alta, baja y permiso, BC-79).
+  organizador y nonce de «emision») y actas (alta, baja y permiso, BC-79). v4: las firmas son sobre el hash del
+  génesis de esta cadena, y un alta delegada no reactiva una cuenta que el organizador dio de baja.
 
 Las transacciones se aplican una por una: una transferencia puede gastar lo que recibió antes en el mismo bloque.
 """
@@ -73,17 +75,25 @@ def raiz_de_rama(hoja, rama):
 # ── Las hojas del estado ──
 
 PERMISO = "permiso:"  # las hojas de los permisos: permiso:<clave>:<prefijo> (las de las cuentas empiezan con hex)
+VETADA = "vetada"     # v4: el tipo en la hoja de una cuenta sin alta que tiene una baja del organizador
 
 
 def hoja_cuenta(cuenta, tipo, saldo, nonce):
-    """`cuenta:tipo:saldo:nonce` (tipo «-» si no está aprobada). Una cuenta sin nada no tiene hoja."""
+    """`cuenta:tipo:saldo:nonce` (tipo «-» si no está aprobada, «vetada» si la dio de baja el organizador). Una cuenta
+    sin nada no tiene hoja."""
     if not saldo and not nonce and not tipo:
         return None
     return f"{cuenta}:{tipo or '-'}:{saldo}:{nonce}"
 
 
+def tipos_con_vetadas(tipos, vetadas):
+    """cuenta → tipo, con «vetada» para las que no tienen alta y sí una baja del organizador."""
+    return {**{cuenta: VETADA for cuenta in vetadas}, **tipos}
+
+
 def hojas_estado(saldos, nonces, tipos, permisos):
-    """[(clave, hoja)] ordenadas por clave (es lo mismo que ordenar las hojas). `tipos`: cuenta → tipo."""
+    """[(clave, hoja)] ordenadas por clave (es lo mismo que ordenar las hojas). `tipos`: cuenta → tipo (con las
+    vetadas, ver `tipos_con_vetadas`)."""
     hojas = []
     for cuenta in set(saldos) | set(nonces) | set(tipos):
         hoja = hoja_cuenta(cuenta, tipos.get(cuenta, ""), int(saldos.get(cuenta, 0) or 0), int(nonces.get(cuenta, 0) or 0))
@@ -109,14 +119,19 @@ def prueba(hojas, cuenta):
 # ── El estado ──
 
 class Estado:
-    """El estado al cerrar el bloque `altura` (cuyo hash es `punta`). Antes del génesis, altura −1."""
+    """El estado al cerrar el bloque `altura` (cuyo hash es `punta`). Antes del génesis, altura −1.
 
-    VERSION = 3
+    v4: `genesis` (el hash del bloque 0: el id de la cadena, va en todo lo firmado), `prefijo_minimo` (el piso de
+    prefijo que fija el génesis) y `vetadas` (las cuentas que dio de baja el organizador: tienen hoja propia).
+    """
+
+    VERSION = 4
 
     def __init__(self):
         self.altura, self.punta, self.timestamp = -1, None, 0
         self.saldos, self.nonces, self.cuentas, self.permisos = {}, {}, {}, {}
-        self.organizador = ""
+        self.vetadas = set()
+        self.organizador, self.genesis, self.prefijo_minimo = "", None, 1
         self.shares = {}  # época → la raíz de su lista de shares, la que quedó en la cadena (BC-82)
         self._hashes, self._sucias, self._orden = {}, set(), None
 
@@ -132,7 +147,8 @@ class Estado:
             prefijo = self.permisos.get(clave[len(PERMISO):])
             return f"{clave}:{prefijo}" if prefijo else None
         datos = self.cuentas.get(clave)
-        return hoja_cuenta(clave, datos["tipo"] if datos else "", self.saldos.get(clave, 0), self.nonces.get(clave, 0))
+        tipo = datos["tipo"] if datos else (VETADA if clave in self.vetadas else "")
+        return hoja_cuenta(clave, tipo, self.saldos.get(clave, 0), self.nonces.get(clave, 0))
 
     def _al_dia(self):
         for clave in self._sucias:
@@ -175,6 +191,13 @@ class Estado:
             self.cuentas[cuenta] = datos
         self._ensuciar(cuenta)
 
+    def vetar(self, cuenta, vetada):
+        if vetada:
+            self.vetadas.add(cuenta)
+        else:
+            self.vetadas.discard(cuenta)
+        self._ensuciar(cuenta)
+
     def poner_permiso(self, clave, prefijo):
         if prefijo:
             self.permisos[clave] = prefijo
@@ -187,7 +210,8 @@ class Estado:
     def a_dict(self):
         return {"version": self.VERSION, "altura": self.altura, "punta": self.punta, "timestamp": self.timestamp,
                 "saldos": self.saldos, "nonces": self.nonces, "cuentas": self.cuentas, "permisos": self.permisos,
-                "organizador": self.organizador, "shares": {str(e): r for e, r in self.shares.items()},
+                "vetadas": sorted(self.vetadas), "organizador": self.organizador, "genesis": self.genesis,
+                "prefijo_minimo": self.prefijo_minimo, "shares": {str(e): r for e, r in self.shares.items()},
                 "raiz": self.raiz()}
 
     @classmethod
@@ -200,9 +224,11 @@ class Estado:
         estado.saldos = {c: int(s) for c, s in datos["saldos"].items()}
         estado.nonces = {c: int(n) for c, n in datos["nonces"].items()}
         estado.cuentas, estado.permisos = dict(datos["cuentas"]), dict(datos["permisos"])
+        estado.vetadas = set(datos.get("vetadas", []))
         estado.organizador = datos.get("organizador", "")
+        estado.genesis, estado.prefijo_minimo = datos.get("genesis"), int(datos.get("prefijo_minimo", 1))
         estado.shares = {int(e): r for e, r in datos.get("shares", {}).items()}
-        estado._sucias = set(estado.saldos) | set(estado.nonces) | set(estado.cuentas) | \
+        estado._sucias = set(estado.saldos) | set(estado.nonces) | set(estado.cuentas) | set(estado.vetadas) | \
             {PERMISO + clave for clave in estado.permisos}
         if "raiz" in datos and estado.raiz() != datos["raiz"]:
             raise ValueError("la raíz del snapshot no es la de su contenido")
@@ -217,13 +243,15 @@ class Reglas:
     """Lo que el que verifica sabe de antemano (no se lo cree a la cadena ni al servidor).
 
     - `organizador`: si se conoce, el del génesis tiene que ser éste. Si no, se toma el del génesis.
-    - `fondo_epoca`: lo que se reparte por época (FONDO_EPOCA).
+    - `fondo_epoca`: lo que se reparte por época (FONDO_EPOCA). Los pagos de una época nunca suman más (v4, BC-98).
     - `shares`: función época → detalle {minero: {shares, racha, …}} de lo publicado (/api/epocas/<n>), o None si no
-      se consiguió. Con eso se verifica el pago de cada época; sin eso, queda un aviso.
+      se consiguió. Con eso se verifica el reparto entre los mineros; sin eso, queda un aviso (el total igual se mira).
     - `verificar_firmas`: False sólo para lo que ya se verificó (el NCT siguiendo sus propios bloques).
+    - `prefijo_minimo` (v4, BC-97): el piso que exige el que verifica aunque el génesis diga menos (vale el mayor).
     """
     organizador: str = ""
     fondo_epoca: int = contrato.FONDO_EPOCA
+    prefijo_minimo: int = 0
     shares: object = None
     verificar_firmas: bool = True
     _detalles: dict = field(default_factory=dict)
@@ -245,8 +273,8 @@ class _Cambios:
 
     def __init__(self, estado):
         self.estado = estado
-        self.saldos, self.nonces, self.cuentas, self.permisos = {}, {}, {}, {}
-        self.organizador = estado.organizador
+        self.saldos, self.nonces, self.cuentas, self.permisos, self.vetadas = {}, {}, {}, {}, {}
+        self.organizador, self.genesis, self.prefijo_minimo = estado.organizador, estado.genesis, estado.prefijo_minimo
         self.shares = None  # las raíces de shares, si el bloque paga una época
 
     def saldo(self, cuenta):
@@ -261,6 +289,9 @@ class _Cambios:
     def permiso(self, clave):
         return self.permisos[clave] if clave in self.permisos else self.estado.permisos.get(clave)
 
+    def vetada(self, cuenta):
+        return self.vetadas[cuenta] if cuenta in self.vetadas else cuenta in self.estado.vetadas
+
     def sumar(self, cuenta, monto):
         self.saldos[cuenta] = self.saldo(cuenta) + monto
 
@@ -273,7 +304,10 @@ class _Cambios:
             self.estado.poner_cuenta(cuenta, datos)
         for clave, prefijo in self.permisos.items():
             self.estado.poner_permiso(clave, prefijo)
-        self.estado.organizador = self.organizador
+        for cuenta, vetada in self.vetadas.items():
+            self.estado.vetar(cuenta, vetada)
+        self.estado.organizador, self.estado.genesis = self.organizador, self.genesis
+        self.estado.prefijo_minimo = self.prefijo_minimo
 
 
 def _sin_datos_vacios(tx):
@@ -284,24 +318,34 @@ def _igual(tx, esperada):
     return _sin_datos_vacios(tx) == _sin_datos_vacios(esperada)
 
 
-def problema_de_acta(tx, cuenta_de, permiso_de, organizador):
+ALTA_REPETIDA = "la cuenta ya tiene alta"
+VETADA_POR_ORGANIZADOR = "la cuenta tiene una baja del organizador: sólo él la puede volver a dar de alta"
+
+
+def problema_de_acta(tx, cuenta_de, permiso_de, organizador, vetada_de=None):
     """Lo que depende del estado en un acta ya firmada; None si vale. `cuenta_de(c)` da {tipo, nombre} o None,
-    `permiso_de(clave)` el prefijo o None. Lo usan el NCT (con el caché, al validar) y `aplicar_bloque`."""
+    `permiso_de(clave)` el prefijo o None y `vetada_de(c)` si el organizador le dio de baja (v4). Lo usan el NCT (con
+    el caché, al validar) y `aplicar_bloque`."""
     tipo, destino = contrato.tipo_de(tx), tx["destino"]
     if tipo in ("alta", "baja") and destino == organizador:
         return "el organizador no se da de alta ni de baja: está en el génesis"
+    existente = cuenta_de(destino)
+    if tipo == "alta" and existente:
+        # BC-93: aprobar dos veces la misma cuenta no puede volver a darle el alta (ni su carga inicial). Después de
+        # una baja la cuenta ya no está: el organizador la puede volver a dar de alta.
+        return ALTA_REPETIDA
     if not contrato.es_delegada(tx):
         return None
     prefijo = permiso_de(tx["origen"])
     if not prefijo:
         return "sin permiso: la clave no tiene un permiso del organizador"
-    existente = cuenta_de(destino)
+    if tipo == "alta" and vetada_de and vetada_de(destino):
+        # v4 (BC-95): una baja del organizador dura. El escalador no la deshace dándola de alta de nuevo.
+        return VETADA_POR_ORGANIZADOR
     if tipo == "alta":
         tipo_cuenta, nombre = contrato.datos_alta(tx)
         if tipo_cuenta != "minero" or not nombre.startswith(prefijo):
             return f"sin permiso: sólo puede dar de alta mineros {prefijo}*"
-        if existente and (existente.get("tipo") != "minero" or not str(existente.get("nombre", "")).startswith(prefijo)):
-            return "sin permiso: la cuenta ya existe y no es uno de sus mineros"
     elif not existente or existente.get("tipo") != "minero" or not str(existente.get("nombre", "")).startswith(prefijo):
         return f"sin permiso: sólo puede dar de baja mineros {prefijo}*"
     return None
@@ -336,7 +380,7 @@ def _siguiente_nonce(cambios, cuenta, tx):
 
 
 def _transferencia(cambios, tx, reglas):
-    errores = contrato.validar_transaccion_firmada(tx) if reglas.verificar_firmas else []
+    errores = contrato.validar_transaccion_firmada(tx, cambios.genesis) if reglas.verificar_firmas else []
     if errores:
         return f"transferencia {tx.get('id')} inválida: {'; '.join(errores)}"
     if tx.get("datos", "") != "":
@@ -361,7 +405,7 @@ def _transferencia(cambios, tx, reglas):
 def _carga(cambios, tx, reglas):
     if not cambios.organizador:
         return f"carga {tx.get('id')}: no hay organizador en el génesis para verificar la firma"
-    errores = contrato.validar_carga(tx, cambios.organizador) if reglas.verificar_firmas else []
+    errores = contrato.validar_carga(tx, cambios.organizador, cambios.genesis) if reglas.verificar_firmas else []
     if errores:
         return f"carga {tx.get('id')} inválida: {'; '.join(errores)}"
     problema = _siguiente_nonce(cambios, contrato.EMISION, tx)
@@ -374,19 +418,23 @@ def _carga(cambios, tx, reglas):
 
 def _acta(cambios, tx, reglas):
     if reglas.verificar_firmas:
-        errores = contrato.validar_acta(tx, cambios.organizador)
+        errores = contrato.validar_acta(tx, cambios.organizador, cambios.genesis)
         if errores:
             return f"{contrato.tipo_de(tx)} {tx.get('id')} inválida: {'; '.join(errores)}"
     firmante = contrato.EMISION if tx["origen"] == contrato.EMISION else tx["origen"]
     problema = _siguiente_nonce(cambios, firmante, tx) or \
-        problema_de_acta(tx, cambios.cuenta, cambios.permiso, cambios.organizador)
+        problema_de_acta(tx, cambios.cuenta, cambios.permiso, cambios.organizador, cambios.vetada)
     if problema:
         return f"{tx['id']}: {problema}" if not problema.startswith(tx["id"]) else problema
-    tipo = contrato.tipo_de(tx)
+    tipo, del_organizador = contrato.tipo_de(tx), firmante == contrato.EMISION
     if tipo == "alta":
         cambios.cuentas[tx["destino"]] = _datos_cuenta(tx)
+        if del_organizador and cambios.vetada(tx["destino"]):
+            cambios.vetadas[tx["destino"]] = False  # el organizador la reactiva
     elif tipo == "baja":
         cambios.cuentas[tx["destino"]] = None
+        if del_organizador:
+            cambios.vetadas[tx["destino"]] = True
     else:
         cambios.permisos[tx["destino"]] = tx.get("datos", "") or None
     cambios.nonces[firmante] = tx["nonce"]
@@ -399,6 +447,8 @@ def _genesis(estado, cambios, bloque, reglas, problemas):
     if bloque.get("raiz_estado") != contrato.RAIZ_VACIA:
         problemas.append("la raíz de estado del génesis es la del árbol vacío")
     timestamp = bloque["timestamp"]
+    cambios.genesis = bloque["block_hash"]  # v4: el id de la cadena (si el hash no sale del texto, ya es un problema)
+    con_reglas = False
     for i, tx in enumerate(bloque.get("transactions") or []):
         tipo = contrato.tipo_de(tx)
         destino = tx.get("destino")
@@ -411,6 +461,13 @@ def _genesis(estado, cambios, bloque, reglas, problemas):
                 problemas.append(f"el organizador del génesis es {destino} y no el conocido ({reglas.organizador})")
             cambios.organizador = destino
             cambios.cuentas[destino] = {"tipo": "organizador", "nombre": "organizador", "alta": timestamp}
+        elif tipo == "reglas":
+            leidas = contrato.leer_reglas(tx)
+            if con_reglas or leidas is None or not _igual(tx, contrato.reglas_genesis(leidas["prefijo_minimo"], timestamp)):
+                problemas.append("las reglas del génesis están mal formadas o repetidas")
+                continue
+            con_reglas = True
+            cambios.prefijo_minimo = leidas["prefijo_minimo"]
         elif tipo == "genesis":
             tipo_cuenta, nombre = contrato.datos_alta(tx)
             esperada = contrato._emision(f"genesis-{destino}", destino, tx.get("monto"), 0, timestamp,
@@ -453,12 +510,18 @@ def _pago_de_epoca(estado, cambios, bloque, txs, i, reglas, problemas, avisos, a
         if list(pagos) != sorted(pagos):
             problemas.append(f"los pagos de la época {epoca} no están en orden de minero")
         if fondo != reglas.fondo_epoca:
-            problemas.append(f"la época {epoca} reparte {fondo} y el fondo es {reglas.fondo_epoca}")
+            problemas.append(f"la época {epoca} declara un fondo de {fondo} y el fondo es {reglas.fondo_epoca}")
+        total = sum(pagos.values())
+        if total > reglas.fondo_epoca:
+            # v4 (BC-98): incondicional. Sin la lista de shares no se sabe si el reparto es justo, pero nunca se
+            # emite más que el fondo.
+            problemas.append(f"los pagos de la época {epoca} suman {total}, más que el fondo ({reglas.fondo_epoca})")
         detalle = reglas.detalle(epoca, raiz)
         if detalle is False:
             problemas.append(f"la lista publicada de la época {epoca} no da la raíz de la cadena ({raiz})")
         elif detalle is None:
-            avisos.append(f"época {epoca}: el pago no se verificó (no se consiguió la lista de shares)")
+            avisos.append(f"época {epoca}: el reparto entre los mineros no se verificó (no se consiguió la lista de "
+                          f"shares; el total sí: {total} de {reglas.fondo_epoca})")
         else:
             problemas.extend(_verificar_reparto(estado, epoca, detalle, pagos, fondo, reglas, avisos))
         for minero, monto in pagos.items():
@@ -532,6 +595,11 @@ def aplicar_bloque(estado, bloque, reglas=None, estricto=True, hash_esperado=Non
     return problemas, avisos
 
 
+def piso_de_prefijo(estado, reglas):
+    """El largo mínimo del prefijo de un bloque minado (v4, BC-97): el del génesis o el que exige el que verifica."""
+    return max(estado.prefijo_minimo, reglas.prefijo_minimo if reglas else 0, 1)
+
+
 def _minado(estado, cambios, bloque, txs, altura, reglas, problemas, avisos):
     prefijo = bloque.get("prefijo") or ""
     if bloque.get("previous_hash") != estado.punta:
@@ -541,6 +609,9 @@ def _minado(estado, cambios, bloque, txs, altura, reglas, problemas, avisos):
                          f"y es {estado.raiz()})")
     if not prefijo or not contrato.cumple(bloque["block_hash"], prefijo):
         problemas.append(f"el hash no cumple el prefijo {prefijo!r}")
+    elif len(prefijo) < piso_de_prefijo(estado, reglas):
+        problemas.append(f"el prefijo tiene {len(prefijo)} caracteres y el piso de la cadena es "
+                         f"{piso_de_prefijo(estado, reglas)}")
     if not txs or contrato.tipo_de(txs[0]) != "coinbase":
         problemas.append("la primera transacción no es la coinbase")
         i = 0
@@ -628,7 +699,8 @@ def shares_de_redis(redis):
 
 
 def cache_de_redis(redis):
-    """(altura, punta, saldos, nonces confirmados, cuentas, permisos) de Redis, todo de la misma punta (MULTI)."""
+    """(altura, punta, saldos, nonces confirmados, cuentas, permisos, vetadas) de Redis, todo de la misma punta
+    (MULTI)."""
     tuberia = redis.pipeline()
     tuberia.llen(contrato.CADENA)
     tuberia.lindex(contrato.CADENA, -1)
@@ -636,14 +708,16 @@ def cache_de_redis(redis):
     tuberia.hgetall(contrato.NONCES_CONFIRMADOS)
     tuberia.hgetall(contrato.CUENTAS)
     tuberia.hgetall(contrato.PERMISOS)
-    largo, punta, saldos, nonces, cuentas, permisos = tuberia.execute()
+    tuberia.hgetall(contrato.VETADAS)
+    largo, punta, saldos, nonces, cuentas, permisos, vetadas = tuberia.execute()
     return {"altura": largo - 1, "punta": punta, "saldos": {c: int(s) for c, s in saldos.items()},
             "nonces": {c: int(n) for c, n in nonces.items()},
-            "cuentas": {c: json.loads(d) for c, d in cuentas.items()}, "permisos": permisos}
+            "cuentas": {c: json.loads(d) for c, d in cuentas.items()}, "permisos": permisos,
+            "vetadas": {c: True for c in vetadas}}
 
 
 def hojas_de_cache(cache):
-    tipos = {c: d.get("tipo", "") for c, d in cache["cuentas"].items()}
+    tipos = tipos_con_vetadas({c: d.get("tipo", "") for c, d in cache["cuentas"].items()}, cache.get("vetadas", {}))
     return hojas_estado(cache["saldos"], cache["nonces"], tipos, cache["permisos"])
 
 
@@ -653,7 +727,8 @@ def diferencias(estado, cache):
     for campo, cadena, guardado in (("saldos", estado.saldos, cache["saldos"]),
                                     ("nonces", estado.nonces, cache["nonces"]),
                                     ("cuentas", estado.cuentas, cache["cuentas"]),
-                                    ("permisos", estado.permisos, cache["permisos"])):
+                                    ("permisos", estado.permisos, cache["permisos"]),
+                                    ("vetadas", {c: True for c in estado.vetadas}, cache.get("vetadas", {}))):
         vacio = 0 if campo in ("saldos", "nonces") else None
         distintas = [(clave, cadena.get(clave, vacio), guardado.get(clave, vacio))
                      for clave in sorted(set(cadena) | set(guardado))
@@ -675,12 +750,15 @@ def reparar(redis, estado, diferentes):
             aceptados = tuberia.hgetall(contrato.NONCES)
             tuberia.multi()
             for campo, clave_redis in (("saldos", contrato.SALDOS), ("nonces", contrato.NONCES_CONFIRMADOS),
-                                       ("cuentas", contrato.CUENTAS), ("permisos", contrato.PERMISOS)):
+                                       ("cuentas", contrato.CUENTAS), ("permisos", contrato.PERMISOS),
+                                       ("vetadas", contrato.VETADAS)):
                 for clave, cadena, _ in diferentes.get(campo, []):
                     if cadena in (None, 0) and campo != "saldos":
                         tuberia.hdel(clave_redis, clave)
                     elif campo == "cuentas":
                         tuberia.hset(clave_redis, clave, json.dumps(cadena))
+                    elif campo == "vetadas":
+                        tuberia.hset(clave_redis, clave, 1)
                     else:
                         tuberia.hset(clave_redis, clave, cadena)
             for cuenta, nonce in estado.nonces.items():

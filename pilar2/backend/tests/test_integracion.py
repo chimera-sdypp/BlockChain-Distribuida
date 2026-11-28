@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import app as backend
 from comun import Rabbit, config, contrato, estado, web
-from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada
+from comun.tests.claves import CADENA, CUENTA, GENESIS, PRIVADA, Billetera, carga, firmada, sembrar_genesis
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -30,12 +30,19 @@ def entorno():
     redis = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                            db=BASE_PRUEBAS, decode_responses=True)
     redis.flushdb()
+    sembrar_genesis(redis)
     app = web.crear_app("backend", {})
     backend.agregar_rutas(app, redis, publicador, cola=cola, organizador=CUENTA["organizador"])
     yield TestClient(app), cola, redis
     redis.flushdb()
     publicador._canal.queue_delete(cola)
     publicador.detener()
+
+
+def aprobar(redis, *nombres):
+    """Las cuentas en `cuentas`, como si su alta ya estuviera en la cadena: sin eso, el backend da 403 (BC-94)."""
+    redis.hset(contrato.CUENTAS, mapping={CUENTA[n]: json.dumps({"tipo": "usuario", "nombre": n, "alta": 0})
+                                          for n in nombres})
 
 
 def recibir(cola, cantidad, segundos=10):
@@ -50,6 +57,7 @@ def recibir(cola, cantidad, segundos=10):
 
 def test_post_deja_el_mensaje_en_la_cola_y_la_tx_recibida_en_redis(entorno):
     cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     tx = firmada("alice", "bob", 7)
     respuesta = cliente.post("/api/transacciones", json=tx)
 
@@ -61,7 +69,8 @@ def test_post_deja_el_mensaje_en_la_cola_y_la_tx_recibida_en_redis(entorno):
 
 
 def test_dos_backends_con_la_misma_transaccion_a_la_vez_la_encolan_una_vez(entorno):
-    cliente, cola, _ = entorno
+    cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     tx, codigos, barrera = firmada("alice", "bob", 7), [], threading.Barrier(8)
 
     def mandar():
@@ -77,10 +86,25 @@ def test_dos_backends_con_la_misma_transaccion_a_la_vez_la_encolan_una_vez(entor
     assert len(recibir(cola, 2, segundos=2)) == 1
 
 
+def test_una_clave_sin_alta_no_deja_nada_en_redis_ni_en_la_cola(entorno):
+    """BC-94: la prueba del profesor contra Redis de verdad, suelta y en lote."""
+    cliente, cola, redis = entorno
+    aprobar(redis, "alice")
+    antes = set(redis.scan_iter("tx:*"))
+
+    suelta = cliente.post("/api/transacciones", json=firmada("nueva", "bob", 7))
+    en_lote = cliente.post("/api/transacciones/lote", json=[firmada("alice", "bob", 1), firmada("nueva", "bob", 2)])
+
+    assert (suelta.status_code, suelta.json()) == (403, {"error": "cuenta no aprobada"})
+    assert (en_lote.status_code, en_lote.json()) == (403, {"errores": {"1": ["cuenta no aprobada"]}})
+    assert set(redis.scan_iter("tx:*")) == antes and recibir(cola, 1, segundos=1) == []
+
+
 # ── Ticket 02: consultar una transacción y los saldos ──
 
 def test_get_de_una_transaccion_recien_recibida(entorno):
-    cliente, _, _ = entorno
+    cliente, _, redis = entorno
+    aprobar(redis, "alice")
     tx = firmada("alice", "bob", 7)
     id_ = cliente.post("/api/transacciones", json=tx).json()["id"]
 
@@ -129,10 +153,10 @@ def test_cuenta_con_su_saldo_su_nonce_y_si_esta_aprobada(entorno):
 
     assert cliente.get(f"/api/cuentas/{alice}").json() == {
         "cuenta": alice, "saldo": 750, "comprometido": 50, "nonce": 3, "aprobada": True,
-        "tipo": "usuario", "nombre": "alice", "alta_pedida": False}
+        "tipo": "usuario", "nombre": "alice", "alta_pedida": False, "alta_en_camino": False}
     assert cliente.get(f"/api/cuentas/{CUENTA['zoe']}").json() == {
         "cuenta": CUENTA["zoe"], "saldo": 0, "comprometido": 0, "nonce": 0, "aprobada": False,
-        "tipo": None, "nombre": None, "alta_pedida": False}
+        "tipo": None, "nombre": None, "alta_pedida": False, "alta_en_camino": False}
     assert cliente.get("/api/cuentas/emision").json()["nonce"] == 7
     assert cliente.get("/api/cuentas/alice").status_code == 400
 
@@ -149,13 +173,15 @@ def armar_cadena(redis, largo):
     """Génesis más largo−1 bloques válidos (v3, con su raíz de estado), como los arma el NCT, y el caché de los
     saldos como lo deja el consenso. Devuelve los hashes en orden de altura."""
     genesis = contrato.bloque_genesis({CUENTA["alice"]: 1000, CUENTA["bob"]: 1000}, 1793836800)
+    redis.delete("cadena")  # la cadena sembrada por el fixture: ésta trae su propio génesis
     actual = estado.Estado()
     estado.aplicar_bloque(actual, genesis)
     guardar_bloque(redis, genesis)
     hashes, billetera = [genesis["block_hash"]], Billetera()
     for altura in range(1, largo):
         tarea = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "altura": altura, "prefijo": "0",
-                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura)],
+                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura,
+                                             cadena=genesis["block_hash"])],
                  "raiz_estado": actual.raiz()}
         transacciones = contrato.transacciones_del_bloque(tarea, CUENTA["minero"])
         texto = contrato.texto_para(tarea, CUENTA["minero"])
@@ -205,8 +231,16 @@ def test_bloques_paginados(entorno):
 
 
 def test_bloques_de_una_cadena_vacia(entorno):
-    cliente, _, _ = entorno
+    cliente, _, redis = entorno
+    redis.delete("cadena")
     assert cliente.get("/api/bloques").json() == []
+    assert cliente.get("/api/cadena").status_code == 503  # v4: sin génesis no se puede firmar nada
+
+
+def test_la_cadena_da_el_genesis_el_organizador_y_el_piso(entorno):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/cadena").json() == {"genesis": CADENA, "organizador": CUENTA["organizador"],
+                                                 "prefijo_minimo": 1, "timestamp": GENESIS["timestamp"]}
 
 
 @pytest.mark.parametrize("params", [{"limite": 0}, {"limite": 101}, {"desde": -1}, {"limite": "x"}])
@@ -230,6 +264,7 @@ def test_bloque_por_hash_con_su_altura(entorno):
 
 def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
     cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     billetera = Billetera()
     cuerpo = [billetera("alice", "bob", m) for m in range(1, 51)] + [carga(1, "carol", 100)]
 
@@ -246,6 +281,7 @@ def test_lote_deja_todas_en_la_cola_en_orden_y_recibidas_en_redis(entorno):
 
 def test_lote_con_una_ya_recibida_no_crea_ninguna(entorno):
     cliente, cola, redis = entorno
+    aprobar(redis, "alice")
     billetera = Billetera()
     cuerpo = [billetera("alice", "bob", m) for m in range(1, 4)]
     assert cliente.post("/api/transacciones", json=cuerpo[2]).status_code == 202

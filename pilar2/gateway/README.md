@@ -4,16 +4,17 @@ La única puerta de los mineros al sistema. Los mineros están fuera del cluster
 
 ## API
 
-Cada pedido va **firmado con la clave del minero** (BC-57): `X-Minero` (su cuenta), `X-Tiempo` y `X-Firma` (Ed25519 sobre método, ruta, tiempo y cuerpo; ver [Pedidos firmados](../CONTRATO.md#pedidos-firmados-de-los-mineros)). Firma mala o con la hora corrida más de 30 s: 401. Cuenta que no está en `cuentas` como `minero`: 403. El `minero` del cuerpo tiene que ser el que firma: si no, 400. `/health`, `/metrics` y `/mineros` no piden firma. No hay token compartido.
+Cada pedido va **firmado con la clave del minero** (BC-57): `X-Minero` (su cuenta), `X-Tiempo` y `X-Firma` (Ed25519 sobre el hash del génesis, método, ruta, tiempo y cuerpo; ver [Pedidos firmados](../CONTRATO.md#pedidos-firmados-de-los-mineros)). Firma mala o con la hora corrida más de 30 s: 401. Cuenta que no está en `cuentas` como `minero`: 403. El `minero` del cuerpo tiene que ser el que firma: si no, 400. `/health`, `/metrics`, `/mineros` y `/cadena` no piden firma. No hay token compartido.
 
 | Pedido | Qué hace | Respuesta |
 |---|---|---|
 | `POST /hello` `{minero, tipo, placa}` | Guarda `tipo`, `placa`, `alias` (el `nombre` de `cuentas`) y `ultimo_aviso` en `nodo:<cuenta>` | La tarea modelo si todavía no hizo el bench; si ya lo hizo, `{registrado: true}` |
 | `POST /bench` `{minero, segundos, hashes_por_segundo}` | Guarda `bench` (hashes/s) | 204 |
 | `GET /tasks/next` | Toma un rango de `rangos` y se lo presta a quien firma, con **su** texto (`texto_para`: su coinbase en la raíz) | 200 con el rango y `bloque`, o 204 sin trabajo |
-| `POST /results` `{tarea, rango, minero, nonce, hash, shares}` o `{…, sin_solucion: true}` | Suma los shares, lo publica en `resultados` (sin los shares) y libera el préstamo | 202 `{shares}` |
+| `POST /results` `{tarea, rango, minero, nonce, hash, shares}` o `{…, sin_solucion: true}` | Suma los shares, lo publica en `resultados` (sin los shares) y libera el préstamo | 202 `{shares}`; 400 rango que la tarea no tiene, 409 `sin_solucion` de un rango que no tiene prestado (BC-92) |
 | `POST /keepalive` `{minero, hashes_por_segundo, rango: {tarea, rango} \| null, shares?}` | Actualiza `nodo:<cuenta>` y el historial, suma los shares y renueva el préstamo | `{cortar: true \| false, shares?}` |
-| `GET /mineros` (sin firma) | Cada minero con su tipo, alias, bench, hashrate, si está vivo, su saldo y su historial. Lo usan las pruebas y la operación: la API de la app no lista mineros (BC-54) | 200 `[{id, alias, tipo, vivo, bench, …, bloques, recompensas, shares, segundos_conectado, alta}]` |
+| `GET /cadena` (sin firma) | El hash del génesis, que el minero pone adelante de lo que firma (v4, BC-99). Si la cadena se reinicia, sus pedidos dan 401 y lo vuelve a leer | 200 `{genesis}` · 503 sin génesis |
+| `GET /mineros` (sin firma) | Cada minero con su tipo, alias, bench, hashrate, si está vivo, su saldo y su historial. Lo usan las pruebas y la operación: la API de la app no lista mineros (BC-54) | 200 `[{id, alias, tipo, vivo, bench, …, bloques, recompensas, shares, segundos_conectado, resultados_ajenos, alta}]` |
 
 ## El texto de cada minero y los shares
 

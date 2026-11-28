@@ -10,7 +10,7 @@ import redis as redislib
 from fastapi.testclient import TestClient
 
 from comun import Rabbit, config, contrato, web
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual, sembrar_genesis
 from gateway import app as gateway
 
 BASE_PRUEBAS = 15
@@ -26,7 +26,7 @@ class Minero:
 
     def pedir(self, metodo, ruta, datos=None, tiempo=None, encabezados=None):
         cuerpo = json.dumps(datos).encode() if datos is not None else b""
-        firma = contrato.firmar_pedido(self.privada, metodo, ruta, cuerpo, tiempo=tiempo)
+        firma = contrato.firmar_pedido(self.privada, metodo, ruta, cuerpo, tiempo=tiempo, cadena=cadena_actual())
         return self.cliente.request(metodo, ruta, content=cuerpo,
                                     headers={"content-type": "application/json", **firma, **(encabezados or {})})
 
@@ -54,6 +54,7 @@ def redis():
     cliente = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                              db=BASE_PRUEBAS, decode_responses=True)
     cliente.flushdb()
+    sembrar_genesis(cliente)
     for nombre in ("minero", "minero2"):
         aprobar(cliente, nombre)
     yield cliente

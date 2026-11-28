@@ -15,7 +15,7 @@ encontraba la solución. Es por rango, no por hash: de un rango cortado no se sa
 
 Usa el `kubectl` del cluster (KUBECONFIG). Al terminar (o con Ctrl+C) deja PREFIJO_BASE, AJUSTAR_PREFIJO,
 FRAGMENTO_PORCENTAJE y ESPACIO_NONCES del TrP como estaban. Correrlo con el Python de pilar2
-(pilar2/.venv/bin/python): firma las transacciones con la cuenta de prueba alice (firmar.py).
+(pilar2/.venv/bin/python): firma las transacciones con la primera cuenta de firmar.py.
 """
 
 import argparse
@@ -26,7 +26,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-from firmar import CUENTA, PRIVADA, contrato
+from firmar import CUENTA, ORIGENES, PRIVADA, contrato
 from prefijos import CONFIRMADO, PUBLICADA, api, gateway_url, kubectl, lista_mineros, punta, vivos
 
 VARIABLES = ["PREFIJO_BASE", "AJUSTAR_PREFIJO", "FRAGMENTO_PORCENTAJE", "ESPACIO_NONCES"]
@@ -125,8 +125,9 @@ def un_bloque(base, maximo, ventana):
     """Manda una transacción y espera su bloque: (desde, block_hash), o None si no salió a tiempo."""
     antes, desde = punta(base), datetime.now(timezone.utc).replace(microsecond=0)
     time.sleep(1)  # que el --since-time no corte la primera línea
-    nonce = api(base, f"/api/cuentas/{CUENTA['alice']}")["nonce"] + 1
-    api(base, "/api/transacciones", contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], 1, nonce))
+    nonce = api(base, f"/api/cuentas/{CUENTA[ORIGENES[0]]}")["nonce"] + 1
+    api(base, "/api/transacciones", contrato.transaccion(PRIVADA[ORIGENES[0]], CUENTA[ORIGENES[1]], 1, nonce,
+                                                         cadena=api(base, "/api/cadena")["genesis"]))
     limite = time.time() + ventana + maximo + 15
     while time.time() < limite:
         time.sleep(1)

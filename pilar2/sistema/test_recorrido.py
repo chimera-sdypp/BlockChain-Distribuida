@@ -42,10 +42,12 @@ def test_sin_saldo_queda_rechazada(minero):
     assert saldo(pobre) == 0
 
 
-def test_una_cuenta_sin_aprobar_no_puede_transferir(minero):
-    sin_aprobar = nuevo_usuario("sin-aprobar")
-    tx, _ = esperar(transferir(sin_aprobar, "bob", 1))
-    assert tx["estado"] == "rechazada" and tx["motivo"] == "cuenta no aprobada"
+def test_una_cuenta_sin_aprobar_no_puede_transferir():
+    """BC-94: el backend la corta con 403 antes de guardarla, así que la transacción no existe."""
+    tx = firmada(nuevo_usuario("sin-aprobar"), "bob", 1)
+    codigo, cuerpo = api("POST", "/api/transacciones", tx)
+    assert (codigo, cuerpo) == (403, {"error": "cuenta no aprobada"})
+    assert api("GET", f"/api/transacciones/{tx['id']}")[0] == 404
 
 
 def test_una_firma_falsa_o_un_monto_cambiado_no_entran():

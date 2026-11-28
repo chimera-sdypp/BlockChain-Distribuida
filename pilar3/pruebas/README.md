@@ -12,8 +12,9 @@
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`trampas.py`](trampas.py) | BC-76: mineros que mienten a propósito contra el sistema desplegado |
 | [`operador.py`](operador.py) | BC-85: lo que haría el operador de la nube (tocar Redis, editar o reescribir bloques, inflar shares, un validador que firma dos historias) y que se note |
-| [`rafaga.sh`](rafaga.sh) | Una ráfaga: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
+| [`rafaga.sh`](rafaga.sh) | Una ráfaga: N transferencias firmadas en ronda entre las cuentas de `cuentas.py`, y su seguimiento |
 | [`rafaga.py`](rafaga.py) | La misma ráfaga con ventana: el ritmo (transferencias por segundo) se mueve en vivo, hay botones para tirar varias juntas y muestra las que esperan bloque, las confirmadas y un gráfico de los últimos 60 s |
+| [`limites.py`](limites.py) | BC-94: los límites contra el sistema desplegado (403 de una clave sin alta sin rastro en Redis, vencimiento de la rechazada, 413, GET sin límite y 429 del lote) |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
 | `preparar.sh` | Deja GKE en las condiciones de una prueba y después lo vuelve a la normalidad |
 
@@ -28,8 +29,9 @@ Se corre a mano: **Actions → Pilar 3 · Preparar prueba → Run workflow**. En
 | `estado` | Sólo muestra; no cambia nada |
 | `preparar` | Fija `PREFIJO_BASE`, `AJUSTAR_PREFIJO`, `FRAGMENTO_PORCENTAJE` y, si se elige, `CRITERIO_POTENCIA` en el TrP (y el mismo prefijo en el escalador). Opcionales: reiniciar la cadena y dejar una cantidad fija de VMs |
 | `restaurar` | TrP y escalador como en los manifiestos, y el escalador de nuevo en manos de KEDA |
+| `cuentas` | Crea el Secret `cuentas-prueba` con las cuentas que firman las pruebas (ver [Firmas](#firmas-contrato-v2)) |
 
-**Reiniciar la cadena** (escribir `REINICIAR` en el campo): apaga el NCT y el TrP, vacía las colas y Redis, y los vuelve a prender. El NCT carga el génesis con los `SALDOS_INICIALES` de su Deployment, que en GKE son 1.000.000.000 por usuario ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Se pierden todos los bloques y saldos anteriores, para todo el grupo. Se niega si el NCT todavía tiene los saldos por defecto.
+**Reiniciar la cadena** (escribir `REINICIAR` en el campo): apaga el NCT y el TrP, vacía las colas y Redis, y los vuelve a prender. El NCT carga el génesis, que en GKE va vacío ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Se pierden todos los bloques y saldos anteriores, para todo el grupo: después el organizador vuelve a fondear las cuentas de las pruebas (`cuentas.py fondear`).
 
 **VMs fijas** (`vms_cpu`): pausa el escalador en KEDA (`autoscaling.keda.sh/paused-replicas: "0"`), aplica `vms/instancias` con esa cantidad y espera a que los mineros CPU avisen. Sin esto, el escalador apaga las VMs a los 2 minutos sin trabajo y las vuelve a crear en la corrida siguiente: cambia la cantidad de mineros entre corridas. Si hay una GPU viva, con `vms_cpu` vacío el escalador no levanta ninguna.
 
@@ -271,7 +273,16 @@ Los paneles «Rangos por minero por minuto» y «Rangos por tipo», de la fila �
 
 ## Firmas (contrato v2)
 
-Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de prueba del génesis (alice, bob y carol, de `pilar2/comun/tests/claves.py`), que en GKE tienen saldos altos ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.
+Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de [`cuentas.py`](cuentas.py) (BC-91). En GKE el génesis va vacío: son cuentas propias, con las privadas en el Secret `cuentas-prueba` (nunca en el repo), y el organizador les da el alta y les carga saldo como a cualquier cuenta. En k3s, sin ese Secret, son alice, bob y carol, las de prueba del génesis de `pilar2/k8s/nct.yaml`.
+
+```bash
+# 1. Crearlas (o el workflow «Preparar prueba» con la acción cuentas)
+python3 pilar3/pruebas/cuentas.py generar 3
+# 2. El organizador, desde su PC (también después de reiniciar la cadena)
+pilar2/.venv/bin/python pilar3/pruebas/cuentas.py fondear organizador.clave --url https://…
+pilar2/.venv/bin/python pilar3/pruebas/cuentas.py mostrar --url https://…
+```
+ Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.
 
 Una ráfaga: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`, o con ventana: `pilar2/.venv/bin/python pilar3/pruebas/rafaga.py [--sistema https://…]`.
 
@@ -305,7 +316,7 @@ La primera corrida de ese día se descartó: mostró que el gateway medía mal l
 
 ```bash
 KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
-    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo]
+    --gateway http://<IP del gateway>:8081 --backend http://<Ingress>        # [--solo juntos,retener,gpu-falsa,bench-bajo,rangos-ajenos]
 ```
 
 | Escenario | Quiénes | Qué se comprueba |
@@ -314,6 +325,7 @@ KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/trampas.py \
 | `retener` | `retener` y `acaparar`, sin nadie que mine | El plazo les saca el rango (sin medición, a los 120 s): con la tarea abierta, nada más se los puede sacar (BC-74) |
 | `gpu-falsa` | Sólo una «GPU» que avisa y nunca pide rangos, con trabajo apilado | El escalador pide VMs igual (BC-74) y, sin bloque en 240 s, el prefijo baja por emergencia (BC-73) |
 | `bench-bajo` | Sólo uno que declara la centésima parte de su bench, con `PREFIJO_BASE=8` | El ajuste por tiempo sube el prefijo por encima del techo que da ese bench (BC-73) |
+| `rangos-ajenos` | Honesto y uno que en cada tarea manda «sin solución» de los rangos 0 a 9 que no son suyos y de 1000 a 1009, con el prefijo fijo en 7 | Ningún resultado ajeno se acepta (409 y 400), el TrP no da tareas por agotadas y los bloques siguen saliendo (BC-92, la prueba de la devolución) |
 
 Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en [`resultados/trampas.log`](resultados/trampas.log).
 
@@ -323,6 +335,8 @@ Resultados en [`resultados/trampas.csv`](resultados/trampas.csv) y el detalle en
 - `bench-alto` declaró 1,18 GH/s y el sistema contó lo medido: 1,34 MH/s. El honesto midió 2,64 MH/s con un bench de 2,19 MH/s (lo medido es una estimación: el sistema usa el menor) y no se lo suspendió.
 - Con sólo la «GPU» falsa, el escalador pidió 1 VM y, a los 240 s sin bloque, el prefijo bajó de 6 a 5 por emergencia.
 - `bench-bajo` declaró 52,6 kH/s (techo 5). Con el tope en 8, el prefijo de cada bloque fue 5 (ocho bloques), 6 (cinco) y 7: el tiempo pasó el techo. Con la regla anterior se quedaba en 5.
+
+**27/11, `rangos-ajenos` en el k3s con el arreglo de BC-92: 4 de 4.** Se usó la misma prueba de la devolución, con el prefijo fijo en 7 durante 180 s. El atacante atacó 4 tareas y mandó 76 «sin solución» ajenos: el gateway contestó 36 con 409 (rangos que la tarea tiene, pero no eran suyos) y 40 con 400 (los 1000 a 1009). El TrP no dio ninguna tarea por agotada, salieron 3 bloques y el honesto no quedó suspendido. Antes del arreglo, con el prefijo 7 no salía ningún bloque.
 
 
 ## El operador de la nube (BC-85)
@@ -348,3 +362,27 @@ KUBECONFIG=~/.kube/config pilar2/.venv/bin/python pilar3/pruebas/operador.py \
 Resultados en [`resultados/operador.csv`](resultados/operador.csv) y el detalle en [`resultados/operador.log`](resultados/operador.log).
 
 **19/11, en el k3s con la v3: 16 de 16.** Lo que el operador sí puede hacer sigue igual: no incluir transacciones, elegir el prefijo y apagar el sistema (ver [el modelo de confianza](../../pilar2/CONTRATO.md#modelo-de-confianza-el-operador-de-la-nube-bc-85)).
+
+## Límites (BC-94)
+
+`pilar2/.venv/bin/python pilar3/pruebas/limites.py --sistema <URL>`, con `kubectl` apuntando al cluster (lee Redis por
+`kubectl exec`). Repite la prueba del profesor (una clave recién generada transfiere: 403 y nada en Redis), comprueba
+que la rechazada vence y que los límites de Traefik ([`k8s/limites/`](../../pilar2/k8s/limites/)) cortan: 413 a un
+cuerpo de más de 1 MB y 429 a una ráfaga a `/api/transacciones/lote`, sin tocar los GET. La ráfaga gasta el burst del
+lote de esa IP: hay que esperar unos segundos antes de un bulk.
+
+Los límites son por IP y por réplica de Traefik, y las pruebas de carga los respetan (no hay excepciones):
+`rafaga.py` (hasta 100 tx/s y tiradas de 1.000) entra en los 100/s con burst de 1.000 de los POST sueltos, y los bulks
+(lotes de 1.000 con 10 usuarios virtuales) en los 5/s con burst de 20 del lote.
+
+**27/11, en el k3s:** los cinco chequeos de `limites.py` en verde (la rechazada, `saldo insuficiente`, con TTL 3600;
+60 de 80 POST a `/lote` con 429). `rafaga.py` a 100 tx/s durante 15 s (1.495) y una tirada de 1.000: todas 202, ninguna
+429. 30 lotes de 1.000 con 10 usuarios virtuales, como `bulk.js`: todos 202, a 0,8 lotes/s (los bulks de BC-38 en GKE
+iban a 0,08–0,2 pedidos/s, lejos de los 5/s).
+
+**27/11, en GKE:** qué IP le llega a Traefik, con un `traefik/whoami` temporal. Con `externalTrafficPolicy: Cluster`
+llegaba la de un nodo (10.x) para todos: el límite por IP era casi global. Con `Local` y `trustedIPs` de Cloudflare
+(`pilar3/helm/traefik.yaml`), lo que entra directo o por DuckDNS llega con la IP del cliente, y una `X-Real-Ip`
+inventada se pisa. Lo que entra por el Worker llega desde una IP de Cloudflare (dentro de los rangos de confianza): el
+Worker pone la del cliente en `X-Real-Ip` (`CF-Connecting-IP`). Los límites aplicados: 413, GET sin límite y 37 de 80
+POST a `/lote` con 429. El 403 y el vencimiento esperan el despliegue de la app (#104).

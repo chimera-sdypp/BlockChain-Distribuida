@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 41,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "graphTooltip": 1,
   "refresh": "10s",
@@ -22,7 +22,7 @@
         "type": "custom",
         "name": "app",
         "label": "Servicio",
-        "query": "backend,frontend,nct,trp,gateway,escalador,rabbitmq,redis",
+        "query": "backend,frontend,nct,trp,gateway,escalador,nodo,rabbitmq,redis",
         "multi": true,
         "includeAll": true,
         "allValue": ".*",
@@ -70,6 +70,11 @@
             "selected": false,
             "text": "escalador",
             "value": "escalador"
+          },
+          {
+            "selected": false,
+            "text": "nodo",
+            "value": "nodo"
           },
           {
             "selected": false,
@@ -2353,6 +2358,533 @@
     },
     {
       "type": "row",
+      "id": 36,
+      "title": "Verificación, finalidad y defensas (v3/v4)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 111
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 37,
+      "title": "Altura de nodos verificadores y finalidad",
+      "description": "Altura verificada por cada nodo verificador (BC-83) comparada contra la última altura finalizada por 2/3 de los validadores (BC-86).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 112
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (pod) (blockchain_nodo_altura)",
+          "legendFormat": "Nodo {{pod}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(blockchain_altura_finalizada)",
+          "legendFormat": "Finalizada (2/3 validadores)",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(blockchain_nodo_finalizada)",
+          "legendFormat": "Finalizada según nodos",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 38,
+      "title": "Finalidad: bloques sin finalizar, atraso y firmas (BC-86)",
+      "description": "Diferencia entre la punta verificada y la altura finalizada, atraso de cada nodo, validadores activos y firmas por minuto.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 112
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "clamp_min(max(blockchain_nodo_altura) - max(blockchain_altura_finalizada), 0)",
+          "legendFormat": "Bloques sin finalizar",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (pod) (blockchain_nodo_atraso)",
+          "legendFormat": "Atraso {{pod}}",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(blockchain_validadores)",
+          "legendFormat": "Validadores activos",
+          "range": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (resultado) (increase(blockchain_firmas_total[5m]))",
+          "legendFormat": "Firmas · {{resultado}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 39,
+      "title": "Bloques rechazados por nodo y conflictos (BC-83)",
+      "description": "Bloques rechazados por no cumplir el contrato, conflictos de cadena reescrita detectados por nodos verificadores y problemas en NCT.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 120
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 80,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (pod) (increase(blockchain_nodo_rechazos_total[5m]))",
+          "legendFormat": "Rechazos · {{pod}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (pod) (increase(blockchain_nodo_conflictos_total[5m]))",
+          "legendFormat": "Conflictos · {{pod}}",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_cadena_problemas_total[5m]))",
+          "legendFormat": "Problemas de cadena (NCT)",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 40,
+      "title": "Divergencias del caché y rechazos del NCT (BC-80)",
+      "description": "Diferencias detectadas entre Redis y la cadena confirmada (BC-80), transacciones sacadas de caja y rechazadas por el NCT.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 120
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 80,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_estado_divergencias_total[5m]))",
+          "legendFormat": "Divergencias de caché",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_tx_sacadas_de_caja_total[5m]))",
+          "legendFormat": "Tx sacadas de caja",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (motivo) (increase(blockchain_tx_rechazadas_total[5m]))",
+          "legendFormat": "Tx rechazadas NCT · {{motivo}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 41,
+      "title": "Integridad de mineros: ajenos, reverificaciones y suspensiones (BC-75 / BC-92)",
+      "description": "Respuestas «sin solución» de rangos ajenos (BC-92), resultados descartados en TrP, reverificaciones del 5 %, avisos por pocos shares y suspensiones (BC-75).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 128
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 80,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_resultados_ajenos_total[5m]))",
+          "legendFormat": "Resultados ajenos (BC-92)",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (motivo) (increase(blockchain_resultados_descartados_total[5m]))",
+          "legendFormat": "Descartados TrP · {{motivo}}",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_reverificaciones_total[5m]))",
+          "legendFormat": "Reverificaciones (5 %)",
+          "range": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_pocos_shares_total[5m]))",
+          "legendFormat": "Avisos pocos shares",
+          "range": true
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_suspensiones_total[5m]))",
+          "legendFormat": "Suspensiones",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 42,
+      "title": "Rechazos de entrada: 403 sin alta, gateway y 429 rate limit (BC-94)",
+      "description": "Rechazos 403 por origen sin alta o sin permiso y 400 en backend, rechazos en gateway por motivo y rate limit 429 en Traefik (BC-94).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 128
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 80,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_tx_recibidas_total{resultado=\"no_aprobada\"}[1m]))",
+          "legendFormat": "Backend 403 · sin alta / sin permiso",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(blockchain_tx_recibidas_total{resultado=\"invalida\"}[1m]))",
+          "legendFormat": "Backend 400 · inválida",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (motivo) (increase(blockchain_pedidos_rechazados_total[1m]))",
+          "legendFormat": "Gateway · {{motivo}}",
+          "range": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(traefik_service_requests_total{code=\"429\"}[1m]))",
+          "legendFormat": "Traefik 429 · rate limit",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "row",
       "id": 35,
       "title": "Todos los logs",
       "collapsed": true,
@@ -2360,7 +2892,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 136
       },
       "panels": [
         {
@@ -2376,7 +2908,7 @@
             "h": 14,
             "w": 24,
             "x": 0,
-            "y": 112
+            "y": 137
           },
           "options": {
             "showTime": true,

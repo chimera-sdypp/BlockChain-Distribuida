@@ -1,11 +1,13 @@
 // El verificador de la billetera (BC-84): el port a JavaScript de comun/estado.py y de lo que usa de comun/contrato.py
-// (contrato v3). Anda igual en el navegador (adentro de billetera.html) y en node (los tests lo comparan con Python
+// (contrato v4: lo firmado lleva el hash del génesis, piso de prefijo, pago de época con tope y bajas del organizador
+// que un alta delegada no deshace). Anda igual en el navegador (adentro de billetera.html) y en node (los tests lo comparan con Python
 // sobre el mismo vector). Sin dependencias: MD5 propio (WebCrypto no lo trae) y Ed25519 con WebCrypto.
 //
 //   const estado = Verificador.estadoNuevo();
 //   const { problemas, avisos } = await Verificador.aplicarBloque(estado, bloque, reglas);   // estricto
 //
-// reglas = { organizador: "" | cuenta, fondoEpoca: 100, shares: async (epoca) => detalle | null, verificarFirmas }
+// reglas = { organizador: "" | cuenta, fondoEpoca: 100, shares: async (epoca) => detalle | null, verificarFirmas,
+//            prefijoMinimo: 0 (un piso propio; vale el mayor entre éste y el del génesis) }
 "use strict";
 
 const Verificador = (() => {
@@ -91,7 +93,8 @@ const Verificador = (() => {
   const textoDeBloque = (b) => `${b.previous_hash};${b.timestamp};${raizBloque(b.transactions, b.raiz_estado)};`;
 
   const TIPOS_EMISION = [["genesis-", "genesis"], ["organizador-", "organizador"], ["cb-", "coinbase"], ["carga-", "carga"],
-    ["part-", "participacion"], ["shares-", "shares"], ["alta-", "alta"], ["baja-", "baja"], ["permiso-", "permiso"]];
+    ["part-", "participacion"], ["shares-", "shares"], ["alta-", "alta"], ["baja-", "baja"], ["permiso-", "permiso"],
+    ["reglas", "reglas"]];
 
   function tipoDe(tx) {
     const id = String(tx.id ?? "");
@@ -101,12 +104,17 @@ const Verificador = (() => {
   const esActa = (tx) => ACTAS.includes(tipoDe(tx));
   const esDelegada = (tx) => esActa(tx) && tx.origen !== EMISION;
   const idActa = (tipo, origen, n) => origen === EMISION ? `${tipo}-${n}` : `${tipo}-${origen}-${n}`;
-  const mensajeTransaccion = (tx) => `${tx.origen}:${tx.destino}:${tx.monto}:${tx.nonce}:${tx.timestamp}`;
-  const mensajeActa = (tx) => `${tipoDe(tx)}:${tx.origen}:${tx.destino}:${tx.nonce}:${tx.timestamp}:${tx.datos ?? ""}`;
+  // v4 (BC-99): todo lo firmado lleva adelante el hash del génesis de la cadena (`cadena`).
+  const mensajeTransaccion = (tx, cadena) => `${cadena}:${tx.origen}:${tx.destino}:${tx.monto}:${tx.nonce}:${tx.timestamp}`;
+  const mensajeActa = (tx, cadena) =>
+    `${cadena}:${tipoDe(tx)}:${tx.origen}:${tx.destino}:${tx.nonce}:${tx.timestamp}:${tx.datos ?? ""}`;
+  const mensajeAlta = (tipo, cuenta, nombre, cadena) => `alta:${cadena}:${tipo}:${cuenta}:${nombre}`;
   const mensajeFirmaBloque = (altura, hash) => `firma:${altura}:${hash}`;
   const mensajeAtestacion = (a) => `atestacion:${a.nodo}:${a.altura}:${a.punta}:${a.raiz}:${a.tiempo}`;
-  // Lo que firma un pedido con X-Minero o X-Organizador: método, ruta, hora y el cuerpo tal cual (contrato.mensaje_pedido).
-  const mensajePedido = (metodo, ruta, tiempo, cuerpo = "") => `${metodo.toUpperCase()}\n${ruta}\n${tiempo}\n${cuerpo}`;
+  // Lo que firma un pedido con X-Minero o X-Organizador: génesis, método, ruta, hora y el cuerpo tal cual
+  // (contrato.mensaje_pedido).
+  const mensajePedido = (metodo, ruta, tiempo, cuerpo = "", cadena = "") =>
+    `${cadena}\n${metodo.toUpperCase()}\n${ruta}\n${tiempo}\n${cuerpo}`;
 
   // El modo organizador arma lo mismo que contrato.carga y contrato.acta (sin firmar: la firma la pone la página con
   // la CryptoKey). `numero` es el nonce de «emision», uno solo para cargas y actas.
@@ -114,7 +122,13 @@ const Verificador = (() => {
     ({ id: `carga-${numero}`, origen: EMISION, destino, monto, nonce: numero, timestamp });
   const armarActa = (tipo, numero, destino, datos, timestamp) =>
     ({ id: idActa(tipo, EMISION, numero), origen: EMISION, destino, monto: 0, nonce: numero, timestamp, datos });
-  const mensajeDe = (tx) => (esActa(tx) ? mensajeActa(tx) : mensajeTransaccion(tx));
+  const mensajeDe = (tx, cadena) => (esActa(tx) ? mensajeActa(tx, cadena) : mensajeTransaccion(tx, cadena));
+  const reglasGenesis = (prefijoMinimo, ts) => emision("reglas", "", 0, 0, ts, `prefijo_minimo:${prefijoMinimo}`);
+  function leerReglas(tx) {
+    const datos = String(tx.datos ?? "");
+    const m = /^prefijo_minimo:([1-9][0-9]?)$/.exec(datos);
+    return m && Number(m[1]) <= 32 ? { prefijoMinimo: Number(m[1]) } : null;
+  }
 
   function emision(id, destino, monto, nonce, timestamp, datos = "") {
     const tx = { id, origen: EMISION, destino, monto, nonce, timestamp, firma: "" };
@@ -138,7 +152,11 @@ const Verificador = (() => {
     return i < 0 ? [datos, ""] : [datos.slice(0, i), datos.slice(i + 1)];
   }
 
-  async function validarTransferencia(tx) {
+  const HASH = /^[0-9a-f]{32}$/;
+  const SIN_CADENA = "no se sabe el génesis de la cadena";
+
+  async function validarTransferencia(tx, cadena) {
+    if (typeof cadena !== "string" || !HASH.test(cadena)) return [SIN_CADENA];
     const errores = [];
     for (const campo of ["origen", "destino"]) if (!cuentaValida(tx[campo])) errores.push(`${campo}: no es una cuenta`);
     if (!entero(tx.monto, 1, MONTO_MAXIMO)) errores.push("monto");
@@ -148,28 +166,30 @@ const Verificador = (() => {
     if ((tx.datos ?? "") !== "") errores.push("datos: una transferencia no lleva datos");
     if (errores.length) return errores;
     if (tx.origen === tx.destino) return ["origen y destino tienen que ser distintos"];
-    if (!(await verificarFirma(tx.origen, mensajeTransaccion(tx), tx.firma))) return ["firma: no es la del origen"];
-    if ("id" in tx && tx.id !== md5(`${mensajeTransaccion(tx)}:${tx.firma}`)) return ["id: no es el hash de la transacción"];
+    if (!(await verificarFirma(tx.origen, mensajeTransaccion(tx, cadena), tx.firma))) return ["firma: no es la del origen"];
+    if ("id" in tx && tx.id !== md5(`${mensajeTransaccion(tx, cadena)}:${tx.firma}`)) return ["id: no es el hash de la transacción"];
     return [];
   }
 
-  async function validarCarga(tx, organizador) {
+  async function validarCarga(tx, organizador, cadena) {
     const errores = [];
     if (tx.origen !== EMISION) return ["origen: tiene que ser «emision»"];
+    if (typeof cadena !== "string" || !HASH.test(cadena)) return [SIN_CADENA];
     if (!cuentaValida(tx.destino)) errores.push("destino");
     if (!entero(tx.monto, 1, MONTO_MAXIMO)) errores.push("monto");
     if (!entero(tx.nonce, 1, NONCE_MAXIMO) || tx.id !== `carga-${tx.nonce}`) errores.push("id: carga-<n>");
     if (!entero(tx.timestamp, 0, NONCE_MAXIMO)) errores.push("timestamp");
     if ((tx.datos ?? "") !== "") errores.push("datos: una carga no lleva datos");
-    if (!errores.length && !(await verificarFirma(organizador, mensajeTransaccion(tx), tx.firma))) {
+    if (!errores.length && !(await verificarFirma(organizador, mensajeTransaccion(tx, cadena), tx.firma))) {
       errores.push("firma: no es la del organizador");
     }
     return errores;
   }
 
-  async function validarActa(tx, organizador) {
+  async function validarActa(tx, organizador, cadena) {
     const tipo = tipoDe(tx);
     if (!ACTAS.includes(tipo)) return ["id: alta-<n>, baja-<n> o permiso-<n>"];
+    if (typeof cadena !== "string" || !HASH.test(cadena)) return [SIN_CADENA];
     const errores = [];
     if (tx.origen !== EMISION && (!cuentaValida(tx.origen) || tipo === "permiso")) errores.push("origen");
     if (!cuentaValida(tx.destino)) errores.push("destino");
@@ -187,7 +207,7 @@ const Verificador = (() => {
     if (errores.length) return errores;
     const firmante = tx.origen === EMISION ? organizador : tx.origen;
     if (!firmante) return ["no hay organizador: nadie puede firmar actas"];
-    if (!(await verificarFirma(firmante, mensajeActa(tx), tx.firma))) {
+    if (!(await verificarFirma(firmante, mensajeActa(tx, cadena), tx.firma))) {
       return [tx.origen === EMISION ? "firma: no es la del organizador" : "firma: no es la del origen"];
     }
     return [];
@@ -248,7 +268,7 @@ const Verificador = (() => {
   // ── El estado ──
 
   const estadoNuevo = () => ({ altura: -1, punta: null, timestamp: 0, saldos: {}, nonces: {}, cuentas: {}, permisos: {},
-    organizador: "", shares: {} });
+    vetadas: {}, organizador: "", genesis: null, prefijoMinimo: 1, shares: {} });
   const copiar = (e) => JSON.parse(JSON.stringify(e));
 
   function hojaCuenta(cuenta, tipo, saldo, nonce) {
@@ -259,9 +279,11 @@ const Verificador = (() => {
   // [[clave, hoja]] ordenadas por clave, como estado.hojas_estado.
   function hojas(e) {
     const lista = [];
-    const todas = new Set([...Object.keys(e.saldos), ...Object.keys(e.nonces), ...Object.keys(e.cuentas)]);
+    const vetadas = e.vetadas || {};
+    const todas = new Set([...Object.keys(e.saldos), ...Object.keys(e.nonces), ...Object.keys(e.cuentas), ...Object.keys(vetadas)]);
     for (const c of todas) {
-      const hoja = hojaCuenta(c, e.cuentas[c]?.tipo || "", e.saldos[c] || 0, e.nonces[c] || 0);
+      const tipo = e.cuentas[c]?.tipo || (vetadas[c] ? "vetada" : "");  // v4: la cuenta que dio de baja el organizador
+      const hoja = hojaCuenta(c, tipo, e.saldos[c] || 0, e.nonces[c] || 0);
       if (hoja) lista.push([c, hoja]);
     }
     for (const [clave, prefijo] of Object.entries(e.permisos)) if (prefijo) lista.push([`permiso:${clave}`, `permiso:${clave}:${prefijo}`]);
@@ -274,15 +296,16 @@ const Verificador = (() => {
   function problemaDeActa(tx, e) {
     const tipo = tipoDe(tx), destino = tx.destino;
     if ((tipo === "alta" || tipo === "baja") && destino === e.organizador) return "el organizador no se da de alta ni de baja";
+    const existente = e.cuentas[destino];
+    if (tipo === "alta" && existente) return "la cuenta ya tiene alta";  // BC-93
     if (!esDelegada(tx)) return null;
     const prefijo = e.permisos[tx.origen];
     if (!prefijo) return "sin permiso: la clave no tiene un permiso del organizador";
-    const existente = e.cuentas[destino];
+    if (tipo === "alta" && (e.vetadas || {})[destino]) return "la cuenta tiene una baja del organizador: sólo él la puede volver a dar de alta";
     const esSuyo = (c) => c && c.tipo === "minero" && String(c.nombre || "").startsWith(prefijo);
     if (tipo === "alta") {
       const [tipoCuenta, nombre] = datosAlta(tx);
       if (tipoCuenta !== "minero" || !nombre.startsWith(prefijo)) return `sin permiso: sólo puede dar de alta mineros ${prefijo}*`;
-      if (existente && !esSuyo(existente)) return "sin permiso: la cuenta ya existe y no es uno de sus mineros";
     } else if (!esSuyo(existente)) return `sin permiso: sólo puede dar de baja mineros ${prefijo}*`;
     return null;
   }
@@ -296,7 +319,7 @@ const Verificador = (() => {
   async function aplicarTransaccion(e, tx, reglas) {
     const tipo = tipoDe(tx);
     if (tipo === "transferencia") {
-      const errores = reglas.verificarFirmas === false ? [] : await validarTransferencia(tx);
+      const errores = reglas.verificarFirmas === false ? [] : await validarTransferencia(tx, e.genesis);
       if (errores.length) return `transferencia ${tx.id} inválida: ${errores.join("; ")}`;
       if (!cuentaValida(tx.origen) || !cuentaValida(tx.destino) || !entero(tx.monto, 1, MONTO_MAXIMO)) return `transferencia ${tx.id} mal formada`;
       if (!e.cuentas[tx.origen]) return `${tx.id}: el origen no tiene un alta en la cadena (cuenta no aprobada)`;
@@ -310,7 +333,7 @@ const Verificador = (() => {
     }
     if (tipo === "carga") {
       if (!e.organizador) return `carga ${tx.id}: no hay organizador en el génesis`;
-      const errores = reglas.verificarFirmas === false ? [] : await validarCarga(tx, e.organizador);
+      const errores = reglas.verificarFirmas === false ? [] : await validarCarga(tx, e.organizador, e.genesis);
       if (errores.length) return `carga ${tx.id} inválida: ${errores.join("; ")}`;
       const problema = siguienteNonce(e, EMISION, tx);
       if (problema) return problema;
@@ -320,16 +343,21 @@ const Verificador = (() => {
     }
     if (ACTAS.includes(tipo)) {
       if (reglas.verificarFirmas !== false) {
-        const errores = await validarActa(tx, e.organizador);
+        const errores = await validarActa(tx, e.organizador, e.genesis);
         if (errores.length) return `${tipo} ${tx.id} inválida: ${errores.join("; ")}`;
       }
       const firmante = tx.origen === EMISION ? EMISION : tx.origen;
       const problema = siguienteNonce(e, firmante, tx) || problemaDeActa(tx, e);
       if (problema) return problema.startsWith(tx.id) ? problema : `${tx.id}: ${problema}`;
+      e.vetadas = e.vetadas || {};
       if (tipo === "alta") {
         const [tipoCuenta, nombre] = datosAlta(tx);
         e.cuentas[tx.destino] = { tipo: tipoCuenta, nombre, alta: tx.timestamp };
-      } else if (tipo === "baja") delete e.cuentas[tx.destino];
+        if (firmante === EMISION) delete e.vetadas[tx.destino];  // el organizador la reactiva
+      } else if (tipo === "baja") {
+        delete e.cuentas[tx.destino];
+        if (firmante === EMISION) e.vetadas[tx.destino] = true;
+      }
       else if (tx.datos) e.permisos[tx.destino] = tx.datos;
       else delete e.permisos[tx.destino];
       e.nonces[firmante] = tx.nonce;
@@ -342,6 +370,8 @@ const Verificador = (() => {
     if (bloque.previous_hash !== CEROS || bloque.nonce !== 0) problemas.push("el génesis tiene que tener previous_hash en ceros y nonce 0");
     if (bloque.raiz_estado !== RAIZ_VACIA) problemas.push("la raíz de estado del génesis es la del árbol vacío");
     const ts = bloque.timestamp;
+    e.genesis = bloque.block_hash;  // v4: el id de la cadena (si el hash no sale del texto, ya es un problema)
+    let conReglas = false;
     (bloque.transactions || []).forEach((tx, i) => {
       const tipo = tipoDe(tx), destino = tx.destino;
       if (tipo === "organizador" && i === 0) {
@@ -352,6 +382,14 @@ const Verificador = (() => {
         if (reglas.organizador && destino !== reglas.organizador) problemas.push(`el organizador del génesis es ${destino} y no el conocido`);
         e.organizador = destino;
         e.cuentas[destino] = { tipo: "organizador", nombre: "organizador", alta: ts };
+      } else if (tipo === "reglas") {
+        const leidas = leerReglas(tx);
+        if (conReglas || !leidas || !igual(tx, reglasGenesis(leidas.prefijoMinimo, ts))) {
+          problemas.push("las reglas del génesis están mal formadas o repetidas");
+          return;
+        }
+        conReglas = true;
+        e.prefijoMinimo = leidas.prefijoMinimo;
       } else if (tipo === "genesis") {
         const [tipoCuenta, nombre] = datosAlta(tx);
         if (!igual(tx, emision(`genesis-${destino}`, destino, tx.monto, 0, ts, `usuario:${nombre}`)) || !cuentaValida(destino)
@@ -422,10 +460,14 @@ const Verificador = (() => {
       }
       const orden = Object.keys(pagos);
       if (JSON.stringify(orden) !== JSON.stringify([...orden].sort())) problemas.push(`los pagos de la época ${epoca} no están en orden de minero`);
-      if (fondo !== (reglas.fondoEpoca ?? FONDO_EPOCA)) problemas.push(`la época ${epoca} reparte ${fondo} y el fondo es ${reglas.fondoEpoca ?? FONDO_EPOCA}`);
+      const fondoReglas = reglas.fondoEpoca ?? FONDO_EPOCA;
+      if (fondo !== fondoReglas) problemas.push(`la época ${epoca} declara un fondo de ${fondo} y el fondo es ${fondoReglas}`);
+      const total = Object.values(pagos).reduce((a, b) => a + b, 0);
+      // v4 (BC-98): incondicional, aunque no se consiga la lista de shares.
+      if (total > fondoReglas) problemas.push(`los pagos de la época ${epoca} suman ${total}, más que el fondo (${fondoReglas})`);
       const detalle = await detalleDe(reglas, epoca, raizS);
       if (detalle === false) problemas.push(`la lista publicada de la época ${epoca} no da la raíz de la cadena (${raizS})`);
-      else if (detalle === null) avisos.push(`época ${epoca}: el pago no se verificó (no se consiguió la lista de shares)`);
+      else if (detalle === null) avisos.push(`época ${epoca}: el reparto entre los mineros no se verificó (no se consiguió la lista de shares; el total sí: ${total} de ${fondoReglas})`);
       else problemas.push(...await verificarReparto(antes, epoca, detalle, pagos, fondo, reglas, avisos));
       for (const [m, monto] of Object.entries(pagos)) sumar(e, m, monto);
       e.shares[epoca] = raizS;
@@ -453,7 +495,9 @@ const Verificador = (() => {
         if (bloque.previous_hash !== estado.punta) problemas.push("no encadena: su previous_hash no es la punta");
         const raizAntes = raiz(estado);
         if (bloque.raiz_estado !== raizAntes) problemas.push(`la raíz de estado no es la del bloque anterior (dice ${bloque.raiz_estado}, y es ${raizAntes})`);
+        const piso = Math.max(estado.prefijoMinimo || 1, reglas.prefijoMinimo || 0, 1);
         if (!prefijo || !bloque.block_hash.startsWith(prefijo)) problemas.push(`el hash no cumple el prefijo «${prefijo}»`);
+        else if (prefijo.length < piso) problemas.push(`el prefijo tiene ${prefijo.length} caracteres y el piso de la cadena es ${piso}`);
         let i;
         if (!txs.length || tipoDe(txs[0]) !== "coinbase") { problemas.push("la primera transacción no es la coinbase"); i = 0; }
         else {
@@ -494,7 +538,7 @@ const Verificador = (() => {
   return { md5, verificarFirma, tipoDe, textoDeBloque, raizBloque, raizTransacciones, raizShares, listaShares, repartir,
     alturaFinalizada, raizMerkle, raizDeRama, hashHoja, hojas, raiz, estadoNuevo, copiar, aplicarBloque, finalidad,
     mensajeTransaccion, mensajeAtestacion, mensajeFirmaBloque, cuentaValida, nombreValido, EMISION,
-    mensajeActa, mensajePedido, mensajeDe, armarCarga, armarActa };
+    mensajeActa, mensajePedido, mensajeDe, mensajeAlta, armarCarga, armarActa };
 })();
 
 if (typeof module !== "undefined") module.exports = Verificador;

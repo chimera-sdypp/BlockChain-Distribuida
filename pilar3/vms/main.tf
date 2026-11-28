@@ -2,27 +2,36 @@ data "google_compute_network" "vpc" {
   name = "blockchain" # la de infra/
 }
 
-data "google_storage_bucket" "tfstate" {
-  name = "${var.proyecto}-tfstate"
-}
-
-# Creada por infra/; su pod corre el módulo instancias/.
+# Las dos cuentas las crea bootstrap/ (BC-111). El pod del escalador corre el módulo instancias/.
 data "google_service_account" "escalador" {
   account_id = "escalador"
 }
 
-# ---------------------------------------------------------------- Cuenta de las VMs
-# Sólo puede bajar la imagen y escribir logs. La clave del minero le llega por metadata (BC-57).
-resource "google_service_account" "minero" {
-  account_id   = "minero-cpu"
-  display_name = "VMs minero-cpu"
+# La de las VMs: sólo puede bajar la imagen y escribir logs. La clave del minero la genera la propia VM (BC-95).
+data "google_service_account" "minero" {
+  account_id = "minero-cpu"
 }
 
-resource "google_project_iam_member" "minero" {
-  for_each = toset(["roles/artifactregistry.reader", "roles/logging.logWriter"])
-  project  = var.proyecto
-  role     = each.value
-  member   = "serviceAccount:${google_service_account.minero.email}"
+# Antes las creaba este módulo: se olvidan del state sin borrarlas (ahora las maneja bootstrap/).
+removed {
+  from = google_service_account.minero
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_project_iam_member.minero
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_service_account_iam_member.escalador_usa_minero
+  lifecycle {
+    destroy = false
+  }
 }
 
 # ---------------------------------------------------------------- Firewall
@@ -68,11 +77,14 @@ resource "google_compute_instance_template" "minero" {
   }
 
   service_account {
-    email  = google_service_account.minero.email
+    email  = data.google_service_account.minero.email
     scopes = ["cloud-platform"]
   }
 
   metadata = {
+    # BC-95: la VM publica su clave pública en sus guest attributes (sólo ella puede escribirlos) y el escalador la
+    # lee de ahí (compute.instances.getGuestAttributes, que está en compute.instanceAdmin.v1).
+    enable-guest-attributes = "TRUE"
     startup-script = templatefile("${path.module}/arrancar.sh", {
       imagen      = var.imagen
       gateway_url = var.gateway_url
@@ -87,21 +99,5 @@ resource "google_compute_instance_template" "minero" {
 }
 
 # ---------------------------------------------------------------- Permisos del escalador
-# Crear y borrar instancias, ponerles la cuenta minero-cpu y escribir el state de instancias/.
-resource "google_project_iam_member" "escalador_instancias" {
-  project = var.proyecto
-  role    = "roles/compute.instanceAdmin.v1"
-  member  = data.google_service_account.escalador.member
-}
-
-resource "google_service_account_iam_member" "escalador_usa_minero" {
-  service_account_id = google_service_account.minero.name
-  role               = "roles/iam.serviceAccountUser"
-  member             = data.google_service_account.escalador.member
-}
-
-resource "google_storage_bucket_iam_member" "escalador_tfstate" {
-  bucket = data.google_storage_bucket.tfstate.name
-  role   = "roles/storage.objectAdmin"
-  member = data.google_service_account.escalador.member
-}
+# Los da bootstrap/ (BC-111), acotados a las VMs minero-cpu-* y al state de instancias/. Los permisos
+# amplios que daba este módulo (instanceAdmin en el proyecto y objectAdmin en todo el bucket) se borran.

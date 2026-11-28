@@ -8,13 +8,14 @@
 
 | Carpeta | Qué es | Pipeline |
 |---|---|---|
-| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31) y las IP fijas del gateway y de Traefik (`ingreso`) | A mano, una vez |
+| `bootstrap/` | Base de GCP: APIs, Artifact Registry, Secret Manager, Workload Identity Federation (BC-31), las IP fijas del gateway y de Traefik (`ingreso`) y las cuentas de servicio con sus permisos ([Permisos](#permisos)) | A mano, con Owner |
 | `infra/` | VPC y GKE zonal con dos nodegroups, `infra` (con taint) y `apps` (BC-32) | 1 · `pilar3-cluster.yml` |
 | `helm/`, `k8s/servicios-base/` | Traefik, cert-manager, KEDA, RabbitMQ ×3, Redis ×3 y la observabilidad en el nodegroup de infra (BC-33, BC-37) | 2 · `pilar3-servicios-base.yml` |
 | `k8s/apps/` | frontend, backend, nct, trp, gateway y escalador en el nodegroup de apps, y `/salud/<servicio>` (BC-34) | 3 · `pilar3-apps.yml` |
 | `vms/` | Plantilla de las VMs minero-cpu, firewall y permisos (BC-35) | 4 · `pilar3-vms.yml` |
 | `vms/instancias/` | Las VMs `minero-cpu-0…N-1` (BC-35) | Ninguno: lo aplica el escalador |
 | [`pruebas/`](pruebas/README.md) | Pruebas de carga (BC-38 a BC-42) y cómo dejar GKE en sus condiciones | A mano: `pilar3-preparar-prueba.yml` |
+| [`PRODUCCION.md`](PRODUCCION.md) | Checklist productivo (autoscaling, HPA, RBAC, NetworkPolicies, `securityContext`, NTP, BC-100) | — |
 
 Cada módulo tiene `provider.tf`, `variables.tf`, `main.tf` y `outputs.tf`. El state va a un bucket de GCS (`<proyecto>-tfstate`), con lock y con versionado. Nunca va al repo.
 
@@ -40,6 +41,48 @@ done
 
 El proveedor OIDC sólo acepta tokens de `chimera-sdypp/BlockChain-Distribuida`. El pipeline recibe un token de GCP que vence en 1 h.
 
+## Permisos
+
+Las cuentas de servicio y sus roles en el proyecto viven en `bootstrap/`, que aplica a mano quien tiene Owner. Los pipelines no pueden crear cuentas ni darse roles (BC-109).
+
+| Cuenta | Qué puede hacer | Sobre qué | Por qué |
+|---|---|---|---|
+| `escalador` | Crear, leer y borrar instancias y discos; leer y usar la plantilla; usar la subred; leer los guest attributes (rol custom `escaladorVms`) | Sólo lo que se llama `minero-cpu-*` y la subred `blockchain-nodos` (condición IAM por nombre) | Levantar y bajar sus VMs y leer la clave pública de cada una (BC-95) |
+| `escalador` | Listar instancias y plantillas y seguir las operaciones de zona (rol custom `escaladorListar`) | El proyecto, sin condición | Las listas no se pueden acotar por nombre; listar no deja tocar nada |
+| `escalador` | `objectAdmin` | Sólo `vms-instancias/` en el bucket de states, más listar el bucket | Su state; no puede leer ni pisar el de `infra`, `vms` ni `bootstrap` |
+| `escalador` | `serviceAccountUser` | Sólo la cuenta `minero-cpu` | Ponérsela a las VMs que crea |
+| `minero-cpu` | `artifactregistry.reader`, `logging.logWriter` | El proyecto | Bajar la imagen y escribir logs |
+| `ci-github` | `serviceAccountAdmin` | Sólo la cuenta `escalador` | `infra/` le pone el binding de Workload Identity |
+
+### Comprobar los permisos del escalador
+
+La imagen del escalador no trae `gcloud`: se usa un pod temporal con su mismo ServiceAccount, que por Workload Identity entra como la cuenta `escalador`:
+
+```bash
+kubectl -n blockchain run prueba-escalador --rm -it --restart=Never --image=google/cloud-sdk:slim \
+  --overrides='{"spec":{"serviceAccountName":"escalador","nodeSelector":{"nodegroup":"apps"}}}' -- bash
+
+# adentro:
+PROYECTO=$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id)
+gcloud auth list                                                         # escalador@…
+NODO=$(gcloud compute instances list --filter='name~^gke-' --format='value(name)' --limit=1)
+gcloud compute instances delete "$NODO" --zone us-central1-a --quiet    # 403
+gcloud storage cat gs://$PROYECTO-tfstate/infra/default.tfstate          # 403
+echo x | gcloud storage cp - gs://$PROYECTO-tfstate/infra/prueba         # 403
+gcloud storage ls gs://$PROYECTO-tfstate/vms-instancias/                 # anda
+```
+
+Y el escalado tiene que seguir andando: con carga sube a N VMs y en reposo vuelve a 0.
+
+### Migración de BC-111 (una vez)
+
+Las cuentas `escalador` y `minero-cpu` existían en los states de `infra` y `vms`. El orden evita que el escalador quede sin permisos en el medio:
+
+1. **Owner, desde `pilar3/bootstrap/`:** `tofu plan -var proyecto=$PROYECTO` tiene que mostrar 5 imports (las dos cuentas, los dos roles de `minero-cpu` y el `serviceAccountUser`) y sólo creaciones: los dos roles custom, sus bindings, el binding con condición sobre el bucket y el `serviceAccountAdmin` de `ci-github` sobre `escalador`. Nada se destruye. Después, `tofu apply`. Desde acá el escalador tiene los permisos viejos y los nuevos.
+2. **Merge a `main`:** el Pipeline 1 y el 4 olvidan las cuentas (`removed`, sin borrarlas) y el 4 borra los permisos amplios (`instanceAdmin.v1` en el proyecto y `objectAdmin` en todo el bucket).
+3. **Borrar `bootstrap/migracion.tf`** en un PR aparte: en un proyecto nuevo los imports fallarían. El plan de `bootstrap` tiene que dar «sin cambios».
+4. Las pruebas de arriba.
+
 ## Pipeline 1 · Cluster
 
 - **En un PR:** gitleaks, `tofu fmt`, `validate` y `plan`. El plan queda comentado en el PR.
@@ -47,7 +90,7 @@ El proveedor OIDC sólo acepta tokens de `chimera-sdypp/BlockChain-Distribuida`.
 - **Nodegroups:** `infra` tiene 1 nodo y taint `nodegroup=infra:NoSchedule`; `apps`, 1 nodo (los requests de cada uno suman ~0,5 vCPU). Las máquinas son `e2-standard-2` **spot** con disco estándar de 30 GB: si GCP se lleva un nodo, GKE crea otro y los pods vuelven.
 - **Cuentas de servicio:**
   - La de los nodos (`gke-nodos`) baja las imágenes de Artifact Registry, así que no hacen falta pull secrets.
-  - La del escalador entra a GCP desde el ServiceAccount `blockchain/escalador` por Workload Identity. Los permisos sobre las VMs se los da `vms/` (BC-35).
+  - La del escalador entra a GCP desde el ServiceAccount `blockchain/escalador` por Workload Identity. La cuenta y sus permisos los crea `bootstrap/` (ver [Permisos](#permisos)); acá sólo va el binding de Workload Identity, que necesita el pool del cluster.
 - **Costo estimado:** ≈ USD 0,10/h (≈ USD 2,5/día): 2 nodos spot, los 2 LoadBalancer (Traefik y gateway, lo que más pesa) y los discos. El cluster zonal no paga la administración. **Cobra desde que existe:** al terminar, `tofu destroy`.
 
 Para conectarse: `tofu output -raw conectarse`.
@@ -61,7 +104,8 @@ Para conectarse: `tofu output -raw conectarse`.
 - **KEDA** usa el chart 2.21.0, el mismo que en k3s.
 - **RabbitMQ y Redis** usan los manifiestos del Pilar 2 sin cambios: [`servicios-base/`](k8s/servicios-base/kustomization.yaml) sólo les agrega el nodeSelector y la toleration de infra. Sus Services son internos.
 - **El Secret `blockchain-secretos`** sale de los secretos del ambiente `produccion` de GitHub: `RABBIT_USUARIO`, `RABBIT_CLAVE`, `RABBIT_COOKIE` y `REDIS_CLAVE`. Los mineros no usan un secreto compartido: firman con su clave (BC-57).
-- **Cuentas en GKE** ([`k8s/apps/nct-saldos.yaml`](k8s/apps/nct-saldos.yaml)): el génesis trae las cuentas de prueba alice, bob y carol con saldos altos (las firman las pruebas de carga), y `ORGANIZADOR_CLAVE` es la del organizador de GKE, cuya privada no está en el repo. Los mineros se aprueban con `pilar2/k8s/aprobar.sh` (`kubectl exec` en el Redis).
+- **El Secret `escalador-clave`** (BC-95) sale del secreto `ESCALADOR_CLAVE` del mismo ambiente: la privada con que el escalador firma las altas delegadas de sus VMs. Sin él, el Pipeline 2 falla y el escalador no arranca (hasta la v3 la generaba y la guardaba en Redis). Cada VM genera su propia clave al arrancar y publica sólo la pública en sus guest attributes: ninguna privada pasa por Redis ni por el state de `vms/instancias`. Al rotar la del escalador, el organizador le da un `permiso-` a la clave nueva.
+- **Cuentas en GKE** ([`k8s/apps/nct-saldos.yaml`](k8s/apps/nct-saldos.yaml)): el génesis va vacío (BC-91) y la plata entra sólo por cargas del organizador, cuya privada no está en el repo (`ORGANIZADOR_CLAVE` es su pública). Las pruebas de carga firman con cuentas propias ([`pruebas/cuentas.py`](pruebas/cuentas.py)). El CI frena un manifiesto de `pilar3/` con saldos en el génesis o una cuenta de `comun/tests/claves.py` ([`k8s/sin_cuentas_de_prueba.py`](k8s/sin_cuentas_de_prueba.py)).
 - **Observabilidad (BC-37):** los mismos charts y values que en k3s ([pilar2](../pilar2/README.md)), más [`monitoreo.yaml`](helm/monitoreo.yaml) y [`loki.yaml`](helm/loki.yaml), que los mandan al nodegroup de infra. La contraseña de Grafana sale del secreto `GRAFANA_CLAVE` del ambiente. Se entra por port-forward: `kubectl -n monitoring port-forward svc/monitoreo-grafana 3000:80`.
 
 ## Pipeline 3 · Apps
@@ -86,7 +130,7 @@ Para conectarse: `tofu output -raw conectarse`.
 - **En un PR:** gitleaks, build de la imagen del minero CPU, `fmt`, `validate` (también de `instancias/`) y `plan` comentado.
 - **Al mergear a `main`:** push de la imagen a Artifact Registry (tag = sha) y `apply` de la plantilla. Necesita la variable `GATEWAY_URL`, la IP pública del gateway (`http://<ip>:8081`).
 - **La VM:** Container-Optimized OS con un startup-script ([`arrancar.sh`](vms/arrancar.sh)) que:
-  1. lee su clave Ed25519 de la metadata de la instancia (`clave-minero`): la genera el escalador, que además aprueba su cuenta en `cuentas` (BC-57). Queda en `/run`, que está en RAM;
+  1. genera su clave Ed25519 la primera vez (el minero la guarda en `/var/lib/minero`) y publica sólo la pública en sus guest attributes (`minero/publica`); el escalador la lee y firma su alta delegada (BC-57, BC-95). La privada no sale de la VM;
   2. baja la imagen con la cuenta de servicio de la VM;
   3. arranca el minero con `MINERO_ID` = nombre de la VM y `CLAVE_PRIVADA`.
 

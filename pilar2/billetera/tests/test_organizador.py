@@ -13,7 +13,7 @@ import pytest
 
 from claves.herramienta import jwk
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual
 
 NODE = shutil.which("node")
 CORRER = Path(__file__).parent / "firmar_organizador.cjs"
@@ -28,7 +28,7 @@ def test_las_actas_las_cargas_y_el_pedido_son_los_de_python(tmp_path):
     cuerpo = json.dumps({"cuenta": alice})
     pedidos = [("POST", "/api/organizador/rechazar", cuerpo), ("GET", "/api/organizador/altas", ""),
                ("GET", "/api/organizador/suspendidos", "")]
-    entrada = {"jwk": jwk(ORG),
+    entrada = {"jwk": jwk(ORG), "cadena": cadena_actual(),
                "pedidos": [{"metodo": m, "ruta": r, "tiempo": T, "cuerpo": c} for m, r, c in pedidos],
                "txs": [{"tipo": "alta", "numero": 7, "destino": alice, "datos": "usuario:alice", "timestamp": T},
                        {"tipo": "carga", "numero": 8, "destino": alice, "monto": 500, "timestamp": T},
@@ -42,13 +42,13 @@ def test_las_actas_las_cargas_y_el_pedido_son_los_de_python(tmp_path):
     assert resultado.returncode == 0, resultado.stderr
     salida = json.loads(resultado.stdout)
 
-    esperadas = [contrato.alta(ORG, 7, alice, "usuario", "alice", T), contrato.carga(ORG, 8, alice, 500, T),
-                 contrato.baja(ORG, 9, bob, "sin solución imposible", T), contrato.baja(ORG, 10, bob, "", T),
-                 contrato.permiso(ORG, 11, bob, "minero-cpu-", T), contrato.permiso(ORG, 12, bob, "", T)]
+    esperadas = [contrato.alta(ORG, 7, alice, "usuario", "alice", T, cadena=cadena_actual()), contrato.carga(ORG, 8, alice, 500, T, cadena=cadena_actual()),
+                 contrato.baja(ORG, 9, bob, "sin solución imposible", T, cadena=cadena_actual()), contrato.baja(ORG, 10, bob, "", T, cadena=cadena_actual()),
+                 contrato.permiso(ORG, 11, bob, "minero-cpu-", T, cadena=cadena_actual()), contrato.permiso(ORG, 12, bob, "", T, cadena=cadena_actual())]
     assert salida["txs"] == esperadas
     for tx in salida["txs"]:
         validar = contrato.validar_carga if tx["id"].startswith("carga-") else contrato.validar_acta
-        assert validar(tx, CUENTA["organizador"]) == []
+        assert validar(tx, CUENTA["organizador"], cadena_actual()) == []
     # BC-88: también las lecturas firmadas (sin cuerpo) que pide la billetera para mostrar la sección.
-    assert salida["pedidos"] == [contrato.firmar_pedido(ORG, m, r, c.encode(), tiempo=T, quien=contrato.ORGANIZADOR)["X-Firma"]
+    assert salida["pedidos"] == [contrato.firmar_pedido(ORG, m, r, c.encode(), tiempo=T, quien=contrato.ORGANIZADOR, cadena=cadena_actual())["X-Firma"]
                                  for m, r, c in pedidos]

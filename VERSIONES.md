@@ -1,8 +1,20 @@
 # Versiones
 
-Versión actual: **0.8.6** (24/11/2026)
+Versión actual: **0.9.0** (28/11/2026)
 
 [SemVer](https://semver.org/lang/es/) 0.x hasta la entrega: cada pase de `dev` a `main` sube la versión acá y deja un tag `vX.Y.Z` en `main`.
+
+## 0.9.0 — 28/11/2026
+
+Las correcciones de la devolución (epic BC-90). Cambian la cadena (contrato v4 y génesis vacío): en GKE se reinicia, y hay que volver a aprobar mineros, el permiso del escalador y las cuentas de las pruebas. Cambia la billetera: nuevo SHA-256 en el release.
+
+- **Contrato v4** (#103, BC-95 a BC-99): el hash del génesis va adelante de todo lo que se firma (lo firmado para una cadena no sirve en otra), piso de prefijo en el génesis, el pago de la época nunca supera el fondo, y la clave del escalador sale de Redis a un Secret (`ESCALADOR_CLAVE`).
+- **Génesis vacío en GKE** (#109, BC-91): sin cuentas con saldo; las pruebas de carga firman con cuentas propias del Secret `cuentas-prueba`, que fondea el organizador (`pilar3/pruebas/cuentas.py`). El CI frena un génesis con saldo en `pilar3/`.
+- **Rangos ajenos y alta repetida** (#101, BC-92; #102, BC-93): el gateway y el TrP descartan un `sin_solucion` de un rango que no era del minero; la cadena rechaza el alta repetida.
+- **Entrada acotada** (#104, #105, BC-94): 403 sin escribir en Redis para quien no tiene alta, las rechazadas vencen a la hora, 413 y 429 en Traefik por la IP real del cliente, y topes de cuerpo en el gateway.
+- **Ambiente productivo** (#107, #108, BC-100): HPA, ServiceAccounts sin token, NetworkPolicies (Calico en GKE), `readOnlyRootFilesystem`, réplicas repartidas y Cluster Autoscaler en los node pools (`pilar3/PRODUCCION.md`).
+- **Grafana** (#106, BC-116): paneles de verificación, finalidad y defensas de la v3/v4.
+- **Permisos de la nube** (#110, BC-112; #112, BC-111): gitleaks verificado por SHA-256 y en todos los workflows; el escalador sólo puede tocar sus VMs `minero-cpu-*` y su state (roles custom con condición por nombre).
 
 ## 0.8.6 — 24/11/2026
 

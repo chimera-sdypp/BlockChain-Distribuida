@@ -11,8 +11,8 @@ arranca de cero fuera del cluster y tres validadores locales, y deja todo como e
 v4 (BC-96): `reminada` (la historia rehecha con prefijo 1), `pago-epoca` (pagar más que el fondo sin la lista
 publicada) y `otra-cadena` (lo firmado para otra cadena, como lo de antes de un reinicio).
 
-Necesita la cadena v4 con tráfico (manda transferencias de alice, bob y carol), un minero CPU local (lo arranca) y
-la clave de organizador de prueba (la del k3s). Escribe resultados/operador.csv y resultados/operador.log.
+Sólo para k3s (BC-91): necesita la cadena v4 con tráfico (manda transferencias de alice, bob y carol, las cuentas
+de prueba del génesis de k3s), un minero CPU local (lo arranca) y la clave de organizador de prueba (la del k3s). Escribe resultados/operador.csv y resultados/operador.log.
 """
 
 import argparse

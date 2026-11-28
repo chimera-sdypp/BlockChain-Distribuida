@@ -1,5 +1,6 @@
 """Una ráfaga con ventana: el ritmo (transferencias por segundo) se mueve en vivo y un botón tira
-N juntas. Firma en ronda con las cuentas de prueba del génesis (alice → bob → carol → alice), lleva el nonce de
+N juntas. Firma en ronda con las cuentas de cuentas.py (en k3s alice → bob → carol → alice; en GKE las del Secret
+cuentas-prueba, BC-91), lleva el nonce de
 cada una y sigue cada transferencia hasta que entra en un bloque o se rechaza.
 
     pilar2/.venv/bin/python pilar3/pruebas/rafaga.py [--sistema https://…] [--puerto 8765] [--sin-ventana]
@@ -22,12 +23,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pilar2"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from claves.herramienta import Backend  # noqa: E402
 from comun import contrato  # noqa: E402
-from comun.tests.claves import PRIVADA  # noqa: E402
+from cuentas import ORIGENES, PRIVADA  # noqa: E402
 
-NOMBRES = ("alice", "bob", "carol")
+NOMBRES = ORIGENES  # cuentas.py: en GKE las del Secret cuentas-prueba, en k3s alice, bob y carol
 RITMO_MAXIMO = 100
 TIRADA_MAXIMA = 1000
 SIN_RESPUESTA = 600  # segundos: la que no entró en un bloque ni se rechazó, deja de seguirse

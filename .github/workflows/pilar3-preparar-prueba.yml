@@ -3,6 +3,8 @@
 #   estado     IP pública, altura, saldos, mineros y condiciones (no cambia nada)
 #   preparar   (opcional) reinicia la cadena, fija prefijo, fragmentación y criterio de potencia, y (opcional) fija las VMs
 #   restaurar  TrP y escalador como en los manifiestos
+#   cuentas    el Secret cuentas-prueba con las cuentas de las pruebas de carga (BC-91); el génesis va vacío:
+#              las fondea el organizador desde su PC (pilar3/pruebas/cuentas.py fondear)
 # Mientras se mide nadie mergea a main: el Pipeline 3 volvería a aplicar los manifiestos.
 name: "Pilar 3 · Preparar prueba"
 
@@ -10,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       accion:
-        description: "estado (sólo mirar) · preparar (condiciones de la prueba) · restaurar (volver a lo normal)"
+        description: "estado (sólo mirar) · preparar (condiciones de la prueba) · restaurar (volver a lo normal) · cuentas (crear las de las pruebas)"
         type: choice
-        options: [estado, preparar, restaurar]
+        options: [estado, preparar, restaurar, cuentas]
         default: estado
       reiniciar_cadena:
         description: "Con preparar: escribir REINICIAR para borrar la cadena y cargar el génesis de nuevo (vacío: no se toca)"
@@ -93,6 +95,9 @@ jobs:
       - name: Restaurar
         if: inputs.accion == 'restaurar'
         run: pilar3/pruebas/preparar.sh restaurar
+      - name: Cuentas de las pruebas
+        if: inputs.accion == 'cuentas'
+        run: pilar3/pruebas/preparar.sh cuentas
 
       - name: Estado
         if: always()

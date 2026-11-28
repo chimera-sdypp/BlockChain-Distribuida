@@ -6,7 +6,7 @@
 Lee Redis con `kubectl exec` en el namespace `blockchain` del contexto actual (KUBECONFIG). Comprueba:
 
 1. Una clave recién generada transfiere: 403 y su tx:<id> no existe en Redis (la prueba del profesor).
-2. Una transferencia que el NCT rechaza (alice, sin saldo para el monto) vence: TTL entre 1 y 3600.
+2. Una transferencia que el NCT rechaza (la primera cuenta de cuentas.py, sin saldo para el monto) vence: TTL entre 1 y 3600.
 3. Un POST de 1 MB + 1 a /api da 413 (Traefik, antes del backend).
 4. Muchos GET seguidos no reciben 429: el límite es sólo para los POST.
 5. Una ráfaga de POST a /api/transacciones/lote más grande que el burst recibe 429.
@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pilar2"))
 
 from claves.herramienta import Backend  # noqa: E402
 from comun import contrato  # noqa: E402
-from comun.tests.claves import CUENTA, PRIVADA  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cuentas import CUENTA, ORIGENES, PRIVADA  # noqa: E402
 
 GUARDA = 3600
 CUERPO_MAXIMO = 1024 * 1024
@@ -53,20 +54,19 @@ def crudo(backend, ruta, cuerpo):
 
 def clave_nueva(backend):
     privada, _ = contrato.nueva_clave()
-    tx = contrato.transaccion(privada, CUENTA["bob"], 1, 1, cadena=backend.cadena())
+    tx = contrato.transaccion(privada, CUENTA[ORIGENES[1]], 1, 1, cadena=backend.cadena())
     codigo, cuerpo = backend.mandar(tx)
     existe = redis("EXISTS", f"tx:{tx['id']}")
     return codigo == 403 and existe == "0", f"{codigo} {cuerpo}, EXISTS tx:{tx['id'][:12]}… = {existe}"
 
 
 def rechazada_vence(backend):
-    alice = CUENTA["alice"]
-    datos = backend.cuenta(alice)
-    tx = contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], int(datos["saldo"]) + 1, datos["nonce"] + 1,
+    datos = backend.cuenta(CUENTA[ORIGENES[0]])
+    tx = contrato.transaccion(PRIVADA[ORIGENES[0]], CUENTA[ORIGENES[1]], int(datos["saldo"]) + 1, datos["nonce"] + 1,
                               cadena=backend.cadena())
     codigo, cuerpo = backend.mandar(tx)
     if codigo != 202:
-        return False, f"alice no pudo mandar la transferencia: {codigo} {cuerpo}"
+        return False, f"{ORIGENES[0]} no pudo mandar la transferencia: {codigo} {cuerpo}"
     limite = time.monotonic() + 60
     while time.monotonic() < limite and (backend.estado(tx["id"]) or {}).get("estado") != "rechazada":
         time.sleep(1)

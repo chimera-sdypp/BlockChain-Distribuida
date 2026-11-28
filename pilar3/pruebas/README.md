@@ -12,7 +12,7 @@
 | [`potencia_teorica.py`](potencia_teorica.py), [`potencia.py`](potencia.py) y `grafico_potencia.py` | BC-59: criterio de potencia (suma, promedio, mínimo o máximo) |
 | [`trampas.py`](trampas.py) | BC-76: mineros que mienten a propósito contra el sistema desplegado |
 | [`operador.py`](operador.py) | BC-85: lo que haría el operador de la nube (tocar Redis, editar o reescribir bloques, inflar shares, un validador que firma dos historias) y que se note |
-| [`rafaga.sh`](rafaga.sh) | Una ráfaga: N transferencias firmadas en ronda entre alice, bob y carol, y su seguimiento |
+| [`rafaga.sh`](rafaga.sh) | Una ráfaga: N transferencias firmadas en ronda entre las cuentas de `cuentas.py`, y su seguimiento |
 | [`rafaga.py`](rafaga.py) | La misma ráfaga con ventana: el ritmo (transferencias por segundo) se mueve en vivo, hay botones para tirar varias juntas y muestra las que esperan bloque, las confirmadas y un gráfico de los últimos 60 s |
 | [`limites.py`](limites.py) | BC-94: los límites contra el sistema desplegado (403 de una clave sin alta sin rastro en Redis, vencimiento de la rechazada, 413, GET sin límite y 429 del lote) |
 | [`firmar.py`](firmar.py) | Lo que usan las pruebas para firmar: el contrato y las cuentas de prueba del génesis |
@@ -29,8 +29,9 @@ Se corre a mano: **Actions → Pilar 3 · Preparar prueba → Run workflow**. En
 | `estado` | Sólo muestra; no cambia nada |
 | `preparar` | Fija `PREFIJO_BASE`, `AJUSTAR_PREFIJO`, `FRAGMENTO_PORCENTAJE` y, si se elige, `CRITERIO_POTENCIA` en el TrP (y el mismo prefijo en el escalador). Opcionales: reiniciar la cadena y dejar una cantidad fija de VMs |
 | `restaurar` | TrP y escalador como en los manifiestos, y el escalador de nuevo en manos de KEDA |
+| `cuentas` | Crea el Secret `cuentas-prueba` con las cuentas que firman las pruebas (ver [Firmas](#firmas-contrato-v2)) |
 
-**Reiniciar la cadena** (escribir `REINICIAR` en el campo): apaga el NCT y el TrP, vacía las colas y Redis, y los vuelve a prender. El NCT carga el génesis con los `SALDOS_INICIALES` de su Deployment, que en GKE son 1.000.000.000 por usuario ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Se pierden todos los bloques y saldos anteriores, para todo el grupo. Se niega si el NCT todavía tiene los saldos por defecto.
+**Reiniciar la cadena** (escribir `REINICIAR` en el campo): apaga el NCT y el TrP, vacía las colas y Redis, y los vuelve a prender. El NCT carga el génesis, que en GKE va vacío ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Se pierden todos los bloques y saldos anteriores, para todo el grupo: después el organizador vuelve a fondear las cuentas de las pruebas (`cuentas.py fondear`).
 
 **VMs fijas** (`vms_cpu`): pausa el escalador en KEDA (`autoscaling.keda.sh/paused-replicas: "0"`), aplica `vms/instancias` con esa cantidad y espera a que los mineros CPU avisen. Sin esto, el escalador apaga las VMs a los 2 minutos sin trabajo y las vuelve a crear en la corrida siguiente: cambia la cantidad de mineros entre corridas. Si hay una GPU viva, con `vms_cpu` vacío el escalador no levanta ninguna.
 
@@ -272,7 +273,16 @@ Los paneles «Rangos por minero por minuto» y «Rangos por tipo», de la fila �
 
 ## Firmas (contrato v2)
 
-Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de prueba del génesis (alice, bob y carol, de `pilar2/comun/tests/claves.py`), que en GKE tienen saldos altos ([`nct-saldos.yaml`](../k8s/apps/nct-saldos.yaml)). Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.
+Las transacciones van firmadas por su origen y con el nonce de su cuenta. Las pruebas firman con las cuentas de [`cuentas.py`](cuentas.py) (BC-91). En GKE el génesis va vacío: son cuentas propias, con las privadas en el Secret `cuentas-prueba` (nunca en el repo), y el organizador les da el alta y les carga saldo como a cualquier cuenta. En k3s, sin ese Secret, son alice, bob y carol, las de prueba del génesis de `pilar2/k8s/nct.yaml`.
+
+```bash
+# 1. Crearlas (o el workflow «Preparar prueba» con la acción cuentas)
+python3 pilar3/pruebas/cuentas.py generar 3
+# 2. El organizador, desde su PC (también después de reiniciar la cadena)
+pilar2/.venv/bin/python pilar3/pruebas/cuentas.py fondear organizador.clave --url https://…
+pilar2/.venv/bin/python pilar3/pruebas/cuentas.py mostrar --url https://…
+```
+ Por eso se corren con el Python de `pilar2` (`pilar2/.venv/bin/python`, o `pip install -r pilar2/comun/requirements.txt`), que tiene `cryptography`.
 
 Una ráfaga: `pilar3/pruebas/rafaga.sh http://<Ingress> 20`, o con ventana: `pilar2/.venv/bin/python pilar3/pruebas/rafaga.py [--sistema https://…]`.
 

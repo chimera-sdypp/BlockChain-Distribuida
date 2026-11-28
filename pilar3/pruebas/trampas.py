@@ -39,7 +39,8 @@ sys.path.insert(0, str(PILAR2))
 
 from claves.herramienta import Backend, rafaga  # noqa: E402
 from comun import contrato  # noqa: E402
-from comun.tests.claves import PRIVADA  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cuentas import ORIGENES, PRIVADA  # noqa: E402
 
 NS = "blockchain"
 REGISTRO = []  # (escenario, comprobación, esperado, observado, ok)
@@ -110,7 +111,7 @@ class Minero:
 
 
 class Trafico(threading.Thread):
-    """Transferencias de alice, bob y carol cada `cada` segundos, para que siempre haya bloques que minar."""
+    """Transferencias entre las cuentas de cuentas.py (en k3s alice, bob y carol) cada `cada` segundos, para que siempre haya bloques que minar."""
 
     def __init__(self, backend, cantidad=30, cada=20):
         super().__init__(daemon=True)
@@ -118,7 +119,7 @@ class Trafico(threading.Thread):
         self.parar = threading.Event()
 
     def run(self):
-        privadas = [PRIVADA[n] for n in ("alice", "bob", "carol")]
+        privadas = [PRIVADA[n] for n in ORIGENES]
         while not self.parar.is_set():
             try:
                 rafaga(self.backend, privadas, self.cantidad, esperar=0, salida=lambda *_: None)

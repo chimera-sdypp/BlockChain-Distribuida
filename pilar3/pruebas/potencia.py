@@ -19,7 +19,7 @@ criterios se separan: la suma da 9, el máximo y el promedio 8, y el mínimo (un
 hacen falta 16^9 = 2^36 intentos: con ESPACIO_NONCES=2^38, ~1,8 % de las tareas quedan sin solución
 (e^-4) en vez de ~37 %. Usa el kubectl del cluster (KUBECONFIG). Al terminar (o con Ctrl+C) deja las
 variables del TrP como estaban. Correrlo con el Python de pilar2 (pilar2/.venv/bin/python): firma con
-la cuenta de prueba alice.
+la primera cuenta de firmar.py (cuentas.py).
 """
 
 import argparse

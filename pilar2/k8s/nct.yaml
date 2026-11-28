@@ -54,7 +54,8 @@ spec:
             # v4 (BC-97): el piso de prefijo que va en el génesis (sólo cuenta al crear la cadena). El TrP no baja de ahí.
             - { name: PREFIJO_MINIMO, value: "6" }
             # Las cuentas de prueba alice, bob y carol (comun/tests/claves.py: sus privadas salen de
-            # sha256("chimera-prueba-<nombre>")). En la red de verdad el génesis va vacío y el saldo entra por cargas.
+            # sha256("chimera-prueba-<nombre>")). Sólo para k3s y los tests: en GKE el génesis va vacío
+            # (pilar3/k8s/apps/nct-saldos.yaml, BC-91) y el saldo entra por cargas del organizador.
             - name: SALDOS_INICIALES
               value: '{"0e80f23abd9643bfa3bf7379857f5b44ad848c7b04150041ededd2bd441d3ff1": {"saldo": 1000, "nombre": "alice"}, "8c092b4d0126f911f5b6533cb2ab5854e74e1ea5379f9260ff0b44ea8d298db5": {"saldo": 1000, "nombre": "bob"}, "a12b9d664c3ec7510795e0917fe1755a7206dc12ebca06086e4e579b6021eb3f": {"saldo": 1000, "nombre": "carol"}}'
             # El organizador, que firma las cargas de saldo. En k3s el de prueba; en GKE otro

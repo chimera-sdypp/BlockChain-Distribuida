@@ -15,15 +15,27 @@ variable "zona" {
 }
 
 variable "nodos_infra" {
-  description = "Nodos del nodegroup de infra: RabbitMQ x3, Redis x3, Traefik y KEDA (los requests suman ~0,5 vCPU)"
+  description = "Mínimo de nodos del nodegroup de infra (Cluster Autoscaler, BC-101)"
   type        = number
   default     = 1
 }
 
+variable "nodos_infra_max" {
+  description = "Máximo de nodos del nodegroup de infra (quota 8 IPs públicas: 2 infra + 3 apps + 2 LB + VMs)"
+  type        = number
+  default     = 2
+}
+
 variable "nodos_apps" {
-  description = "Nodos del nodegroup de apps: frontend, backend, nct, trp y gateway (x2) y el escalador (~0,5 vCPU)"
+  description = "Mínimo de nodos del nodegroup de apps (Cluster Autoscaler, BC-101)"
   type        = number
   default     = 1
+}
+
+variable "nodos_apps_max" {
+  description = "Máximo de nodos del nodegroup de apps (Cluster Autoscaler, BC-101)"
+  type        = number
+  default     = 3
 }
 
 variable "maquina" {

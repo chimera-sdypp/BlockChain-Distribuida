@@ -5,7 +5,9 @@
 #
 #   preparar.sh estado                 IP pública, altura, saldos, mineros y condiciones actuales
 #   preparar.sh reiniciar              BORRA LA CADENA: vacía Redis y las colas; el NCT carga el génesis
-#                                      de nuevo, con los SALDOS_INICIALES de su Deployment
+#                                      de nuevo (en GKE vacío, BC-91: después, `cuentas.py fondear`)
+#   preparar.sh cuentas [N]            el Secret cuentas-prueba con N cuentas para las pruebas de carga (3);
+#                                      no pisa uno que existe. Las fondea el organizador (cuentas.py fondear)
 #   preparar.sh condiciones P A F [C]  TrP con PREFIJO_BASE=P, AJUSTAR_PREFIJO=A (0 o 1),
 #                                      FRAGMENTO_PORCENTAJE=F y, si viene, CRITERIO_POTENCIA=C (suma,
 #                                      promedio, minimo o maximo; BC-59). El escalador, con el mismo PREFIJO_BASE
@@ -18,7 +20,6 @@
 set -euo pipefail
 
 NS=${NS:-blockchain}
-SALDO_MINIMO=${SALDO_MINIMO:-1000000}   # reiniciar se niega con saldos iniciales menores
 RAIZ=$(cd "$(dirname "$0")/../.." && pwd)
 COLAS="transacciones tareas rangos resultados soluciones"
 
@@ -127,17 +128,27 @@ altas_vms() {
         k exec -i deploy/trp -- python -c "$ALTAS_VMS" "$cantidad" "$publicas"
 }
 
+# «nombre pública» de cada cuenta del Secret cuentas-prueba (BC-91), o nada si no está. La pública la deriva un pod
+# del TrP, que tiene el contrato; la privada entra por stdin y no sale del pod.
+cuentas_prueba() {
+    k get secret cuentas-prueba -o json 2>/dev/null | k exec -i deploy/trp -- python -c '
+import base64, json, sys
+from comun import contrato
+for nombre, valor in sorted((json.load(sys.stdin).get("data") or {}).items()):
+    print(nombre, contrato.clave_publica(base64.b64decode(valor).decode().strip()))' 2>/dev/null || true
+}
+
 estado() {
     local base
     base=$(url_publica)
     echo "Sistema:   $base   (para correr.py: --url $base)"
     echo "TrP:       PREFIJO_BASE=$(env_de trp PREFIJO_BASE) AJUSTAR_PREFIJO=$(env_de trp AJUSTAR_PREFIJO) FRAGMENTO_PORCENTAJE=$(env_de trp FRAGMENTO_PORCENTAJE) CRITERIO_POTENCIA=$(env_de trp CRITERIO_POTENCIA)   (vacío: el valor por defecto del TrP)"
     echo "Escalador: pausado en KEDA=$(k get scaledobject escalador -o jsonpath='{.metadata.annotations.autoscaling\.keda\.sh/paused-replicas}' 2>/dev/null || true)   (vacío: lo maneja KEDA)"
-    echo "NCT:       SALDOS_INICIALES=$(env_de nct SALDOS_INICIALES)"
-    python3 - "$base" "$(url_gateway)" <<'EOF'
+    echo "NCT:       SALDOS_INICIALES=$(env_de nct SALDOS_INICIALES)   (en GKE «{}»: el génesis va vacío, BC-91)"
+    python3 - "$base" "$(url_gateway)" "$(cuentas_prueba)" <<'EOF'
 import json, sys, urllib.request
 
-base, gateway = sys.argv[1], sys.argv[2]
+base, gateway, cuentas = sys.argv[1], sys.argv[2], [l.split() for l in sys.argv[3].splitlines() if l.strip()]
 def get(ruta, de=None):
     with urllib.request.urlopen((de or base) + ruta, timeout=10) as r:
         return json.load(r)
@@ -150,7 +161,11 @@ except OSError as error:
     sys.exit(f"No responden {base} o {gateway}: {error}")
 if punta:
     print(f"Cadena:    altura {punta[0]['altura']}, prefijo del último bloque «{punta[0].get('prefijo', '')}»")
-print("Saldos:    " + ", ".join(f"{u}={saldos.get(u, 0)}" for u in ("alice", "bob", "carol")))
+if cuentas:
+    print("Cuentas:   " + ", ".join(f"{nombre}={saldos.get(publica, 0)}" for nombre, publica in cuentas)
+          + "   (las del Secret cuentas-prueba; sin saldo: cuentas.py fondear)")
+else:
+    print("Cuentas:   no hay Secret cuentas-prueba (preparar.sh cuentas)")
 vivos = [m for m in mineros if m.get("vivo")]
 print(f"Mineros:   {sum(m.get('tipo') == 'gpu' for m in vivos)} GPU y {sum(m.get('tipo') == 'cpu' for m in vivos)} CPU vivos")
 for m in sorted(vivos, key=lambda m: (m.get("tipo", ""), m.get("id", ""))):
@@ -159,15 +174,8 @@ EOF
 }
 
 reiniciar() {
-    local saldos replicas_nct replicas_trp replicas_nodo primario
-    saldos=$(env_de nct SALDOS_INICIALES)
-    echo "SALDOS_INICIALES del NCT: ${saldos:-(los de por defecto)}"
-    # {cuenta: saldo} o {cuenta: {saldo, nombre}} (contrato v2)
-    if ! python3 -c 'import json, sys; s = json.loads(sys.argv[1] or "{}"); v = [d["saldo"] if isinstance(d, dict) else d for d in s.values()]; sys.exit(0 if v and min(v) >= int(sys.argv[2]) else 1)' \
-        "$saldos" "$SALDO_MINIMO"; then
-        echo "::error::El NCT no tiene saldos iniciales de al menos $SALDO_MINIMO: reiniciar no serviría. Falta desplegar pilar3/k8s/apps/nct-saldos.yaml."
-        exit 1
-    fi
+    local replicas_nct replicas_trp replicas_nodo primario
+    echo "SALDOS_INICIALES del NCT: $(env_de nct SALDOS_INICIALES)   (en GKE «{}»: el génesis va vacío, BC-91)"
 
     replicas_nct=$(k get deploy nct -o jsonpath='{.spec.replicas}')
     replicas_trp=$(k get deploy trp -o jsonpath='{.spec.replicas}')
@@ -206,6 +214,8 @@ reiniciar() {
         k scale sts nodo --replicas="$replicas_nodo"
         k rollout status sts/nodo --timeout=5m
     fi
+    echo "Génesis vacío: las cuentas de las pruebas (Secret cuentas-prueba) necesitan alta y saldo de nuevo:"
+    echo "  pilar2/.venv/bin/python pilar3/pruebas/cuentas.py fondear organizador.clave --url $(url_publica)"
     # BC-95: la clave del escalador está en el Secret escalador-clave (no en Redis): sobrevive al FLUSHALL, pero su
     # permiso estaba en la cadena vieja. El organizador se lo vuelve a dar con `python -m claves permiso`.
     if k get secret escalador-clave > /dev/null 2>&1; then
@@ -304,8 +314,9 @@ restaurar() {
 case "${1:-}" in
     estado) estado ;;
     reiniciar) reiniciar ;;
+    cuentas) python3 "$RAIZ/pilar3/pruebas/cuentas.py" generar "${2:-3}" ;;
     condiciones) shift; condiciones "$@" ;;
     fijar-vms) shift; fijar_vms "$@" ;;
     restaurar) restaurar ;;
-    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

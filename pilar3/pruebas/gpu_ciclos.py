@@ -10,7 +10,7 @@ Cada ciclo:
   5. Mide la vuelta: GPU viva, primer bloque GPU, alerta apagada, VM borrada y CPU dada por muerta.
   6. Deja de mandar transferencias y mide hasta que KEDA apaga el escalador.
 
-Desde que sale la GPU hasta que se borra la VM, manda una transferencia de alice cada vez que se
+Desde que sale la GPU hasta que se borra la VM, manda una transferencia de la primera cuenta cada vez que se
 confirma la anterior: siempre hay trabajo pendiente, sin saltear nonces. Cada `--periodo` s anota una muestra (mineros vivos por tipo,
 VMs, pods del escalador, alerta) y cada bloque nuevo.
 
@@ -20,7 +20,7 @@ Deja `<salida>-eventos.csv`, `<salida>-muestras.csv` y `<salida>-bloques.csv` (s
 Necesita: KUBECONFIG apuntando a GKE, `--kube-gpu` al k3s del minero GPU, y `gcloud` con acceso al
 proyecto (PROYECTO o `--proyecto`). Los únicos GPU vivos tienen que ser los del StatefulSet: un
 Colab prendido mantiene la red con GPU y el escalador no levanta nada. Al terminar (o con Ctrl+C)
-deja el StatefulSet con las réplicas que tenía. Correrlo con el Python de pilar2 (firma con alice).
+deja el StatefulSet con las réplicas que tenía. Correrlo con el Python de pilar2 (firma con la primera cuenta de firmar.py).
 """
 
 import argparse
@@ -35,7 +35,7 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 
-from firmar import CUENTA, PRIVADA, contrato
+from firmar import CUENTA, ORIGENES, PRIVADA, contrato
 from prefijos import api, gateway_url, kubectl, lista_mineros
 
 EVENTOS = ["ciclo", "fase", "evento", "segundos", "instante"]
@@ -110,7 +110,7 @@ class Sistema:
 
 
 class Transferencias(threading.Thread):
-    """Una transferencia de alice a bob cada vez que se confirma la anterior."""
+    """Una transferencia de ORIGENES[0] a ORIGENES[1] cada vez que se confirma la anterior."""
 
     def __init__(self, base):
         super().__init__(daemon=True)
@@ -123,11 +123,11 @@ class Transferencias(threading.Thread):
                 self.parar.wait(1)
                 continue
             try:
-                confirmado = api(self.base, f"/api/cuentas/{CUENTA['alice']}")["nonce"]
+                confirmado = api(self.base, f"/api/cuentas/{CUENTA[ORIGENES[0]]}")["nonce"]
                 if ultima is None or confirmado >= ultima:
                     ultima = confirmado + 1
                     api(self.base, "/api/transacciones",
-                        contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], 1, ultima,
+                        contrato.transaccion(PRIVADA[ORIGENES[0]], CUENTA[ORIGENES[1]], 1, ultima,
                                              cadena=api(self.base, "/api/cadena")["genesis"]))
                     self.enviadas += 1
             except (urllib.error.URLError, TimeoutError, KeyError) as error:

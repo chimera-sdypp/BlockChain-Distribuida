@@ -10,7 +10,7 @@ import pytest
 
 from claves import herramienta
 from comun import contrato
-from comun.tests.claves import CUENTA, PRIVADA
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual
 
 
 def test_generar_guarda_la_privada_con_permisos_600_y_muestra_la_publica(tmp_path):
@@ -56,13 +56,16 @@ class BackendFalso:
                 self.wfile.write(datos)
 
             def do_GET(self):
+                if self.path == "/api/cadena":
+                    return self._responder(200, {"genesis": cadena_actual(), "organizador": CUENTA["organizador"],
+                                                 "prefijo_minimo": 1})
                 if self.path.startswith("/api/cuentas/"):
                     cuenta = self.path.rsplit("/", 1)[1]
                     return self._responder(200, {"cuenta": cuenta, "nonce": falso.nonces.get(cuenta, 0),
                                                  **falso.cuentas.get(cuenta, {})})
                 if self.path == "/api/organizador/altas":
                     quien, motivo = contrato.verificar_pedido(self.headers, "GET", self.path, b"",
-                                                              quien=contrato.ORGANIZADOR)
+                                                              quien=contrato.ORGANIZADOR, cadena=cadena_actual())
                     if motivo or quien != CUENTA["organizador"]:
                         return self._responder(403, {"error": motivo or "no es el organizador"})
                     return self._responder(200, {"pendientes": [{"cuenta": CUENTA["zoe"], "tipo": "minero",
@@ -80,17 +83,17 @@ class BackendFalso:
                     falso.pedidos.append((self.path, datos, dict(self.headers)))
                     if self.path.startswith("/api/organizador/"):
                         quien, motivo = contrato.verificar_pedido(self.headers, "POST", self.path, cuerpo,
-                                                                  quien=contrato.ORGANIZADOR)
+                                                                  quien=contrato.ORGANIZADOR, cadena=cadena_actual())
                         return self._responder(403 if motivo else 200, {"error": motivo} if motivo else {"ok": True})
-                    errores = contrato.validar_pedido_alta(datos)
+                    errores = contrato.validar_pedido_alta(datos, cadena=cadena_actual())
                     return self._responder(400 if errores else 202, {"errores": errores} if errores else {})
                 tx = datos
                 falso.recibidas.append(tx)
-                errores = contrato.validar_de_entrada(tx, CUENTA["organizador"])
+                errores = contrato.validar_de_entrada(tx, CUENTA["organizador"], cadena=cadena_actual())
                 if errores:
                     return self._responder(400, {"errores": errores})
                 es_propia = tx["origen"] == contrato.EMISION or contrato.es_acta(tx)
-                id_ = tx["id"] if es_propia else contrato.id_transaccion(tx)
+                id_ = tx["id"] if es_propia else contrato.id_transaccion(tx, cadena=cadena_actual())
                 falso.estados.setdefault(id_, "pendiente")
                 return self._responder(202, {"id": id_})
 
@@ -124,22 +127,30 @@ def test_firmar_pide_el_nonce_al_backend_y_la_manda(backend, archivos):
                                     "--url", backend.url, "--enviar"], salida=salidas.append)
     [tx] = backend.recibidas
     assert codigo == 0 and tx["nonce"] == 5 and tx["origen"] == CUENTA["alice"] and tx["monto"] == 5
-    assert contrato.validar_transaccion_firmada(tx) == []
+    assert contrato.validar_transaccion_firmada(tx, cadena=cadena_actual()) == []
     assert json.loads(salidas[0]) == tx and salidas[1].startswith("202")
 
 
 def test_firmar_con_nonce_y_sin_backend_solo_la_muestra(archivos):
     salidas = []
     herramienta.principal(["firmar", str(archivos["alice"]), "--destino", CUENTA["bob"], "--monto", "5",
-                           "--nonce", "9"], salida=salidas.append)
-    assert json.loads(salidas[0])["nonce"] == 9
+                           "--nonce", "9", "--cadena", cadena_actual()], salida=salidas.append)
+    tx = json.loads(salidas[0])
+    assert tx["nonce"] == 9 and contrato.validar_transaccion_firmada(tx, cadena_actual()) == []
+
+
+def test_firmar_sin_backend_necesita_saber_la_cadena(archivos):
+    """v4: lo firmado lleva el génesis. Sin --url para pedirlo, hay que dar --cadena."""
+    with pytest.raises(SystemExit):
+        herramienta.principal(["firmar", str(archivos["alice"]), "--destino", CUENTA["bob"], "--monto", "5",
+                               "--nonce", "9"])
 
 
 def test_cargar_usa_el_numero_siguiente_de_emision(backend, archivos):
     herramienta.principal(["cargar", str(archivos["organizador"]), "--destino", CUENTA["zoe"], "--monto", "1000",
                            "--url", backend.url, "--enviar"], salida=lambda _: None)
     [tx] = backend.recibidas
-    assert tx["id"] == "carga-3" and contrato.validar_carga(tx, CUENTA["organizador"]) == []
+    assert tx["id"] == "carga-3" and contrato.validar_carga(tx, CUENTA["organizador"], cadena=cadena_actual()) == []
 
 
 def test_la_rafaga_lleva_los_nonces_de_cada_cuenta(backend, archivos):
@@ -157,7 +168,7 @@ def test_alta_manda_el_pedido_firmado_sin_pasar_por_ninguna_pagina(backend, arch
     assert herramienta.principal(["alta", str(archivos["alice"]), "--tipo", "usuario", "--nombre", "alice",
                                   "--url", backend.url], salida=lambda _: None) == 0
     [(ruta, pedido, _)] = backend.pedidos
-    assert ruta == "/api/altas" and pedido == contrato.pedido_alta(PRIVADA["alice"], "usuario", "alice")
+    assert ruta == "/api/altas" and pedido == contrato.pedido_alta(PRIVADA["alice"], "usuario", "alice", cadena=cadena_actual())
 
 
 def test_transferir_usa_el_nonce_siguiente_y_espera_que_la_valide_el_nct(backend, archivos):
@@ -175,7 +186,7 @@ def test_aprobar_firma_el_alta_y_la_carga_con_los_nonces_de_emision_que_siguen(b
                                    salida=salidas.append)
     alta, carga_ = backend.recibidas
     assert codigo == 0 and (alta["id"], carga_["id"]) == ("alta-3", "carga-4")
-    assert alta["datos"] == "usuario:zoe" and contrato.validar_acta(alta, CUENTA["organizador"]) == []
+    assert alta["datos"] == "usuario:zoe" and contrato.validar_acta(alta, CUENTA["organizador"], cadena=cadena_actual()) == []
     assert carga_["destino"] == CUENTA["zoe"] and carga_["monto"] == 500
     assert salidas == ["✓ alta-3: pendiente", "✓ carga-4: pendiente"]
 

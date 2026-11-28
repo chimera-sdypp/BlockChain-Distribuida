@@ -57,7 +57,8 @@ const BLOQUES_VISIBLES = 20;
 // Las transacciones de emisión (origen «emision») crean plata: génesis, coinbase, carga y participación.
 // Contrato v3: las actas del organizador (alta, baja, permiso) y los shares de la época también están en la cadena.
 const TIPOS_EMISION = [["genesis-", "génesis"], ["organizador-", "organizador"], ["cb-", "recompensa"], ["carga-", "carga"],
-  ["part-", "participación"], ["shares-", "shares"], ["alta-", "alta"], ["baja-", "baja"], ["permiso-", "permiso"]];
+  ["part-", "participación"], ["shares-", "shares"], ["alta-", "alta"], ["baja-", "baja"], ["permiso-", "permiso"],
+  ["reglas", "reglas"]];
 const tipoDe = (tx) => tx.origen !== "emision"
   ? (/^(alta|baja)-/.test(tx.id) ? `${tx.id.split("-")[0]} delegada` : "")
   : (TIPOS_EMISION.find(([p]) => tx.id.startsWith(p)) || ["", "emisión"])[1];
@@ -227,7 +228,7 @@ $("form-clave").addEventListener("submit", async (evento) => {
 async function firmada(destino, monto) {
   const tx = { origen: firmante.cuenta, destino, monto, nonce: firmante.ultimoNonce + 1,
                timestamp: Math.floor(Date.now() / 1000) };
-  return { ...tx, firma: await firmar(firmante.clave, mensajeTransaccion(tx)) };
+  return { ...tx, firma: await firmar(firmante.clave, mensajeTransaccion(tx, await genesis())) };
 }
 
 $("formulario").addEventListener("submit", async (evento) => {

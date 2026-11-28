@@ -1,12 +1,14 @@
 import json
 import os
 import subprocess
+import urllib.error
 import uuid
 
 import pytest
 
 from comun import config, contrato, redisdb
-from escalador.app import (CLAVES, SIMULADAS, ClavesVMs, Simulado, Tofu, ciclo, hay_trabajo, leer_nodos,
+from comun.tests.claves import CUENTA, PRIVADA, cadena_actual
+from escalador.app import (SIMULADAS, AtributosGCE, ClavesVMs, Simulado, Tofu, ciclo, hay_trabajo, leer_nodos,
                            segundos_sin_bloque)
 from escalador.decision import Ajustes, Decisor, sacar_foto
 
@@ -112,10 +114,10 @@ def test_tofu_inicia_lee_y_aplica_la_cantidad():
 
 
 class HashesFalsos:
-    """Los HSET/HGET/HGETALL/HEXISTS/HDEL/GET/SET que usan las claves de las VMs."""
+    """Los HGET/HGETALL/HEXISTS/HSET que usa ClavesVMs."""
 
     def __init__(self):
-        self.hashes, self.valores = {}, {}
+        self.hashes = {}
 
     def hgetall(self, clave):
         return dict(self.hashes.get(clave, {}))
@@ -129,21 +131,9 @@ class HashesFalsos:
     def hset(self, clave, campo=None, valor=None, mapping=None):
         self.hashes.setdefault(clave, {}).update(mapping or {campo: valor})
 
-    def hdel(self, clave, campo):
-        self.hashes.get(clave, {}).pop(campo, None)
-
-    def get(self, clave):
-        return self.valores.get(clave)
-
-    def set(self, clave, valor, nx=False):
-        if nx and clave in self.valores:
-            return None
-        self.valores[clave] = valor
-        return True
-
 
 class BackendFalso:
-    """El backend que ve el escalador: valida la firma del acta y lleva el nonce de su clave."""
+    """El backend que ve el escalador: valida la firma del acta (sobre el génesis) y lleva el nonce de su clave."""
 
     def __init__(self):
         self.recibidas, self.nonces = [], {}
@@ -151,76 +141,147 @@ class BackendFalso:
     def nonce(self, cuenta):
         return self.nonces.get(cuenta, 0)
 
+    def cadena(self):
+        return cadena_actual()
+
     def mandar(self, tx):
-        assert contrato.validar_acta(tx, "f" * 64) == [] and contrato.es_delegada(tx)
+        assert contrato.validar_acta(tx, "f" * 64, cadena_actual()) == [] and contrato.es_delegada(tx)
         self.recibidas.append(tx)
         self.nonces[tx["origen"]] = tx["nonce"]
         return 202, {"id": tx["id"]}
 
 
-def con_permiso(redis, claves, prefijo="minero-cpu-"):
-    redis.hset("permisos", claves.cuenta, prefijo)
+ESCALADOR = PRIVADA["escalador"]
 
 
-def test_cada_vm_tiene_su_clave_y_se_da_de_alta_en_la_cadena_con_un_alta_delegada():
+def vm(n):
+    """La clave pública que publica la VM n (la privada no sale de la VM: acá sólo se usa para derivarla)."""
+    return CUENTA[f"vm{n}"]
+
+
+def armar(publicadas=None, permiso=True):
     redis, backend = HashesFalsos(), BackendFalso()
-    claves = ClavesVMs(redis, backend)
-    assert redis.valores["escalador:clave"] == claves.privada  # la genera la primera vez y la guarda
-    con_permiso(redis, claves)
-    dos = claves.preparar(2, ahora=AHORA)
-    assert sorted(dos) == ["minero-cpu-0", "minero-cpu-1"] and len(set(dos.values())) == 2
-    assert [(tx["destino"], tx["datos"], tx["nonce"]) for tx in backend.recibidas] == [
-        (contrato.clave_publica(dos[n]), f"minero:{n}", i + 1) for i, n in enumerate(sorted(dos))]
-    assert "cuentas" not in redis.hashes  # el escalador no escribe `cuentas`: lo hace el consenso
-    # Ya en la cadena (o en camino): no se vuelven a pedir. Otro pod usa las mismas claves.
-    for privada in dos.values():
-        redis.hset("cuentas", contrato.clave_publica(privada), "{}")
-    tres = ClavesVMs(redis, backend).preparar(3, ahora=AHORA + 60)
-    assert tres == {**dos, "minero-cpu-2": redis.hashes[CLAVES]["minero-cpu-2"]} and len(backend.recibidas) == 3
+    publicadas = {} if publicadas is None else publicadas
+    claves = ClavesVMs(redis, backend, publicadas.get, ESCALADOR)
+    if permiso:
+        redis.hset("permisos", claves.cuenta, "minero-cpu-")
+    return redis, backend, claves, publicadas
 
-    assert claves.retirar(1) == ["minero-cpu-1", "minero-cpu-2"]
-    assert list(redis.hashes[CLAVES]) == ["minero-cpu-0"]
-    bajas = [tx for tx in backend.recibidas if tx["id"].startswith("baja-")]
-    assert [tx["destino"] for tx in bajas] == [contrato.clave_publica(dos["minero-cpu-1"])]  # la 2 no estaba en la cadena
+
+def en_la_cadena(redis, cuenta, nombre):
+    redis.hset("cuentas", cuenta, json.dumps({"tipo": "minero", "nombre": nombre, "alta": AHORA}))
+
+
+def actas(backend):
+    return [(tx["id"].split("-")[0], tx["destino"], tx["datos"]) for tx in backend.recibidas]
+
+
+def test_sin_escalador_clave_no_arranca():
+    with pytest.raises(ValueError, match="ESCALADOR_CLAVE"):
+        ClavesVMs(HashesFalsos(), BackendFalso(), {}.get, "")
+
+
+def test_cada_vm_se_da_de_alta_con_la_clave_que_publico_y_ninguna_privada_pasa_por_redis():
+    redis, backend, claves, publicadas = armar({"minero-cpu-0": vm(0)})
+    assert claves.preparar(2, ahora=AHORA) == {"minero-cpu-0": vm(0)}  # la 1 todavía no arrancó
+    assert actas(backend) == [("alta", vm(0), "minero:minero-cpu-0")]
+    publicadas["minero-cpu-1"] = vm(1)
+    redis.hset("altas:en_camino", vm(0), "{}")
+    claves.preparar(2, ahora=AHORA + 10)
+    assert actas(backend)[1:] == [("alta", vm(1), "minero:minero-cpu-1")]  # la 0, en camino: no se repite
+    assert [tx["nonce"] for tx in backend.recibidas] == [1, 2]
+    en_la_cadena(redis, vm(0), "minero-cpu-0")
+    en_la_cadena(redis, vm(1), "minero-cpu-1")
+    claves.preparar(2, ahora=AHORA + 20)
+    assert len(backend.recibidas) == 2
+    assert not [clave for clave in redis.hashes if clave.startswith("escalador")]
+    privadas = {PRIVADA["vm0"], PRIVADA["vm1"], ESCALADOR}
+    assert not any(p in json.dumps(redis.hashes) for p in privadas)
+
+
+def test_una_vm_recreada_con_otra_clave_da_de_baja_la_vieja():
+    redis, backend, claves, _ = armar({"minero-cpu-0": vm(9)})
+    en_la_cadena(redis, vm(0), "minero-cpu-0")  # la clave del disco anterior (la VM spot se borró y se volvió a crear)
+    claves.preparar(1, ahora=AHORA)
+    assert actas(backend) == [("baja", vm(0), "la VM se recreó con otra clave"), ("alta", vm(9), "minero:minero-cpu-0")]
+
+
+def test_una_baja_del_organizador_no_la_deshace_el_escalador(caplog):
+    redis, backend, claves, _ = armar({"minero-cpu-0": vm(0)})
+    redis.hset("vetadas", vm(0), "1")  # el organizador le dio de baja a esa clave
+    with caplog.at_level("WARNING", logger="escalador"):
+        for segundos in range(3):
+            claves.preparar(1, ahora=AHORA + segundos)
+    assert backend.recibidas == [] and caplog.text.count("tiene una baja del organizador") == 1  # avisa una vez
 
 
 def test_sin_permiso_no_manda_nada_y_lo_avisa(caplog):
-    redis, backend = HashesFalsos(), BackendFalso()
-    claves = ClavesVMs(redis, backend, privada="1" * 64)
+    _, backend, claves, _ = armar({"minero-cpu-0": vm(0)}, permiso=False)
     with caplog.at_level("ERROR", logger="escalador"):
-        assert len(claves.preparar(1, ahora=AHORA)) == 1
+        claves.preparar(1, ahora=AHORA)
     assert backend.recibidas == [] and "python -m claves permiso" in caplog.text
 
 
 def test_si_el_permiso_llega_despues_la_vm_ya_creada_pide_su_alta_en_el_ciclo_siguiente(caplog):
-    redis, ejecutar, backend = HashesFalsos(), Ejecutar({"apply": "Apply complete!"}), BackendFalso()
-    claves = ClavesVMs(redis, backend)
-    tofu = Tofu("/tofu", claves=claves, ejecutar=ejecutar)
+    redis, backend, claves, _ = armar({"minero-cpu-0": vm(0)}, permiso=False)
+    tofu = Tofu("/tofu", claves=claves, ejecutar=Ejecutar({"apply": "Apply complete!"}))
     with caplog.at_level("ERROR", logger="escalador"):
-        tofu.aplicar(1)  # la VM se crea sin permiso: su alta no sale
+        tofu.aplicar(1)
         tofu.revisar(1)
         tofu.revisar(1)
     assert backend.recibidas == [] and caplog.text.count("python -m claves permiso") == 1  # avisa una vez
-    con_permiso(redis, claves)
+    redis.hset("permisos", claves.cuenta, "minero-cpu-")
     tofu.revisar(1)
-    assert [tx["destino"] for tx in backend.recibidas] == [contrato.clave_publica(redis.hashes[CLAVES]["minero-cpu-0"])]
-    redis.hset("altas:en_camino", backend.recibidas[0]["destino"], "1")
-    tofu.revisar(1)
-    assert len(backend.recibidas) == 1  # en camino: no se vuelve a pedir
+    assert actas(backend) == [("alta", vm(0), "minero:minero-cpu-0")]
     tofu.revisar(0)
 
 
-def test_tofu_le_pasa_las_claves_por_entorno_y_da_de_baja_las_que_sobran():
-    redis, ejecutar, backend = HashesFalsos(), Ejecutar({"apply": "Apply complete!"}), BackendFalso()
-    claves = ClavesVMs(redis, backend)
-    con_permiso(redis, claves)
+def test_tofu_no_lleva_claves_y_da_de_baja_las_vms_que_sobran():
+    redis, backend, claves, _ = armar()
+    ejecutar = Ejecutar({"apply": "Apply complete!"})
     tofu = Tofu("/tofu", claves=claves, ejecutar=ejecutar)
-    tofu.aplicar(2)
-    pasadas = json.loads(ejecutar.entornos[-1]["TF_VAR_claves"])
-    assert pasadas == redis.hashes[CLAVES] and len(pasadas) == 2
-    assert all("minero-cpu" not in parte for parte in ejecutar.comandos[-1])  # nada de claves en los argumentos
-    tofu.aplicar(0)
-    assert json.loads(ejecutar.entornos[-1]["TF_VAR_claves"]) == {} and redis.hashes[CLAVES] == {}
+    for n in range(3):
+        en_la_cadena(redis, vm(n), f"minero-cpu-{n}")
+    en_la_cadena(redis, CUENTA["pc-tomas"], "pc-tomas")  # un minero ajeno: no es del escalador
+    tofu.aplicar(1)
+    assert ejecutar.comandos[-1] == ["apply", "-auto-approve", "-input=false", "-var", "cantidad=1"]
+    assert ejecutar.entornos[-1] is None  # nada de TF_VAR_claves: el state no tiene privadas (BC-95)
+    assert actas(backend) == [("baja", vm(1), "la VM se borró"), ("baja", vm(2), "la VM se borró")]
+
+
+class Respuesta:
+    def __init__(self, datos):
+        self.datos = datos
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return json.dumps(self.datos).encode()
+
+
+def test_la_clave_publicada_se_lee_de_los_guest_attributes_con_el_token_del_pod():
+    pedidos = []
+
+    def abrir(pedido, timeout):
+        pedidos.append(pedido)
+        if "metadata.google.internal" in pedido.full_url:
+            assert pedido.get_header("Metadata-flavor") == "Google"
+            return Respuesta({"access_token": "tok", "expires_in": 3600})
+        if "minero-cpu-1" in pedido.full_url:
+            raise urllib.error.HTTPError(pedido.full_url, 404, "no publicó", {}, None)
+        assert pedido.get_header("Authorization") == "Bearer tok"
+        return Respuesta({"variableValue": vm(0) + "\n"})
+
+    atributos = AtributosGCE("proyecto-x", "us-central1-a", abrir=abrir)
+    assert atributos("minero-cpu-0") == vm(0)
+    assert atributos("minero-cpu-1") is None
+    assert pedidos[1].full_url == ("https://compute.googleapis.com/compute/v1/projects/proyecto-x/zones/us-central1-a/"
+                                   "instances/minero-cpu-0/getGuestAttributes?variableKey=minero/publica")
+    assert sum("metadata.google.internal" in p.full_url for p in pedidos) == 1  # el token se reusa
 
 
 def test_las_vms_propias_se_reconocen_por_el_alias_de_cuentas():

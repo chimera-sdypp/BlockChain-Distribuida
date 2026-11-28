@@ -4,7 +4,7 @@ import json
 import time
 
 from comun import contrato
-from comun.tests.claves import CUENTA, FECHA, PRIVADA, Billetera, carga
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, Billetera, carga, cadena_actual
 from nct.tests.escenario import confirmar, guardar_recibida, recibida
 
 GUARDA = 600
@@ -45,7 +45,7 @@ def test_una_que_sale_de_la_caja_por_no_valer_contra_la_cadena_vence(armar, redi
     nct.cargar_genesis()
     confirmar(redis, nct, [carga(1, "zoe", 50)])
     redis.hset("cuentas", CUENTA["zoe"], json.dumps({"tipo": "usuario", "nombre": "zoe", "alta": FECHA}))
-    trucha = contrato.transaccion(PRIVADA["zoe"], CUENTA["bob"], 10, 1, FECHA)
+    trucha = contrato.transaccion(PRIVADA["zoe"], CUENTA["bob"], 10, 1, FECHA, cadena=cadena_actual())
     assert nct.validar(guardar_recibida(redis, trucha)) == "pendiente"
 
     confirmar(redis, nct, [Billetera()("alice", "bob", 5)])

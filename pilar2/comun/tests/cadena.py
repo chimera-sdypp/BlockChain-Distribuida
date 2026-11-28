@@ -11,11 +11,12 @@ ALICE, BOB, MINERO = CUENTA["alice"], CUENTA["bob"], CUENTA["minero"]
 class Cadena:
     """Arma bloques válidos encima de su propio estado, como el NCT, y deja tocarlos antes de verificarlos."""
 
-    def __init__(self, saldos=None, organizador=ORG, shares=None):
+    def __init__(self, saldos=None, organizador=ORG, shares=None, prefijo_minimo=1):
         self.publicadas = {}
         self.reglas = estado.Reglas(organizador=organizador, shares=shares or self.publicadas.get)
         self.genesis = contrato.bloque_genesis(saldos or {ALICE: 100, BOB: 50}, FECHA, organizador=organizador,
-                                               nombres={ALICE: "alice", BOB: "bob"})
+                                               nombres={ALICE: "alice", BOB: "bob"}, prefijo_minimo=prefijo_minimo)
+        self.id = self.genesis["block_hash"]  # v4: el id de la cadena, va en todo lo firmado (CADENA si es la de siempre)
         self.estado = estado.Estado()
         assert estado.aplicar_bloque(self.estado, self.genesis, self.reglas) == ([], [])
         self.bloques = [self.genesis]

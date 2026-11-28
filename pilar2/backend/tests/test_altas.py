@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from backend import app as backend
 from comun.altas import Altas
 from comun import Rabbit, config, contrato, web
-from comun.tests.claves import CUENTA, PRIVADA, carga
+from comun.tests.claves import CUENTA, PRIVADA, carga, cadena_actual, sembrar_genesis
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -31,6 +31,7 @@ def entorno():
     redis = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                            db=BASE_PRUEBAS, decode_responses=True)
     redis.flushdb()
+    sembrar_genesis(redis)
 
     def armar(**opciones):
         app = web.crear_app("backend", {})
@@ -58,12 +59,12 @@ def panel(cliente, metodo, ruta, datos=None, firmante="organizador", tiempo=None
     """Un pedido al panel firmado como lo hace la página: X-Organizador, X-Tiempo y X-Firma."""
     cuerpo = json.dumps(datos).encode() if datos is not None else b""
     encabezados = contrato.firmar_pedido(PRIVADA[firmante], metodo, ruta, cuerpo, tiempo=tiempo,
-                                         quien=contrato.ORGANIZADOR)
+                                         quien=contrato.ORGANIZADOR, cadena=cadena_actual())
     return cliente.request(metodo, ruta, content=cuerpo, headers={"content-type": "application/json", **encabezados})
 
 
 def pedir(cliente, nombre, tipo="usuario"):
-    return cliente.post("/api/altas", json=contrato.pedido_alta(PRIVADA[nombre], tipo, nombre))
+    return cliente.post("/api/altas", json=contrato.pedido_alta(PRIVADA[nombre], tipo, nombre, cadena=cadena_actual()))
 
 
 # ── Pedido de alta (público) ──
@@ -85,7 +86,7 @@ def test_un_pedido_de_alta_queda_pendiente(entorno):
 
 def test_un_pedido_con_una_firma_que_no_corresponde_a_la_clave_se_rechaza(entorno):
     armar, _, redis = entorno
-    pedido = {**contrato.pedido_alta(PRIVADA["zoe"], "usuario", "zoe"), "clave_publica": CUENTA["yago"]}
+    pedido = {**contrato.pedido_alta(PRIVADA["zoe"], "usuario", "zoe", cadena=cadena_actual()), "clave_publica": CUENTA["yago"]}
 
     respuesta = armar().post("/api/altas", json=pedido)
 
@@ -138,7 +139,7 @@ def test_una_accion_vieja_o_alterada_da_403(entorno):
     assert vieja.status_code == 403 and "X-Tiempo" in vieja.json()["error"]
     # La firma es sobre el cuerpo: cambiar la cuenta después de firmar no sirve.
     encabezados = contrato.firmar_pedido(PRIVADA["organizador"], "POST", "/api/organizador/rechazar",
-                                         json.dumps({"cuenta": CUENTA["yago"]}).encode(), quien=contrato.ORGANIZADOR)
+                                         json.dumps({"cuenta": CUENTA["yago"]}).encode(), quien=contrato.ORGANIZADOR, cadena=cadena_actual())
     alterada = cliente.post("/api/organizador/rechazar", content=json.dumps({"cuenta": CUENTA["zoe"]}).encode(),
                             headers=encabezados)
     assert alterada.status_code == 403
@@ -196,7 +197,7 @@ def test_un_pedido_con_el_alta_en_camino_no_se_lista_para_no_aprobarlo_dos_veces
 def test_un_alta_y_una_carga_del_organizador_se_encolan_como_cualquier_transaccion(entorno):
     armar, cola, redis = entorno
     cliente = armar()
-    alta = contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800)
+    alta = contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800, cadena=cadena_actual())
 
     assert cliente.post("/api/transacciones", json=alta).json() == {"id": "alta-1"}
     assert cliente.post("/api/transacciones", json=carga(2, "zoe", 500)).status_code == 202
@@ -208,11 +209,11 @@ def test_un_alta_y_una_carga_del_organizador_se_encolan_como_cualquier_transacci
 
 
 @pytest.mark.parametrize("tx, error", [
-    (contrato.alta(PRIVADA["alice"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800), "firma: no es la del organizador"),
-    ({**contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800), "datos": "usuario:yo"},
+    (contrato.alta(PRIVADA["alice"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800, cadena=cadena_actual()), "firma: no es la del organizador"),
+    ({**contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "usuario", "zoe", 1793836800, cadena=cadena_actual()), "datos": "usuario:yo"},
      "firma"),
-    (contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "organizador", "yo", 1793836800), "datos"),
-    (contrato.baja(PRIVADA["organizador"], 1, CUENTA["zoe"], "a|b", 1793836800), "datos"),
+    (contrato.alta(PRIVADA["organizador"], 1, CUENTA["zoe"], "organizador", "yo", 1793836800, cadena=cadena_actual()), "datos"),
+    (contrato.baja(PRIVADA["organizador"], 1, CUENTA["zoe"], "a|b", 1793836800, cadena=cadena_actual()), "datos"),
 ])
 def test_un_acta_mala_no_entra(entorno, tx, error):
     armar, cola, redis = entorno
@@ -225,14 +226,14 @@ def test_un_alta_delegada_entra_con_la_firma_de_su_clave(entorno):
     """El backend verifica la firma y que la clave tenga permiso (BC-94); el prefijo lo controla el NCT."""
     armar, _, redis = entorno
     redis.hset(contrato.PERMISOS, CUENTA["escalador"], "minero-cpu-")
-    alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True)
+    alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True, cadena=cadena_actual())
     assert armar().post("/api/transacciones", json=alta).json() == {"id": alta["id"]}
     assert redis.hget(f"tx:{alta['id']}", "origen") == CUENTA["escalador"]
 
 
 def test_un_alta_delegada_de_una_clave_sin_permiso_da_403_y_no_queda_en_redis(entorno):
     armar, cola, redis = entorno
-    alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True)
+    alta = contrato.alta(PRIVADA["escalador"], 1, CUENTA["vm0"], "minero", "minero-cpu-0", 1793836800, delegada=True, cadena=cadena_actual())
     respuesta = armar().post("/api/transacciones", json=alta)
     assert (respuesta.status_code, respuesta.json()) == (403, {"error": "clave sin permiso"})
     assert not redis.exists(f"tx:{alta['id']}") and recibir(cola, 1, segundos=1) == []
@@ -240,7 +241,7 @@ def test_un_alta_delegada_de_una_clave_sin_permiso_da_403_y_no_queda_en_redis(en
 
 def test_una_carga_firmada_por_otra_clave_se_rechaza_tambien_suelta(entorno):
     armar, _, _ = entorno
-    trucha = contrato.carga(PRIVADA["alice"], 1, CUENTA["zoe"], 500, 1793836800)
+    trucha = contrato.carga(PRIVADA["alice"], 1, CUENTA["zoe"], 500, 1793836800, cadena=cadena_actual())
     respuesta = armar().post("/api/transacciones", json=trucha)
     assert respuesta.status_code == 400 and "organizador" in respuesta.json()["errores"][0]
 

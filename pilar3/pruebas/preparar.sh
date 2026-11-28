@@ -10,7 +10,7 @@
 #                                      FRAGMENTO_PORCENTAJE=F y, si viene, CRITERIO_POTENCIA=C (suma,
 #                                      promedio, minimo o maximo; BC-59). El escalador, con el mismo PREFIJO_BASE
 #   preparar.sh fijar-vms N            pausa el escalador en KEDA y deja N VMs minero-cpu, cada una con su
-#                                      clave aprobada (como el escalador, BC-57)
+#                                      clave (la genera la VM) aprobada (como el escalador, BC-57 y BC-95)
 #                                      (necesita tofu, PROYECTO y credenciales de GCP: fuera del workflow,
 #                                      GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token))
 #   preparar.sh restaurar              TrP y escalador como en los manifiestos, y el escalador de nuevo
@@ -52,22 +52,23 @@ import json, sys
 print(sum(1 for m in json.load(sys.stdin) if m.get("vivo") and str(m.get("alias") or "").startswith("minero-cpu-")))'
 }
 
-# Lo mismo que hace el escalador antes de cada apply (ClavesVMs, BC-57 y BC-79): la clave de cada VM
-# minero-cpu-0..N-1 (las guardadas en escalador:claves o nuevas) y, para las que no están en la cadena, un alta
-# delegada firmada con la clave del escalador (necesita su permiso: `python -m claves permiso`); las de las VMs que
-# sobran, una baja delegada. Corre en un pod del TrP, que tiene el contrato, Redis y llega al backend.
-# Devuelve {nombre: privada} en JSON, para TF_VAR_claves.
-claves_vms() {
-    k exec -i deploy/trp -- python - "$1" <<'EOF'
+# Lo mismo que hace el escalador (ClavesVMs, BC-57, BC-79 y BC-95) después del apply: cada VM minero-cpu-0..N-1
+# genera su clave al arrancar y publica la pública en sus guest attributes (minero/publica); acá se leen con gcloud y,
+# para las que no están en la cadena, se firma un alta delegada con la clave del escalador (necesita su permiso:
+# `python -m claves permiso`). Las de las VMs que sobran (o una clave vieja de una VM recreada), una baja delegada.
+# Firma en un pod del TrP, que tiene el contrato, Redis y llega al backend. La clave del escalador sale del Secret
+# escalador-clave y entra por stdin: no queda en los argumentos (ni en el registro de auditoría de kubectl exec).
+ALTAS_VMS=$(cat <<'PYTHON'
 import json, sys, time, urllib.request
 from comun import config, contrato, redisdb
 
-CLAVES, PREFIJO, BACKEND = "escalador:claves", "minero-cpu-", "http://backend:8080"
-cantidad, redis = int(sys.argv[1]), redisdb.conectar(config.cargar("preparar"))
-privada = redis.get("escalador:clave")
-if not privada or redis.hget(contrato.PERMISOS, contrato.clave_publica(privada)) is None:
-    sys.exit("El escalador no tiene clave o permiso en la cadena: ver pilar2/escalador/README.md")
+PREFIJO, BACKEND = "minero-cpu-", "http://backend:8080"
+cantidad, publicas = int(sys.argv[1]), json.loads(sys.argv[2])
+privada = sys.stdin.readline().strip()
+redis = redisdb.conectar(config.cargar("preparar"))
 escalador = contrato.clave_publica(privada)
+if redis.hget(contrato.PERMISOS, escalador) is None:
+    sys.exit("El escalador no tiene permiso en la cadena: ver pilar2/escalador/README.md")
 
 
 def pedir(metodo, ruta, cuerpo=None):
@@ -77,30 +78,53 @@ def pedir(metodo, ruta, cuerpo=None):
         return json.loads(respuesta.read() or b"null")
 
 
+cadena = pedir("GET", "/api/cadena")["genesis"]
 nonce = pedir("GET", f"/api/cuentas/{escalador}")["nonce"]
 
 
 def acta(tipo, cuenta, datos):
     global nonce
     nonce += 1
-    tx = contrato.acta(privada, tipo, nonce, cuenta, datos, int(time.time()), delegada=True)
-    pedir("POST", "/api/transacciones", tx)
+    pedir("POST", "/api/transacciones", contrato.acta(privada, tipo, nonce, cuenta, datos, int(time.time()),
+                                                       delegada=True, cadena=cadena))
+    print(f"{tipo} {datos}: {cuenta}")
 
 
-guardadas = redis.hgetall(CLAVES)
-claves = {f"{PREFIJO}{n}": guardadas.get(f"{PREFIJO}{n}") or contrato.nueva_clave()[0] for n in range(cantidad)}
-redis.hset(CLAVES, mapping=claves) if claves else None
-for nombre, clave in claves.items():
-    cuenta = contrato.clave_publica(clave)
-    if not redis.hexists(contrato.CUENTAS, cuenta) and not redis.hexists(contrato.ALTAS_EN_CAMINO, cuenta):
-        acta("alta", cuenta, f"minero:{nombre}")
-for nombre, clave in guardadas.items():
-    if nombre.startswith(PREFIJO) and nombre[len(PREFIJO):].isdigit() and int(nombre[len(PREFIJO):]) >= cantidad:
-        if redis.hexists(contrato.CUENTAS, contrato.clave_publica(clave)):
-            acta("baja", contrato.clave_publica(clave), "la VM se borró")
-        redis.hdel(CLAVES, nombre)
-print(json.dumps(claves))
-EOF
+propios = {}
+for cuenta, datos in redis.hgetall(contrato.CUENTAS).items():
+    datos = json.loads(datos)
+    nombre = str(datos.get("nombre", ""))
+    if datos.get("tipo") == "minero" and nombre.startswith(PREFIJO) and nombre[len(PREFIJO):].isdigit():
+        propios.setdefault(nombre, []).append(cuenta)
+for nombre, publica in publicas.items():
+    for vieja in propios.get(nombre, []):
+        if vieja != publica:
+            acta("baja", vieja, "la VM se recreó con otra clave")
+    if not any(redis.hexists(clave, publica) for clave in (contrato.CUENTAS, contrato.ALTAS_EN_CAMINO, contrato.VETADAS)):
+        acta("alta", publica, f"minero:{nombre}")
+for nombre, cuentas in propios.items():
+    if int(nombre[len(PREFIJO):]) >= cantidad:
+        for cuenta in cuentas:
+            acta("baja", cuenta, "la VM se borró")
+PYTHON
+)
+
+altas_vms() {
+    local cantidad=$1 publicas="{}" n i nombre publica
+    for ((n = 0; n < cantidad; n++)); do
+        nombre="minero-cpu-$n"
+        for i in $(seq 1 60); do
+            publica=$(gcloud compute instances get-guest-attributes "$nombre" --project "$PROYECTO" \
+                --zone "${ZONA:-us-central1-a}" --query-path=minero/publica --format='value(value)' 2>/dev/null || true)
+            [[ $publica =~ ^[0-9a-f]{64}$ ]] && break
+            sleep 10
+        done
+        [[ $publica =~ ^[0-9a-f]{64}$ ]] || { echo "::error::$nombre no publicó su clave en 10 minutos"; exit 1; }
+        publicas=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); d[sys.argv[2]] = sys.argv[3]; print(json.dumps(d))' \
+            "$publicas" "$nombre" "$publica")
+    done
+    k get secret escalador-clave -o jsonpath='{.data.ESCALADOR_CLAVE}' | base64 -d | \
+        k exec -i deploy/trp -- python -c "$ALTAS_VMS" "$cantidad" "$publicas"
 }
 
 estado() {
@@ -182,23 +206,13 @@ reiniciar() {
         k scale sts nodo --replicas="$replicas_nodo"
         k rollout status sts/nodo --timeout=5m
     fi
-    # El escalador guarda su clave en Redis (escalador:clave): con el FLUSHALL la perdió y su permiso (BC-79) también.
-    # Se genera acá como la generaría él al arrancar (aunque KEDA lo tenga en 0) y, si estaba prendido, se lo reinicia
-    # para que no siga con la vieja en memoria. El organizador le da el permiso con `python -m claves permiso`.
-    if k get deploy escalador > /dev/null 2>&1; then
+    # BC-95: la clave del escalador está en el Secret escalador-clave (no en Redis): sobrevive al FLUSHALL, pero su
+    # permiso estaba en la cadena vieja. El organizador se lo vuelve a dar con `python -m claves permiso`.
+    if k get secret escalador-clave > /dev/null 2>&1; then
         local escalador
-        escalador=$(k exec -i deploy/trp -- python - <<'PY'
-from comun import config, contrato, redisdb
-r = redisdb.conectar(config.cargar("preparar"))
-r.set("escalador:clave", contrato.nueva_clave()[0], nx=True)
-print(contrato.clave_publica(r.get("escalador:clave")))
-PY
-)
-        if [ "$(k get deploy escalador -o jsonpath='{.spec.replicas}')" != 0 ]; then
-            k rollout restart deploy/escalador
-            k rollout status deploy/escalador --timeout=5m
-        fi
-        echo "Clave del escalador (le falta el permiso del organizador): $escalador"
+        escalador=$(k get secret escalador-clave -o jsonpath='{.data.ESCALADOR_CLAVE}' | base64 -d | \
+            k exec -i deploy/trp -- python -c 'import sys; from comun import contrato; print(contrato.clave_publica(sys.stdin.readline().strip()))')
+        echo "Clave del escalador (le falta el permiso del organizador en la cadena nueva): $escalador"
     fi
 }
 
@@ -223,7 +237,7 @@ condiciones() {
 }
 
 fijar_vms() {
-    local cantidad=${1:?falta la cantidad de VMs} url i claves
+    local cantidad=${1:?falta la cantidad de VMs} url i
     [[ $cantidad =~ ^[0-9]+$ ]] && ((cantidad <= 10)) || { echo "::error::La cantidad de VMs va de 0 a 10"; exit 1; }
     : "${PROYECTO:?falta PROYECTO, el proyecto de GCP}"
 
@@ -237,9 +251,9 @@ fijar_vms() {
     [ -z "$(k get pods -l app=escalador -o name)" ] || { echo "::error::El escalador no se apagó en 10 minutos"; exit 1; }
 
     tofu -chdir="$RAIZ/pilar3/vms/instancias" init -input=false -reconfigure -backend-config="bucket=$PROYECTO-tfstate"
-    # Sin su clave la VM arranca pero no mina (arrancar.sh). Va por entorno, no en los argumentos.
-    claves=$(claves_vms "$cantidad")
-    TF_VAR_claves=$claves TF_VAR_proyecto=$PROYECTO tofu -chdir="$RAIZ/pilar3/vms/instancias" apply -input=false -auto-approve -var "cantidad=$cantidad"
+    # BC-95: sin claves en el apply ni en el state. Cada VM genera la suya; después se firman las altas.
+    TF_VAR_proyecto=$PROYECTO tofu -chdir="$RAIZ/pilar3/vms/instancias" apply -input=false -auto-approve -var "cantidad=$cantidad"
+    altas_vms "$cantidad"
 
     url=$(url_gateway)
     echo "Esperando $cantidad minero(s) CPU vivo(s) (las VMs tardan unos minutos en arrancar)"

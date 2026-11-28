@@ -6,9 +6,12 @@ operador, mira qué hacen el NCT, los nodos verificadores del cluster (/nodos/0 
 arranca de cero fuera del cluster y tres validadores locales, y deja todo como estaba.
 
     pilar2/.venv/bin/python pilar3/pruebas/operador.py --backend http://localhost --gateway http://localhost:8081
-        [--solo saldo,alta,editado,reescrita,epoca,invalido,deshacer,sin-validadores]
+        [--solo saldo,alta,editado,reescrita,epoca,invalido,deshacer,sin-validadores,reminada,pago-epoca,otra-cadena]
 
-Necesita la cadena v3 con tráfico (manda transferencias de alice, bob y carol), un minero CPU local (lo arranca) y
+v4 (BC-96): `reminada` (la historia rehecha con prefijo 1), `pago-epoca` (pagar más que el fondo sin la lista
+publicada) y `otra-cadena` (lo firmado para otra cadena, como lo de antes de un reinicio).
+
+Necesita la cadena v4 con tráfico (manda transferencias de alice, bob y carol), un minero CPU local (lo arranca) y
 la clave de organizador de prueba (la del k3s). Escribe resultados/operador.csv y resultados/operador.log.
 """
 
@@ -156,15 +159,42 @@ def punta():
                  " 'timestamp': int(b['timestamp']), 'nonce': int(b['nonce'])}))")
 
 
-def bloque_minado(previous_hash, timestamp, altura, transacciones, raiz_estado, minero):
-    """Un bloque con PoW válida (prefijo «0», que elige el operador: el prefijo no se puede verificar)."""
-    tarea = {"previous_hash": previous_hash, "timestamp": timestamp, "altura": altura, "prefijo": "0",
+PISO = {}
+
+
+def piso(base):
+    """El piso de prefijo de la cadena (v4): un bloque con menos ya no lo acepta nadie."""
+    if base not in PISO:
+        PISO[base] = get(f"{base}/api/cadena")["prefijo_minimo"]
+    return PISO[base]
+
+
+def minar(texto, prefijo):
+    return next(n for n in range(16 ** (len(prefijo) + 2)) if contrato.hash_bloque(texto, n).startswith(prefijo))
+
+
+def bloque_minado(previous_hash, timestamp, altura, transacciones, raiz_estado, minero, prefijo="0"):
+    """Un bloque con PoW válida, con el prefijo que elija el operador (el piso de la cadena, para que valga)."""
+    tarea = {"previous_hash": previous_hash, "timestamp": timestamp, "altura": altura, "prefijo": prefijo,
              "transacciones": transacciones, "raiz_estado": raiz_estado}
     texto = contrato.texto_para(tarea, minero)
-    nonce = next(n for n in range(10**7) if contrato.hash_bloque(texto, n).startswith("0"))
+    nonce = minar(texto, prefijo)
     return {"previous_hash": previous_hash, "timestamp": timestamp, "altura": altura, "nonce": nonce,
-            "transactions": contrato.transacciones_del_bloque(tarea, minero), "prefijo": "0",
+            "transactions": contrato.transacciones_del_bloque(tarea, minero), "prefijo": prefijo,
             "block_hash": contrato.hash_bloque(texto, nonce), "raiz_estado": raiz_estado}
+
+
+def reminar(bloque, prefijo):
+    """El mismo bloque (las mismas transacciones, coinbase incluida) con otro prefijo y su nonce."""
+    texto = contrato.texto_de_bloque(bloque)
+    nonce = minar(texto, prefijo)
+    return {**bloque, "prefijo": prefijo, "nonce": nonce, "block_hash": contrato.hash_bloque(texto, nonce)}
+
+
+def bloque_en(altura):
+    return redis(f"h = r.lindex('cadena', {altura})\nb = r.hgetall('bloque:' + h)\nb.pop('duracion', None)\n"
+                 "print(json.dumps({**b, 'transactions': json.loads(b['transactions']), 'altura': int(b['altura']),"
+                 " 'timestamp': int(b['timestamp']), 'nonce': int(b['nonce'])}))")
 
 
 def guardar_bloque(bloque, en=None):
@@ -177,12 +207,17 @@ def guardar_bloque(bloque, en=None):
 
 # ── Escenarios ──
 
+def genesis(a):
+    """El hash del génesis (v4): va en todo lo que se firma."""
+    return get(f"{a.backend}/api/cadena")["genesis"]
+
+
 def saldo(a):
     """HINCRBY saldos: el NCT valida con el número tocado, pero arma el bloque contra la cadena y corrige el caché."""
     antes = get(f"{a.backend}/api/saldos/{CUENTA['carol']}")["saldo"]
     redis(f"r.hincrby('saldos', '{CUENTA['carol']}', 1000000)\nprint(json.dumps(True))")
     nonce = get(f"{a.backend}/api/cuentas/{CUENTA['carol']}")["nonce"] + 1
-    gasto = contrato.transaccion(PRIVADA["carol"], CUENTA["bob"], antes + 500_000, nonce)
+    gasto = contrato.transaccion(PRIVADA["carol"], CUENTA["bob"], antes + 500_000, nonce, cadena=genesis(a))
     codigo, _ = trampas.Backend(a.backend).mandar(gasto)
     final = esperar_que(lambda: (t := trampas.Backend(a.backend).estado(gasto["id"])) and t["estado"] in
                         ("confirmada", "rechazada") and t, 300, descripcion="el gasto con el saldo inventado")
@@ -204,13 +239,14 @@ def alta(a):
     """HSET cuentas: una cuenta «aprobada» sin un alta firmada no llega a operar."""
     privada, zoe = contrato.nueva_clave()
     backend = trampas.Backend(a.backend)
-    backend.mandar(contrato.carga(PRIVADA["organizador"], backend.nonce(contrato.EMISION) + 1, zoe, 5, int(time.time())))
+    backend.mandar(contrato.carga(PRIVADA["organizador"], backend.nonce(contrato.EMISION) + 1, zoe, 5, int(time.time()),
+                                  cadena=genesis(a)))
     redis(f"r.hset('cuentas', '{zoe}', json.dumps({{'tipo': 'usuario', 'nombre': 'trucha', 'alta': 1}}))\n"
           "print(json.dumps(True))")
     esperar_que(lambda: get(f"{a.backend}/api/saldos/{zoe}")["saldo"] >= 5 or None, 300, descripcion="los 5 de zoe")
     redis(f"r.hset('cuentas', '{zoe}', json.dumps({{'tipo': 'usuario', 'nombre': 'trucha', 'alta': 1}}))\n"
           "print(json.dumps(True))")  # otra vez: la revisión pudo haberla borrado
-    tx = contrato.transaccion(privada, CUENTA["bob"], 1, 1)
+    tx = contrato.transaccion(privada, CUENTA["bob"], 1, 1, cadena=genesis(a))
     codigo, _ = backend.mandar(tx)
     final = esperar_que(lambda: (t := backend.estado(tx["id"])) and t["estado"] in ("confirmada", "rechazada") and t,
                         300, descripcion="la transferencia de la cuenta trucha")
@@ -247,7 +283,7 @@ def reescrita(a, validadores):
     try:
         tip = punta()
         reemplazo = bloque_minado(tip["previous_hash"], tip["timestamp"] + 1, tip["altura"], [], tip["raiz_estado"],
-                                  CUENTA["operador"])
+                                  CUENTA["operador"], "0" * piso(a.backend))
         guardar_bloque(reemplazo, en=tip["altura"])
         anotar(f"Bloque {tip['altura']} reemplazado: {tip['block_hash']} → {reemplazo['block_hash']} (sin sus transacciones)")
         vistos = esperar_que(lambda: all(e["conflicto"] for e in nodos_del_cluster(a.backend)) and
@@ -303,9 +339,10 @@ def invalido(a, validadores):
         tip = punta()
         raiz = get(f"{a.backend}/nodos/0/api/estado")["raiz"]  # el estado después de la punta, según un nodo
         emision = get(f"{a.backend}/api/cuentas/emision")["nonce"]
-        trucha = contrato.carga(PRIVADA["alice"], emision + 1, CUENTA["operador"], 10**9, tip["timestamp"])
+        trucha = contrato.carga(PRIVADA["alice"], emision + 1, CUENTA["operador"], 10**9, tip["timestamp"],
+                                cadena=genesis(a))
         malo = bloque_minado(tip["block_hash"], tip["timestamp"] + 1, tip["altura"] + 1, [trucha], raiz,
-                             CUENTA["operador"])
+                             CUENTA["operador"], "0" * piso(a.backend))
         guardar_bloque(malo)
         anotar(f"Bloque {malo['altura']} inválido agregado: {malo['block_hash']}")
         rechazos = esperar_que(lambda: all(e["rechazado"] for e in nodos_del_cluster(a.backend)) and
@@ -387,6 +424,86 @@ def sin_validadores(a, validadores):
               f"{get(f'{a.backend}/api/finalidad')['altura']}", bool(alcanzo))
 
 
+# ── v4 (BC-96): lo que los verificadores todavía no verificaban ──
+
+def reminada(a):
+    """Rehacer la historia desde el génesis con prefijo 1 (gratis): un nodo que arranca de cero no la acepta."""
+    nct(0)
+    original = barato = None
+    try:
+        original = bloque_en(1)
+        barato = reminar(original, "0")
+        guardar_bloque(barato, en=1)
+        anotar(f"Bloque 1 reminado con prefijo 1: {original['block_hash']} → {barato['block_hash']}")
+        nuevo = verificador_nuevo(a.backend)
+        motivo = nuevo["rechazado"] and nuevo["rechazado"]["motivos"][0]
+        comprobar("reminada", "un nodo nuevo baja la historia reminada con prefijo 1",
+                  f"rechaza el bloque 1 (piso {piso(a.backend)})",
+                  f"rechazado en {nuevo['rechazado'] and nuevo['rechazado']['altura']}: {motivo}",
+                  bool(motivo) and nuevo["rechazado"]["altura"] == 1 and "piso de la cadena" in motivo)
+    finally:
+        if original:
+            guardar_bloque(original, en=1)
+        if barato:
+            redis(f"r.delete('bloque:{barato['block_hash']}')\nprint(json.dumps(True))")
+        nct(2)
+
+
+def pago_epoca(a):
+    """Inflar un pago de época, reminar el bloque y borrar la lista publicada (sin ella antes sólo quedaba un aviso)."""
+    alturas = redis("print(json.dumps([a for a in range(10, r.llen('cadena'), 10) if any("
+                    "t['id'].startswith('part-') for t in json.loads(r.hget('bloque:' + r.lindex('cadena', a), "
+                    "'transactions')))]))")
+    if not alturas:
+        comprobar("pago-epoca", "pagar más que el fondo", "—", "no hay épocas pagadas todavía", False)
+        return
+    altura = alturas[0]
+    epoca = altura // contrato.BLOQUES_POR_EPOCA - 1
+    nct(0)
+    original = detalle = inflado = None
+    try:
+        original = bloque_en(altura)
+        detalle = redis(f"print(json.dumps(r.hget('epoca:{epoca}', 'detalle')))")
+        txs = [dict(t) for t in original["transactions"]]
+        pago = next(t for t in txs if t["id"].startswith("part-"))
+        pago["monto"] += 10**6
+        inflado = reminar({**original, "transactions": txs}, original["prefijo"])
+        guardar_bloque(inflado, en=altura)
+        redis(f"r.hdel('epoca:{epoca}', 'detalle')\nprint(json.dumps(True))")  # /api/epocas/<n> sin la lista
+        anotar(f"Bloque {altura}: {pago['id']} con 10^6 más y la lista de la época {epoca} borrada")
+        nuevo = verificador_nuevo(a.backend)
+        motivo = nuevo["rechazado"] and nuevo["rechazado"]["motivos"][0]
+        comprobar("pago-epoca", f"la época {epoca} paga 10^6 más que el fondo, sin la lista publicada",
+                  f"un nodo nuevo rechaza el bloque {altura}",
+                  f"rechazado en {nuevo['rechazado'] and nuevo['rechazado']['altura']}: {motivo}",
+                  bool(motivo) and nuevo["rechazado"]["altura"] == altura and "más que el fondo" in motivo)
+    finally:
+        if original:
+            guardar_bloque(original, en=altura)
+        if inflado:
+            redis(f"r.delete('bloque:{inflado['block_hash']}')\nprint(json.dumps(True))")
+        if detalle:
+            redis(f"r.hset('epoca:{epoca}', 'detalle', {json.dumps(detalle)})\nprint(json.dumps(True))")
+        nct(2)
+
+
+def otra_cadena(a):
+    """Lo firmado para otra cadena (como lo de antes de un reinicio, con los nonces de nuevo en 1) no entra."""
+    vieja = contrato.md5("la cadena de antes del reinicio")
+    backend = trampas.Backend(a.backend)
+    nonce = backend.nonce(CUENTA["carol"]) + 1
+    transferencia = contrato.transaccion(PRIVADA["carol"], CUENTA["bob"], 1, nonce, cadena=vieja)
+    recarga = contrato.carga(PRIVADA["organizador"], backend.nonce(contrato.EMISION) + 1, CUENTA["operador"], 10**9,
+                             int(time.time()), cadena=vieja)
+    for que, tx in (("una transferencia de carol", transferencia), ("una carga del organizador", recarga)):
+        codigo, respuesta = backend.mandar(tx)
+        comprobar("otra-cadena", f"{que} firmada para otra cadena, con el nonce siguiente", "400: la firma no verifica",
+                  f"{codigo} {respuesta}", codigo == 400 and "firma" in json.dumps(respuesta, ensure_ascii=False))
+    buena = contrato.transaccion(PRIVADA["carol"], CUENTA["bob"], 1, nonce, cadena=genesis(a))
+    codigo, _ = backend.mandar(buena)
+    comprobar("otra-cadena", "la misma transferencia firmada para esta cadena", "202", str(codigo), codigo == 202)
+
+
 class Trafico(trampas.Trafico):
     """Transferencias de alice y bob (carol queda libre para el escenario del saldo inventado)."""
 
@@ -400,7 +517,8 @@ class Trafico(trampas.Trafico):
             self.parar.wait(self.cada)
 
 
-ESCENARIOS = ("saldo", "alta", "editado", "reescrita", "epoca", "invalido", "deshacer", "sin-validadores")
+ESCENARIOS = ("saldo", "alta", "editado", "reescrita", "epoca", "invalido", "deshacer", "sin-validadores", "reminada",
+              "pago-epoca", "otra-cadena")
 
 
 def main():
@@ -428,7 +546,8 @@ def main():
             if nombre not in solo:
                 continue
             anotar(f"── {nombre} ──")
-            funcion = {"saldo": saldo, "alta": alta, "editado": editado, "epoca": epoca}.get(nombre)
+            funcion = {"saldo": saldo, "alta": alta, "editado": editado, "epoca": epoca, "reminada": reminada,
+                       "pago-epoca": pago_epoca, "otra-cadena": otra_cadena}.get(nombre)
             if funcion:
                 funcion(a)
             else:

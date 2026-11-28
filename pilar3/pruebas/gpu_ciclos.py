@@ -127,7 +127,8 @@ class Transferencias(threading.Thread):
                 if ultima is None or confirmado >= ultima:
                     ultima = confirmado + 1
                     api(self.base, "/api/transacciones",
-                        contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], 1, ultima))
+                        contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], 1, ultima,
+                                             cadena=api(self.base, "/api/cadena")["genesis"]))
                     self.enviadas += 1
             except (urllib.error.URLError, TimeoutError, KeyError) as error:
                 print(f"   transferencia: {error}", flush=True)

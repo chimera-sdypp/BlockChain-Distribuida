@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import app as backend
 from comun import Rabbit, config, contrato, estado, web
-from comun.tests.claves import CUENTA, PRIVADA, Billetera, carga, firmada
+from comun.tests.claves import CADENA, CUENTA, GENESIS, PRIVADA, Billetera, carga, firmada, sembrar_genesis
 
 pytestmark = pytest.mark.skipif(os.environ.get("INTEGRACION") != "1",
                                 reason="necesita RabbitMQ y Redis (INTEGRACION=1)")
@@ -30,6 +30,7 @@ def entorno():
     redis = redislib.Redis(host=c.redis_host, port=c.redis_puerto, password=c.redis_clave or None,
                            db=BASE_PRUEBAS, decode_responses=True)
     redis.flushdb()
+    sembrar_genesis(redis)
     app = web.crear_app("backend", {})
     backend.agregar_rutas(app, redis, publicador, cola=cola, organizador=CUENTA["organizador"])
     yield TestClient(app), cola, redis
@@ -172,13 +173,15 @@ def armar_cadena(redis, largo):
     """Génesis más largo−1 bloques válidos (v3, con su raíz de estado), como los arma el NCT, y el caché de los
     saldos como lo deja el consenso. Devuelve los hashes en orden de altura."""
     genesis = contrato.bloque_genesis({CUENTA["alice"]: 1000, CUENTA["bob"]: 1000}, 1793836800)
+    redis.delete("cadena")  # la cadena sembrada por el fixture: ésta trae su propio génesis
     actual = estado.Estado()
     estado.aplicar_bloque(actual, genesis)
     guardar_bloque(redis, genesis)
     hashes, billetera = [genesis["block_hash"]], Billetera()
     for altura in range(1, largo):
         tarea = {"previous_hash": hashes[-1], "timestamp": 1793836800 + altura, "altura": altura, "prefijo": "0",
-                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura)],
+                 "transacciones": [billetera("alice", "bob", altura, timestamp=1793836800 + altura,
+                                             cadena=genesis["block_hash"])],
                  "raiz_estado": actual.raiz()}
         transacciones = contrato.transacciones_del_bloque(tarea, CUENTA["minero"])
         texto = contrato.texto_para(tarea, CUENTA["minero"])
@@ -228,8 +231,16 @@ def test_bloques_paginados(entorno):
 
 
 def test_bloques_de_una_cadena_vacia(entorno):
-    cliente, _, _ = entorno
+    cliente, _, redis = entorno
+    redis.delete("cadena")
     assert cliente.get("/api/bloques").json() == []
+    assert cliente.get("/api/cadena").status_code == 503  # v4: sin génesis no se puede firmar nada
+
+
+def test_la_cadena_da_el_genesis_el_organizador_y_el_piso(entorno):
+    cliente, _, _ = entorno
+    assert cliente.get("/api/cadena").json() == {"genesis": CADENA, "organizador": CUENTA["organizador"],
+                                                 "prefijo_minimo": 1, "timestamp": GENESIS["timestamp"]}
 
 
 @pytest.mark.parametrize("params", [{"limite": 0}, {"limite": 101}, {"desde": -1}, {"limite": "x"}])

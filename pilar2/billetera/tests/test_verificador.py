@@ -12,7 +12,7 @@ import pytest
 
 from comun import contrato, estado
 from comun.tests.cadena import Cadena, remina
-from comun.tests.claves import CUENTA, FECHA, PRIVADA, carga, firmada
+from comun.tests.claves import CUENTA, FECHA, PRIVADA, carga, firmada, cadena_actual
 
 NODE = shutil.which("node")
 CORRER = Path(__file__).parent / "correr_verificador.cjs"
@@ -51,11 +51,11 @@ def cadena_larga():
     c = Cadena()
     escalador = PRIVADA["escalador"]
     c.agregar([firmada("alice", "bob", 30), carga(1, "carol", 7), contrato.alta(ORG, 2, CUENTA["carol"], "usuario",
-                                                                                "carol", FECHA)])
-    c.agregar([contrato.permiso(ORG, 3, CUENTA["escalador"], "minero-cpu-", FECHA), firmada("carol", "alice", 2)])
-    c.agregar([contrato.alta(escalador, 1, CUENTA["vm0"], "minero", "minero-cpu-0", FECHA, delegada=True),
-               contrato.alta(ORG, 4, CUENTA["v1"], "validador", "v1", FECHA), contrato.baja(ORG, 5, CUENTA["bob"], "se fue",
-                                                                                            FECHA)])
+                                                                                "carol", FECHA, cadena=cadena_actual())])
+    c.agregar([contrato.permiso(ORG, 3, CUENTA["escalador"], "minero-cpu-", FECHA, cadena=cadena_actual()), firmada("carol", "alice", 2)])
+    c.agregar([contrato.alta(escalador, 1, CUENTA["vm0"], "minero", "minero-cpu-0", FECHA, delegada=True, cadena=cadena_actual()),
+               contrato.alta(ORG, 4, CUENTA["v1"], "validador", "v1", FECHA, cadena=cadena_actual()), contrato.baja(ORG, 5, CUENTA["bob"], "se fue",
+                                                                                            FECHA, cadena=cadena_actual())])
     for epoca, detalle in ((0, {CUENTA["minero"]: {"shares": 30, "racha": 1}, CUENTA["vm0"]: {"shares": 7, "racha": 1}}),
                            (1, {CUENTA["minero"]: {"shares": 9, "racha": 2}})):
         while c.estado.altura + 1 < (epoca + 1) * contrato.BLOQUES_POR_EPOCA:
@@ -96,7 +96,7 @@ def test_sin_la_lista_de_shares_avisa_y_con_una_lista_cambiada_rechaza(tmp_path)
      "coinbase"),
     (lambda b: b.update(remina({**b, "raiz_estado": "f" * 32})), "raíz de estado"),
     (lambda b: b.update(remina({**b, "transactions": b["transactions"][:1] + [
-        contrato.alta(PRIVADA["alice"], 6, CUENTA["zoe"], "usuario", "zoe", FECHA)]})), "firma"),
+        contrato.alta(PRIVADA["alice"], 6, CUENTA["zoe"], "usuario", "zoe", FECHA, cadena=cadena_actual())]})), "firma"),
 ])
 def test_un_bloque_adulterado_se_rechaza_y_no_sigue(tmp_path, tocar, motivo):
     c = cadena_larga()
@@ -110,8 +110,8 @@ def test_un_bloque_adulterado_se_rechaza_y_no_sigue(tmp_path, tocar, motivo):
 
 def test_la_finalidad_sale_de_firmas_verificadas_de_validadores_de_la_cadena(tmp_path):
     c = cadena_larga()
-    c.agregar([contrato.alta(ORG, 6, CUENTA["v2"], "validador", "v2", FECHA),
-               contrato.alta(ORG, 7, CUENTA["v3"], "validador", "v3", FECHA)])
+    c.agregar([contrato.alta(ORG, 6, CUENTA["v2"], "validador", "v2", FECHA, cadena=cadena_actual()),
+               contrato.alta(ORG, 7, CUENTA["v3"], "validador", "v3", FECHA, cadena=cadena_actual())])
     h = {b["altura"]: b["block_hash"] for b in c.bloques}
     punta = c.estado.altura
     firmas = [contrato.firma_bloque(PRIVADA["v1"], punta, h[punta]), contrato.firma_bloque(PRIVADA["v2"], punta - 1, h[punta - 1]),
@@ -127,8 +127,59 @@ def test_la_finalidad_sale_de_firmas_verificadas_de_validadores_de_la_cadena(tmp
 def test_un_alta_repetida_la_rechaza_igual_que_python(tmp_path):
     """BC-93: la regla nueva está en los dos verificadores."""
     c = Cadena()
-    c.agregar([contrato.alta(ORG, 1, CUENTA["zoe"], "usuario", "zoe", FECHA)])
-    malo = c.armar([contrato.alta(ORG, 2, CUENTA["zoe"], "usuario", "zoe", FECHA)])
+    c.agregar([contrato.alta(ORG, 1, CUENTA["zoe"], "usuario", "zoe", FECHA, cadena=cadena_actual())])
+    malo = c.armar([contrato.alta(ORG, 2, CUENTA["zoe"], "usuario", "zoe", FECHA, cadena=cadena_actual())])
     assert any(estado.ALTA_REPETIDA in p for p in c.verificar(malo))
     ultimo = correr(tmp_path, bloques=c.bloques + [malo])["bloques"][-1]
     assert ultimo["altura"] == 2 and any("la cuenta ya tiene alta" in p for p in ultimo["problemas"]), ultimo
+
+
+# ── v4 (BC-95, BC-96): las mismas reglas nuevas en los dos verificadores ──
+
+def test_el_piso_de_prefijo_del_genesis_lo_exige_igual_que_python(tmp_path):
+    c = Cadena(prefijo_minimo=2)
+    c.agregar([], prefijo="00")
+    malo = c.armar([], prefijo="0")
+    assert any("el piso de la cadena es 2" in p for p in c.verificar(malo))
+    salida = correr(tmp_path, bloques=c.bloques + [malo])
+    assert salida["estado"]["prefijoMinimo"] == 2 and salida["estado"]["genesis"] == c.id
+    ultimo = salida["bloques"][-1]
+    assert ultimo["altura"] == 2 and any("el piso de la cadena es 2" in p for p in ultimo["problemas"]), ultimo
+
+
+def test_lo_firmado_para_otra_cadena_lo_rechaza_igual_que_python(tmp_path):
+    vieja, nueva = Cadena(), Cadena(saldos={CUENTA["alice"]: 100, CUENTA["bob"]: 50, CUENTA["carol"]: 1})
+    malo = nueva.armar([firmada("alice", "bob", 10, cadena=vieja.id), carga(1, "alice", 10**6, cadena=vieja.id)])
+    assert nueva.verificar(malo)
+    ultimo = correr(tmp_path, bloques=nueva.bloques + [malo])["bloques"][-1]
+    assert ultimo["altura"] == 1 and any("firma" in p for p in ultimo["problemas"]), ultimo
+    bueno = nueva.armar([firmada("alice", "bob", 10, cadena=nueva.id)])
+    assert correr(tmp_path, bloques=nueva.bloques + [bueno])["bloques"][-1]["problemas"] == []
+
+
+def test_una_baja_del_organizador_la_respeta_igual_que_python_y_da_la_misma_raiz(tmp_path):
+    c = Cadena()
+    escalador, vm = PRIVADA["escalador"], CUENTA["vm0"]
+    c.agregar([contrato.permiso(ORG, 1, CUENTA["escalador"], "minero-cpu-", FECHA, cadena=c.id),
+               contrato.alta(escalador, 1, vm, "minero", "minero-cpu-0", FECHA, delegada=True, cadena=c.id)])
+    c.agregar([contrato.baja(ORG, 2, vm, "minaba mal", FECHA, cadena=c.id)])
+    salida = correr(tmp_path, bloques=c.bloques)
+    assert salida["raiz"] == c.estado.raiz() and salida["hojas"] == [h for _, h in c.estado.hojas()]
+    assert f"{vm}:vetada:0:0" in salida["hojas"]
+    malo = c.armar([contrato.alta(escalador, 2, vm, "minero", "minero-cpu-0", FECHA, delegada=True, cadena=c.id)])
+    assert any(estado.VETADA_POR_ORGANIZADOR in p for p in c.verificar(malo))
+    ultimo = correr(tmp_path, bloques=c.bloques + [malo])["bloques"][-1]
+    assert any("baja del organizador" in p for p in ultimo["problemas"]), ultimo
+
+
+def test_un_pago_de_epoca_sobre_el_fondo_lo_rechaza_aunque_no_haya_lista(tmp_path):
+    c = Cadena(shares=lambda epoca: None)
+    while c.estado.altura + 1 < contrato.BLOQUES_POR_EPOCA:
+        c.agregar([])
+    detalle = {CUENTA["minero"]: {"shares": 1, "racha": 1}}
+    pagos = [contrato.shares_epoca(0, contrato.FONDO_EPOCA, contrato.raiz_shares(detalle), c.estado.timestamp),
+             contrato.participacion(0, CUENTA["minero"], 10**9, c.estado.timestamp)]
+    malo = c.armar(pagos)
+    assert any("más que el fondo" in p for p in c.verificar(malo))
+    ultimo = correr(tmp_path, bloques=c.bloques + [malo])["bloques"][-1]  # sin `shares`: /api/epocas no responde
+    assert ultimo["altura"] == 10 and any("más que el fondo" in p for p in ultimo["problemas"]), ultimo

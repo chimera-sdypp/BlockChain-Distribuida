@@ -7,7 +7,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from comun import contrato
-from comun.tests.claves import CUENTA
+from comun.tests.claves import CUENTA, cadena_actual
 from gateway.tests.conftest import aprobar
 
 
@@ -22,14 +22,14 @@ def test_sin_firma_da_401(cliente):
 
 def test_con_la_firma_de_otra_clave_da_401(cliente, otro):
     cuerpo = json.dumps(hola()).encode()
-    firma = contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo)
+    firma = contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo, cadena=cadena_actual())
     firma["X-Minero"] = CUENTA["minero"]  # dice ser «minero», pero firma con la clave de «minero2»
     assert cliente.cliente.post("/hello", content=cuerpo, headers=firma).status_code == 401
 
 
 def test_un_cuerpo_cambiado_despues_de_firmar_da_401(cliente):
     cuerpo = json.dumps(hola()).encode()
-    firma = contrato.firmar_pedido(cliente.privada, "POST", "/hello", cuerpo)
+    firma = contrato.firmar_pedido(cliente.privada, "POST", "/hello", cuerpo, cadena=cadena_actual())
     otro = json.dumps({**hola(), "tipo": "cpu"}).encode()
     assert cliente.cliente.post("/hello", content=otro, headers=firma).status_code == 401
 
@@ -80,7 +80,7 @@ def test_un_minero_sin_alias_queda_pedido_con_el_principio_de_la_cuenta(armar, r
 
 def test_una_firma_mala_no_deja_pedido(cliente, otro, redis):
     cuerpo = json.dumps(hola()).encode()
-    firma = {**contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo), "X-Minero": CUENTA["intruso"]}
+    firma = {**contrato.firmar_pedido(otro.privada, "POST", "/hello", cuerpo, cadena=cadena_actual()), "X-Minero": CUENTA["intruso"]}
     assert cliente.cliente.post("/hello", content=cuerpo, headers=firma).status_code == 401
     assert not redis.exists("altas:pendientes")
 

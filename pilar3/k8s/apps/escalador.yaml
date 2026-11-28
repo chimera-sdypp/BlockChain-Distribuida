@@ -23,6 +23,10 @@ spec:
         - name: escalador
           env:
             - { name: VMS_ACTIVAS, value: "1" }
+            # BC-95: la privada del escalador, desde un Secret que crea el Pipeline 2 con el secreto ESCALADOR_CLAVE
+            # del ambiente `produccion`. Sin él el pod no arranca (antes la generaba y la guardaba en Redis).
+            - name: ESCALADOR_CLAVE
+              valueFrom: { secretKeyRef: { name: escalador-clave, key: ESCALADOR_CLAVE } }
           envFrom:
             - configMapRef: { name: escalador-gcp }   # TF_VAR_proyecto y TF_CLI_ARGS_init (el bucket)
           volumeMounts:

@@ -1,6 +1,9 @@
 # Gateway de los mineros (BC-43): la única puerta de los mineros (fuera del cluster) al sistema.
 # Sin estado (los préstamos están en Redis), con HPA entre 2 y 6 réplicas (BC-102). Su propio LoadBalancer
 # en el 8081 (el 80 es del Ingress). La imagen se construye a mano (ver pilar2/gateway/README.md).
+# BC-105: con el Secret gateway-tls (en GKE lo crea pilar3-certificado-gateway.yml) atiende también HTTPS en el
+# 8443, y en GKE el LoadBalancer publica sólo ése, en el 443 (pilar3/k8s/apps/gateway-ip.yaml). Sin el Secret
+# (k3s), sólo HTTP.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -51,10 +54,13 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
+            - { name: https, containerPort: 8443 }
           env:
             - { name: RABBIT_HOST, value: rabbitmq }
             - { name: REDIS_SENTINELS, value: "redis:26379" }
             - { name: TASK_LEASE_SECONDS, value: "30" }
+            - { name: TLS_CERTIFICADO, value: /tls/tls.crt }
+            - { name: TLS_CLAVE, value: /tls/tls.key }
             - { name: REVISAR_PRESTAMOS_SEGUNDOS, value: "5" }
             - name: RABBIT_USUARIO
               valueFrom: { secretKeyRef: { name: blockchain-secretos, key: RABBIT_USUARIO } }
@@ -65,6 +71,7 @@ spec:
           volumeMounts:
             - { name: logs, mountPath: /app/logs }
             - { name: tmp, mountPath: /tmp }
+            - { name: tls, mountPath: /tls, readOnly: true }
           resources:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { memory: 256Mi }
@@ -89,6 +96,8 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+        - name: tls
+          secret: { secretName: gateway-tls, optional: true }
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

@@ -17,8 +17,14 @@ output "GCP_REGISTRO" {
   value = "${var.region}-docker.pkg.dev/${var.proyecto}/${google_artifact_registry_repository.imagenes.repository_id}"
 }
 
+# La IP fija del LoadBalancer del gateway (el Pipeline 3 la pone en el Service). Los mineros no la usan: entran por
+# GATEWAY_URL, con un nombre de DuckDNS que apunta a esta IP y el certificado del Secret gateway-tls (BC-105).
+output "GATEWAY_IP" {
+  value = google_compute_address.gateway.address
+}
+
 output "GATEWAY_URL" {
-  value = "http://${google_compute_address.gateway.address}:8081"
+  value = "https://chimera-gateway.duckdns.org"
 }
 
 output "INGRESO_IP" {

@@ -41,10 +41,13 @@ def _vivo(chequeo):
         return False
 
 
-def servir(app, puerto, en_hilo=False):
-    """Levanta la app en 0.0.0.0:puerto. Con en_hilo=True no bloquea (para los consumidores)."""
+def servir(app, puerto, en_hilo=False, certificado=None, clave=None):
+    """Levanta la app en 0.0.0.0:puerto. Con en_hilo=True no bloquea (para los consumidores).
+
+    Con `certificado` y `clave` (archivos PEM) sirve HTTPS en ese puerto (el gateway, BC-105)."""
+    tls = {"ssl_certfile": certificado, "ssl_keyfile": clave} if certificado and clave else {}
     servidor = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=puerto,
-                                             log_config=None, access_log=False))
+                                             log_config=None, access_log=False, **tls))
     if not en_hilo:
         servidor.run()
         return servidor

@@ -16,6 +16,7 @@ rango va la `altura`, para que el minero sepa de qué época son sus shares y lo
 
 import json
 import logging
+import os
 import random
 import threading
 import time
@@ -28,7 +29,7 @@ import redis as redislib
 from prometheus_client import REGISTRY, Counter
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 
-from comun import Rabbit, Servicio, config, contrato
+from comun import Rabbit, Servicio, config, contrato, web
 from comun.altas import Altas
 
 log = logging.getLogger("gateway")
@@ -1019,4 +1020,18 @@ def main():
                      name="prestamos", daemon=True).start()
     for conexion in (rabbit, servicio.rabbit):  # la de los pedidos y la de /health
         threading.Thread(target=conexion.conectar, name="rabbit-conectar", daemon=True).start()
+    servir_https(servicio)
     servicio.servir_http(en_hilo=False)
+
+
+def servir_https(servicio):
+    """BC-105: si está montado el certificado (en GKE, el Secret gateway-tls), los mineros entran por HTTPS en
+    PUERTO_TLS (8443; el LoadBalancer lo publica en el 443). El HTTP de PUERTO queda para las probes, Prometheus y el
+    k3s, que no tiene dominio. Sin certificado no abre nada más."""
+    certificado, clave = config.texto("TLS_CERTIFICADO"), config.texto("TLS_CLAVE")
+    if not (certificado and clave and os.path.isfile(certificado) and os.path.isfile(clave)):
+        log.info("Sin certificado (TLS_CERTIFICADO, TLS_CLAVE): sólo HTTP")
+        return None
+    puerto = config.entero("PUERTO_TLS", 8443)
+    log.info("HTTPS en el puerto %d con %s", puerto, certificado)
+    return web.servir(servicio.app, puerto, en_hilo=True, certificado=certificado, clave=clave)

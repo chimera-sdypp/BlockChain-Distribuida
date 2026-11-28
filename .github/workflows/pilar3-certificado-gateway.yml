@@ -1,0 +1,128 @@
+# Certificado del gateway (BC-105): los mineros entran por https://chimera-gateway.duckdns.org. El nombre apunta a la
+# IP fija del LoadBalancer del gateway (no a Traefik), así que cert-manager no puede validar por HTTP-01: Let's Encrypt
+# pide el desafío en el puerto 80 de esa IP y ahí no hay nada. Se valida por DNS-01: lego publica un TXT en DuckDNS
+# con DUCKDNS_TOKEN (secreto del environment produccion; el token no entra al cluster) y deja el certificado en el
+# Secret gateway-tls, que el gateway monta (pilar2/k8s/gateway.yaml). Después reinicia el gateway para que lo lea.
+#
+# Corre los lunes, después de cada Pipeline 2 en main (un cluster recién creado no tiene el Secret) y a mano. Sólo pide
+# uno nuevo si el del Secret vence en menos de 30 días (Let's Encrypt da 90), o con «forzar».
+name: "Pilar 3 · Certificado del gateway"
+
+on:
+  workflow_dispatch:
+    inputs:
+      forzar:
+        description: "Pedirlo aunque al del Secret le queden más de 30 días"
+        type: boolean
+        default: false
+      prueba:
+        description: "Contra el Let's Encrypt de prueba (staging): el navegador no lo acepta, pero no gasta los límites"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_run:
+    workflows: ["Pipeline 2 · Servicios base"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: pilar3-certificado-gateway
+
+env:
+  DOMINIO: chimera-gateway.duckdns.org
+  LEGO_VERSION: "5.8.1"
+  # SHA-256 de lego_v5.8.1_linux_amd64.tar.gz, del checksums.txt del release oficial
+  # (https://github.com/go-acme/lego/releases/tag/v5.8.1). Al subir de versión, cambiar los dos.
+  LEGO_SHA256: "0f0c1448b100e240772077bb426d268120eaf68082744349b65c9aae1bb4f005"
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    permissions:
+      contents: read
+
+  certificado:
+    name: Certificado de ${{ github.event_name == 'workflow_dispatch' && inputs.prueba && 'prueba' || 'producción' }}
+    needs: [gitleaks]
+    # Tras el Pipeline 2, sólo si salió bien; nunca sin la nube (falta-nube, BC-31).
+    if: vars.GCP_PROYECTO != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment: produccion
+    env:
+      FORZAR: ${{ github.event_name == 'workflow_dispatch' && inputs.forzar }}
+      PRUEBA: ${{ github.event_name == 'workflow_dispatch' && inputs.prueba }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVEEDOR }}
+          service_account: ${{ vars.GCP_CUENTA_CI }}
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: blockchain
+          location: ${{ vars.GCP_ZONA || 'us-central1-a' }}
+
+      - name: ¿Hace falta uno nuevo?
+        id: falta
+        run: |
+          actual=$(kubectl -n blockchain get secret gateway-tls -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d || true)
+          if [ -n "$actual" ]; then
+            echo "Ahora: $(openssl x509 -noout -subject -issuer -enddate <<< "$actual" | tr '\n' ' ')"
+          fi
+          if [ "$FORZAR" != true ] && [ "$PRUEBA" != true ] && [ -n "$actual" ] \
+              && openssl x509 -noout -checkend $((30 * 86400)) <<< "$actual" > /dev/null; then
+            echo "Vence en más de 30 días: no se pide otro."
+            echo "pedir=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "pedir=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bajar lego y verificar el hash
+        if: steps.falta.outputs.pedir == '1'
+        run: |
+          tar_gz="lego_v${LEGO_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tar_gz" "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/$tar_gz"
+          echo "$LEGO_SHA256  $RUNNER_TEMP/$tar_gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tar_gz" -C "$RUNNER_TEMP" lego
+
+      - name: Pedirlo a Let's Encrypt (DNS-01 en DuckDNS)
+        if: steps.falta.outputs.pedir == '1'
+        env:
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+        run: |
+          if [ -z "$DUCKDNS_TOKEN" ]; then
+            echo "::error::Falta el secreto DUCKDNS_TOKEN del environment produccion (el token de la cuenta de DuckDNS)."
+            exit 1
+          fi
+          servidor=()
+          [ "$PRUEBA" = true ] && servidor=(--server https://acme-staging-v02.api.letsencrypt.org/directory)
+          "$RUNNER_TEMP/lego" run --accept-tos --dns duckdns -d "$DOMINIO" --path "$RUNNER_TEMP/certificados" \
+            "${servidor[@]}"
+
+      - name: Al Secret gateway-tls y reiniciar el gateway
+        if: steps.falta.outputs.pedir == '1'
+        run: |
+          certificado=$(find "$RUNNER_TEMP/certificados" -name "$DOMINIO.crt" | head -1)
+          clave=$(find "$RUNNER_TEMP/certificados" -name "$DOMINIO.key" | head -1)
+          [ -s "$certificado" ] && [ -s "$clave" ] || { echo "::error::lego no dejó $DOMINIO.crt y .key"; exit 1; }
+          openssl x509 -noout -subject -issuer -enddate -in "$certificado"
+          # --server-side: sin la anotación last-applied-configuration, que tendría otra copia de la clave privada.
+          kubectl -n blockchain create secret tls gateway-tls --cert "$certificado" --key "$clave" \
+            --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
+          if kubectl -n blockchain get deploy gateway > /dev/null 2>&1; then
+            kubectl -n blockchain rollout restart deploy/gateway
+            kubectl -n blockchain rollout status deploy/gateway --timeout=5m
+          fi
+
+      - name: Comprobar HTTPS
+        if: steps.falta.outputs.pedir == '1' && env.PRUEBA != 'true'
+        run: |
+          for _ in $(seq 1 20); do
+            curl -sSf --max-time 10 "https://$DOMINIO/health" && exit 0
+            sleep 15
+          done
+          echo "::warning::https://$DOMINIO/health no respondió (¿el nombre apunta a la IP del gateway?)"

@@ -27,7 +27,7 @@ Grabada sobre GKE en tres partes, para ver en orden. Los videos son adjuntos del
 ## Desplegado
 
 - La página y la API: <https://blockchain-chimera.chimera-sdypp.workers.dev> (por Cloudflare, también desde la red de la universidad) o <https://blockchain-chimera.duckdns.org> (directo a GKE). Hay un health-check por servicio en `/salud/<servicio>` (backend, frontend, nct, trp y gateway).
-- Los mineros se conectan al gateway: `http://136.80.87.183:8081`.
+- Los mineros se conectan al gateway por HTTPS: `https://chimera-gateway.duckdns.org`.
 - Los nodos verificadores: `/nodos/0` y `/nodos/1`.
 - La billetera es [`billetera.html`, en el último release](https://github.com/chimera-sdypp/BlockChain-Distribuida/releases/latest). Se comprueba con el SHA-256 de las notas y se abre desde el disco.
 

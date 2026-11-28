@@ -76,6 +76,6 @@ docker save gateway:dev | sudo k3s ctr images import -   # no hace falta si k3s 
 kubectl apply -k k8s
 ```
 
-Un minero de afuera usa `GATEWAY_URL=http://<ip del nodo o del LoadBalancer>:8081` y su clave; el organizador aprueba su cuenta con `k8s/aprobar.sh <cuenta> minero <alias>`.
+Un minero de afuera usa `GATEWAY_URL=http://<ip del nodo o del LoadBalancer>:8081` (en GKE, `https://chimera-gateway.duckdns.org`: HTTPS con el Secret `gateway-tls`, BC-105) y su clave; el organizador aprueba su cuenta con `k8s/aprobar.sh <cuenta> minero <alias>`.
 
 **Contrato v3 (BC-79, BC-82).** Un minero entra si su alta está en la cadena (`cuentas`) o ya la validó el NCT (`altas:en_camino`): así una VM nueva puede minar el bloque con su propia alta. Cada rango lleva la `altura`, y `GET /epocas/<n>` le dice al minero cuántos shares suyos quedaron en la lista publicada de la época, para que los compare con los que le aceptó el gateway.

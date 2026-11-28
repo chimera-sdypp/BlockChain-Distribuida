@@ -20,3 +20,16 @@ spec:
     matchLabels: { app: rabbitmq }
   podMetricsEndpoints:
     - { port: prometheus, path: /metrics/per-object, interval: 10s }
+---
+# Traefik (kube-system en k3s, traefik en GKE): traefik_service_requests_total{code="429"} da los rechazos de los
+# límites de ritmo (BC-94) en el panel «Rechazos de entrada».
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: traefik
+spec:
+  namespaceSelector: { any: true }
+  selector:
+    matchLabels: { app.kubernetes.io/name: traefik }
+  podMetricsEndpoints:
+    - { port: metrics, path: /metrics, interval: 30s }

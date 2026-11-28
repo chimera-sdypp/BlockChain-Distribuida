@@ -53,7 +53,7 @@ def crudo(backend, ruta, cuerpo):
 
 def clave_nueva(backend):
     privada, _ = contrato.nueva_clave()
-    tx = contrato.transaccion(privada, CUENTA["bob"], 1, 1)
+    tx = contrato.transaccion(privada, CUENTA["bob"], 1, 1, cadena=backend.cadena())
     codigo, cuerpo = backend.mandar(tx)
     existe = redis("EXISTS", f"tx:{tx['id']}")
     return codigo == 403 and existe == "0", f"{codigo} {cuerpo}, EXISTS tx:{tx['id'][:12]}… = {existe}"
@@ -62,7 +62,8 @@ def clave_nueva(backend):
 def rechazada_vence(backend):
     alice = CUENTA["alice"]
     datos = backend.cuenta(alice)
-    tx = contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], int(datos["saldo"]) + 1, datos["nonce"] + 1)
+    tx = contrato.transaccion(PRIVADA["alice"], CUENTA["bob"], int(datos["saldo"]) + 1, datos["nonce"] + 1,
+                              cadena=backend.cadena())
     codigo, cuerpo = backend.mandar(tx)
     if codigo != 202:
         return False, f"alice no pudo mandar la transferencia: {codigo} {cuerpo}"

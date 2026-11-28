@@ -78,7 +78,7 @@ Y el escalado tiene que seguir andando: con carga sube a N VMs y en reposo vuelv
 
 Las cuentas `escalador` y `minero-cpu` existían en los states de `infra` y `vms`. El orden evita que el escalador quede sin permisos en el medio:
 
-1. **Owner, desde `pilar3/bootstrap/`:** `tofu plan -var proyecto=$PROYECTO` tiene que mostrar 4 imports (las dos cuentas, los dos roles de `minero-cpu` y el `serviceAccountUser`) y sólo creaciones: los dos roles custom, sus bindings, el binding con condición sobre el bucket y el `serviceAccountAdmin` de `ci-github` sobre `escalador`. Nada se destruye. Después, `tofu apply`. Desde acá el escalador tiene los permisos viejos y los nuevos.
+1. **Owner, desde `pilar3/bootstrap/`:** `tofu plan -var proyecto=$PROYECTO` tiene que mostrar 5 imports (las dos cuentas, los dos roles de `minero-cpu` y el `serviceAccountUser`) y sólo creaciones: los dos roles custom, sus bindings, el binding con condición sobre el bucket y el `serviceAccountAdmin` de `ci-github` sobre `escalador`. Nada se destruye. Después, `tofu apply`. Desde acá el escalador tiene los permisos viejos y los nuevos.
 2. **Merge a `main`:** el Pipeline 1 y el 4 olvidan las cuentas (`removed`, sin borrarlas) y el 4 borra los permisos amplios (`instanceAdmin.v1` en el proyecto y `objectAdmin` en todo el bucket).
 3. **Borrar `bootstrap/migracion.tf`** en un PR aparte: en un proyecto nuevo los imports fallarían. El plan de `bootstrap` tiene que dar «sin cambios».
 4. Las pruebas de arriba.

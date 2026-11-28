@@ -98,3 +98,42 @@ resource "google_storage_bucket_iam_member" "ci_tfstate" {
   role   = "roles/storage.admin"
   member = "serviceAccount:${google_service_account.ci.email}"
 }
+
+# ---------------------------------------------------------------- Cuentas del escalador y de las VMs (BC-111)
+# Viven acá y no en infra/ ni vms/ para que la cuenta de los pipelines no tenga que crear cuentas ni dar
+# roles en el proyecto (BC-109). Un destroy de infra/ ya no se las lleva.
+
+# Su ServiceAccount de Kubernetes (blockchain/escalador) actúa como esta cuenta: ese binding sí queda en
+# infra/, porque necesita el pool de Workload Identity del cluster.
+resource "google_service_account" "escalador" {
+  account_id   = "escalador"
+  display_name = "Escalador de VMs minero-cpu"
+}
+
+# La cuenta de las VMs: sólo puede bajar la imagen y escribir logs.
+resource "google_service_account" "minero" {
+  account_id   = "minero-cpu"
+  display_name = "VMs minero-cpu"
+}
+
+resource "google_project_iam_member" "minero" {
+  for_each = toset(["roles/artifactregistry.reader", "roles/logging.logWriter"])
+  project  = var.proyecto
+  role     = each.value
+  member   = google_service_account.minero.member
+}
+
+# El escalador les pone la cuenta minero-cpu a las VMs que crea.
+resource "google_service_account_iam_member" "escalador_usa_minero" {
+  service_account_id = google_service_account.minero.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = google_service_account.escalador.member
+}
+
+# infra/ maneja el binding de Workload Identity del escalador: la cuenta de los pipelines administra
+# esa cuenta y ninguna otra.
+resource "google_service_account_iam_member" "ci_administra_escalador" {
+  service_account_id = google_service_account.escalador.name
+  role               = "roles/iam.serviceAccountAdmin"
+  member             = google_service_account.ci.member
+}

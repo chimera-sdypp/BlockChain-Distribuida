@@ -8,7 +8,7 @@ output "zona" {
 
 # Para la anotación iam.gke.io/gcp-service-account del ServiceAccount escalador.
 output "cuenta_escalador" {
-  value = google_service_account.escalador.email
+  value = data.google_service_account.escalador.email
 }
 
 output "conectarse" {

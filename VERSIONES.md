@@ -14,6 +14,7 @@ Las correcciones de la devolución (epic BC-90). Cambian la cadena (contrato v4 
 - **Entrada acotada** (#104, #105, BC-94): 403 sin escribir en Redis para quien no tiene alta, las rechazadas vencen a la hora, 413 y 429 en Traefik por la IP real del cliente, y topes de cuerpo en el gateway.
 - **Ambiente productivo** (#107, #108, BC-100): HPA, ServiceAccounts sin token, NetworkPolicies (Calico en GKE), `readOnlyRootFilesystem`, réplicas repartidas y Cluster Autoscaler en los node pools (`pilar3/PRODUCCION.md`).
 - **Grafana** (#106, BC-116): paneles de verificación, finalidad y defensas de la v3/v4.
+- **Permisos de la nube** (#110, BC-112; #112, BC-111): gitleaks verificado por SHA-256 y en todos los workflows; el escalador sólo puede tocar sus VMs `minero-cpu-*` y su state (roles custom con condición por nombre).
 
 ## 0.8.6 — 24/11/2026
 
